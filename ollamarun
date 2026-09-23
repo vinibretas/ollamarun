@@ -2,9 +2,16 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.8
+Version: 1.9
 
 Summary of changes in this version:
+  - The background model preload now prints a "loading MODEL…" line as soon
+    as the session starts, so there's a visible sign it's happening instead
+    of the model silently warming up with no feedback. If a message is sent
+    before that preload finishes, sending it now waits for that same load
+    (instead of letting `/api/chat` kick off a second, redundant one), so
+    `ollama ps` shows up right when the model becomes resident instead of
+    only after the whole first response has finished generating.
   - Fixed the model's response being printed twice at the end of a stream:
     the live view's last frame could go stale (throttled refreshes may skip
     the final chunk), and the code used to paper over that by printing the
