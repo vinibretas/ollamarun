@@ -2,9 +2,12 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.4
+Version: 1.5
 
 Summary of changes in this version:
+  - `/image` now parses its argument with shlex, so a quoted path
+    (`/image "my photo.png"`) with spaces attaches correctly instead of
+    being split into multiple bogus paths at each whitespace.
   - Split into a package. The implementation now lives in ollamarun_lib/
     (one module per pipeline stage: constants, helpers, mathrender, files,
     images, renderer, client, session, emit, interactive, repl, run, cli --
