@@ -2,9 +2,19 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.2
+Version: 1.3
 
 Summary of changes in this version:
+  - Chat bubbles. User turns render as a small right-aligned box; model
+    answers render inside a full-width box titled with the model name --
+    live while streaming and in `/show`/`--show` transcript replays. Plain
+    and raw render modes, and non-terminal output, are unaffected.
+  - `/ps` shows the live `ollama ps` table (model, size, VRAM, quant,
+    until-idle). The REPL also prints it automatically the first time a
+    model finishes loading in a session.
+  - `--num-ctx N` (CLI) and `/num-ctx [N]` (REPL) set the context window
+    size. A request above the model's max context (read from `/api/show`)
+    is capped to that max with a warning instead of being sent as-is.
   - 2D math layout. Display math ($$...$$, \\[...\\]) is now drawn as a real
     Unicode block -- stacked fractions with a bar, sqrt overlines, sum/prod/
     lim limits above-below, integral limits on the side, matrices, cases,
@@ -155,7 +165,7 @@ try:
 except ImportError:  # pragma: no cover - fallback path
     HAS_PYLATEXENC = False
 
-VERSION = "1.2"
+VERSION = "1.3"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -1766,15 +1776,32 @@ def format_stats(stats: dict[str, Any]) -> str:
     return " · ".join(bits)
 
 
+def user_message_box(text: str, console: Console) -> Align:
+    """Small right-aligned box for a user turn."""
+    lines = text.splitlines() or [""]
+    content_width = max(len(line) for line in lines)
+    width = max(12, min(content_width + 4, (console.width or 80) - 4, 72))
+    panel = Panel(Text(text), border_style="you", padding=(0, 1), width=width,
+                 title="you", title_align="right")
+    return Align.right(panel)
+
+
+def model_message_panel(renderable: Any, model: str) -> Panel:
+    """Full-width box for a model turn."""
+    return Panel(renderable, border_style="ai", padding=(0, 1),
+                title=f"{model} ›" if model else "assistant", title_align="left")
+
+
 class Renderer:
     """Streams NDJSON chat events to the terminal and returns the transcript."""
 
     def __init__(self, console: Console, *, mode: str = "markdown", math: bool = True,
                  nowordwrap: bool = False, thinking_mode: str = "collapsed",
                  tps_footer: bool = True, show_stats: bool = False, verbose: bool = False,
-                 max_render_chars: int = 12000, pager: bool = False):
+                 max_render_chars: int = 12000, pager: bool = False, model: str = ""):
         self.console = console
         self.mode = mode
+        self.model = model
         self.math = math
         self.nowordwrap = nowordwrap
         self.thinking_mode = thinking_mode if thinking_mode in THINKING_MODES else "collapsed"
@@ -1839,7 +1866,12 @@ class Renderer:
         if self.mode == "raw" or not content:
             return
         if self.mode == "markdown":
-            self.console.print(self._markdown(content), soft_wrap=self.nowordwrap)
+            body = self._markdown(content)
+            if self.live_render:
+                self.console.print(model_message_panel(body, self.model),
+                                   soft_wrap=self.nowordwrap)
+            else:
+                self.console.print(body, soft_wrap=self.nowordwrap)
         else:
             self.console.print(escape(content), soft_wrap=self.nowordwrap)
 
@@ -1982,7 +2014,7 @@ class Renderer:
             if (self.show_stats or self.verbose) and result.stats:
                 self.console.print(f"[dim]⏱  {format_stats(result.stats)}[/dim]")
 
-    def _live_view(self, result: GenerationResult) -> Group:
+    def _live_view(self, result: GenerationResult) -> Any:
         parts: list[Any] = []
         has_thinking = bool(result.thinking)
         preview = self._thinking_preview_lines()
@@ -2011,7 +2043,10 @@ class Renderer:
         tps = self._tps_text()
         if tps is not None:
             parts.append(tps)
-        return Group(*parts)
+        group = Group(*parts)
+        if self.live_render:
+            return model_message_panel(group, self.model)
+        return group
 
     def _render_tool_calls(self, calls: list[dict[str, Any]]) -> None:
         for call in calls:
@@ -2043,14 +2078,16 @@ def render_transcript(session: "Session", console: Console, *, show_stats: bool 
             if role == "user":
                 for image in message.get("images") or []:
                     console.print(f"[dim]🖼  {escape(image.get('name') or image.get('path', '?'))}[/dim]")
-                console.print(f"[you]you ›[/you] {escape(content)}")
+                if content:
+                    console.print(user_message_box(content, console))
             elif role == "assistant":
                 if message.get("thinking"):
                     console.print(thinking_panel(message["thinking"]))
                 if message.get("cancelled"):
                     console.print("[warn]cancelled partial response[/warn]")
-                console.print(render_content(content, math=True,
-                                             width=max(20, console.width - 4)))
+                console.print(model_message_panel(
+                    render_content(content, math=True, width=max(20, console.width - 4)),
+                    session.model))
                 for call in message.get("tool_calls") or []:
                     function = call.get("function", {}) if isinstance(call, dict) else {}
                     console.print(Panel(escape(str(function.get("arguments", ""))),
@@ -2779,6 +2816,8 @@ COMMAND_INFO: dict[str, tuple[str, str]] = {
     "/title": ("[TEXT|--auto]", "show or set the session title"),
     "/tag": ("[list|add TAG…|rm TAG]", "session tags"),
     "/model": ("[NAME|--list]", "switch model"),
+    "/ps": ("", "show resident models (ollama ps)"),
+    "/num-ctx": ("[N]", "context window size, capped to the model's max"),
     "/params": ("", "show session parameters"),
     "/think": ("[on|off|low|medium|high]", "thinking mode"),
     "/thinking": ("[show|collapse|hide|toggle|full]", "thinking display (Ctrl+T while streaming)"),
@@ -2878,6 +2917,7 @@ class Repl:
         self.verbose = bool(args.verbose)
         self.no_save = bool(args.no_save)
         self._pt_session: Optional[Any] = None
+        self._ps_shown_for: set[str] = set()
 
     # ── prompt plumbing ─────────────────────────────────────────────────────
 
@@ -2935,7 +2975,8 @@ class Repl:
                         thinking_mode=self.thinking_mode,
                         tps_footer=self.tps_footer,
                         show_stats=self.show_stats, verbose=self.verbose,
-                        max_render_chars=self.max_render_chars, pager=self.pager)
+                        max_render_chars=self.max_render_chars, pager=self.pager,
+                        model=self.session.model)
 
     # ── model housekeeping ──────────────────────────────────────────────────
 
@@ -2955,6 +2996,21 @@ class Repl:
         if not quiet:
             console.print(f"[dim]unloaded {escape(target)}[/dim]")
         return True
+
+    def _maybe_show_ps(self) -> None:
+        """Prints `ollama ps` the first time this session's model shows up loaded."""
+        model = self.session.model
+        if not model or model in self._ps_shown_for:
+            return
+        try:
+            if not self.client.is_resident(model):
+                return
+            entries = self.client.ps()
+        except OllamaError:
+            return
+        self._ps_shown_for.add(model)
+        if entries:
+            console.print(ps_table(entries))
 
     def effective_think(self) -> Optional[Any]:
         return self.session.think
@@ -2991,12 +3047,16 @@ class Repl:
             self.session.stats["last_prompt_tokens"] = result.stats.get("prompt_tokens")
         if not self.no_save:
             self.store.save(self.session)
+        if console.is_terminal and not result.error:
+            self._maybe_show_ps()
         return result
 
     def send(self, text: str) -> GenerationResult:
         text = text.strip()
         if not text and not self.pending_images:
             return GenerationResult()
+        if console.is_terminal:
+            console.print(user_message_box(text, console))
         augmented, included, warnings = expand_file_mentions(text, max_kb=self.max_file_kb)
         for warning in warnings:
             console.print(f"[warn]{escape(warning)}[/warn]")
@@ -3238,6 +3298,82 @@ def cmd_show(repl: Repl, argument: str) -> None:
     else:
         console.print(Panel(escape(str(value)), title=topic, border_style="dim",
                             title_align="left"))
+
+
+def ps_table(entries: list[dict[str, Any]]) -> Table:
+    table = Table(title="ollama ps", box=box.ROUNDED, header_style="bold magenta")
+    table.add_column("model")
+    table.add_column("size")
+    table.add_column("VRAM")
+    table.add_column("quant")
+    table.add_column("until")
+    for entry in entries:
+        details = entry.get("details") or {}
+        table.add_row(
+            escape(str(entry.get("name") or entry.get("model") or "?")),
+            human_bytes(entry.get("size")),
+            human_bytes(entry.get("size_vram")),
+            escape(str(details.get("quantization_level") or "?")),
+            short_stamp(entry.get("expires_at")) or "?")
+    return table
+
+
+def cmd_ps(repl: Repl, argument: str) -> None:
+    try:
+        entries = repl.client.ps()
+    except OllamaError as exc:
+        console.print(f"[err]{escape(str(exc))}[/err]")
+        return
+    if not entries:
+        console.print("[dim]no models currently loaded[/dim]")
+        return
+    console.print(ps_table(entries))
+
+
+def resolve_num_ctx(client: OllamaClient, model: str, requested: int) -> tuple[int, Optional[int]]:
+    """Caps `requested` to the model's max context length (from /api/show).
+
+    Returns (value_to_use, max_ctx_or_None). Never raises: an unreachable
+    server just means the max is unknown and the request passes through.
+    """
+    try:
+        show_data = client.show(model)
+    except OllamaError:
+        return requested, None
+    max_ctx = model_context_length(show_data, {})
+    if max_ctx and requested > max_ctx:
+        return max_ctx, max_ctx
+    return requested, max_ctx
+
+
+def cmd_num_ctx(repl: Repl, argument: str) -> None:
+    argument = argument.strip()
+    if not argument:
+        current = repl.session.parameters.get("num_ctx")
+        try:
+            max_ctx = model_context_length(repl.client.show(repl.session.model), {})
+        except OllamaError:
+            max_ctx = None
+        bits = [f"num_ctx = {current if current is not None else '(model default)'}"]
+        if max_ctx:
+            bits.append(f"model max {max_ctx}")
+        console.print(f"[key]context size[/key] " + " · ".join(bits))
+        return
+    try:
+        requested = int(argument)
+    except ValueError:
+        console.print("[err]usage: /num-ctx N[/err]")
+        return
+    if requested <= 0:
+        console.print("[err]--num-ctx must be a positive integer[/err]")
+        return
+    applied, max_ctx = resolve_num_ctx(repl.client, repl.session.model, requested)
+    if max_ctx and requested > max_ctx:
+        console.print(f"[warn]{requested} exceeds {escape(repl.session.model)}'s max context "
+                      f"({max_ctx}) — capped to {max_ctx}[/warn]")
+    repl.session.parameters["num_ctx"] = applied
+    repl.session.touch()
+    console.print(f"[ok]num_ctx set to {applied}[/ok]")
 
 
 def _switch_session(repl: Repl, session: Session) -> None:
@@ -3795,6 +3931,8 @@ COMMAND_HANDLERS: dict[str, Callable[[Repl, str], Any]] = {
     "/title": cmd_title,
     "/tag": cmd_tag,
     "/model": cmd_model,
+    "/ps": cmd_ps,
+    "/num-ctx": cmd_num_ctx,
     "/params": cmd_params,
     "/think": cmd_think,
     "/thinking": cmd_thinking,
@@ -3885,6 +4023,8 @@ def run_once(args: argparse.Namespace, config: dict[str, Any], client: OllamaCli
         if args.unload:
             repl.unload_model(quiet=True)
         return 0
+    if console.is_terminal:
+        console.print(user_message_box(prompt_text, console))
     try:
         result = repl._renderer().stream(client.chat(payload, timeout=repl.timeout))
     except OllamaError as exc:
@@ -3928,6 +4068,8 @@ interactive commands:
   /summarize /context   manage the context window
   /thinking [MODE]      thinking display: show|collapse|hide|toggle|full
   /tps [on|off]         live tokens/s footer
+  /ps                   resident models (ollama ps)
+  /num-ctx [N]          context window size, capped to the model's max
   /image PATH           attach an image to the next message
   /export [FILE]        export mid-session as md/json/html
 
@@ -3989,6 +4131,9 @@ sessions live in ~/etc/data/ollamarun; config in ~/etc/config_files/ollamarun.js
                          help="read the system prompt from a file")
     wrapper.add_argument("--option", action="append", metavar="KEY=VALUE",
                          help="model option, repeatable (e.g. -o temperature=0.7)")
+    wrapper.add_argument("--num-ctx", type=int, metavar="N",
+                         help="context window size; capped to the model's max "
+                              "(from /api/show) with a warning")
     wrapper.add_argument("--options-json", metavar="JSON",
                          help="model options as a JSON object")
     wrapper.add_argument("--image", action="append", metavar="PATH",
@@ -4239,6 +4384,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
     session.model = model
     session.host = client.base
+    if args.num_ctx is not None:
+        if args.num_ctx <= 0:
+            console.print("[err]--num-ctx must be a positive integer[/err]")
+            return 2
+        applied, max_ctx = resolve_num_ctx(client, model, args.num_ctx)
+        if max_ctx and args.num_ctx > max_ctx:
+            console.print(f"[warn]--num-ctx {args.num_ctx} exceeds {escape(model)}'s max "
+                          f"context ({max_ctx}) — capped to {max_ctx}[/warn]")
+        session.parameters["num_ctx"] = applied
 
     try:
         prompt_text = " ".join(args.prompt).strip()
