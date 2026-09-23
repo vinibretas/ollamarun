@@ -3,7 +3,7 @@
 `Renderer` is the piece that talks to the terminal frame-by-frame -- markdown
 re-render while tokens stream, the collapsible thinking panel (Ctrl+T pager
 handoff) and `TpsEstimator` for the live `~tok/s` footer. `user_message_box`/
-`model_message_panel` are the chat-bubble helpers shared with transcript
+`model_message_rule` are the chat-bubble helpers shared with transcript
 replay (`render_transcript`, used by `/show`/`--show`).
 """
 from __future__ import annotations
@@ -142,10 +142,10 @@ def user_message_box(text: str, console: Console) -> Align:
     return Align.right(panel)
 
 
-def model_message_panel(renderable: Any, model: str) -> Panel:
-    """Full-width box for a model turn."""
-    return Panel(renderable, border_style="ai", padding=(0, 1),
-                title=f"{model} ›" if model else "assistant", title_align="left")
+def model_message_rule(model: str) -> Rule:
+    """Divider (no box) marking the start of a model turn."""
+    title = f"[ai]{escape(model)} ›[/ai]" if model else "[ai]assistant[/ai]"
+    return Rule(title, style="ai", align="left")
 
 
 class Renderer:
@@ -224,10 +224,8 @@ class Renderer:
         if self.mode == "markdown":
             body = self._markdown(content)
             if self.live_render:
-                self.console.print(model_message_panel(body, self.model),
-                                   soft_wrap=self.nowordwrap)
-            else:
-                self.console.print(body, soft_wrap=self.nowordwrap)
+                self.console.print(model_message_rule(self.model))
+            self.console.print(body, soft_wrap=self.nowordwrap)
         else:
             self.console.print(escape(content), soft_wrap=self.nowordwrap)
 
@@ -401,7 +399,7 @@ class Renderer:
             parts.append(tps)
         group = Group(*parts)
         if self.live_render:
-            return model_message_panel(group, self.model)
+            return Group(model_message_rule(self.model), group)
         return group
 
     def _render_tool_calls(self, calls: list[dict[str, Any]]) -> None:
@@ -441,9 +439,8 @@ def render_transcript(session: "Session", console: Console, *, show_stats: bool 
                     console.print(thinking_panel(message["thinking"]))
                 if message.get("cancelled"):
                     console.print("[warn]cancelled partial response[/warn]")
-                console.print(model_message_panel(
-                    render_content(content, math=True, width=max(20, console.width - 4)),
-                    session.model))
+                console.print(model_message_rule(session.model))
+                console.print(render_content(content, math=True, width=max(20, console.width - 4)))
                 for call in message.get("tool_calls") or []:
                     function = call.get("function", {}) if isinstance(call, dict) else {}
                     console.print(Panel(escape(str(function.get("arguments", ""))),

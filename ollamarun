@@ -2,9 +2,19 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.5
+Version: 1.7
 
 Summary of changes in this version:
+  - Model turns are now marked with a `rich` rule/divider instead of a full
+    box, and the user/model chat colors are softer, muted pastel tones
+    (was bold cyan/green) instead of the previous saturated colors.
+  - The REPL now starts loading the session's model in the background as
+    soon as the session opens, instead of waiting for the first message --
+    it's already warming up while the user types. Pressing Enter on an
+    empty line now sends immediately when there are pending images (e.g.
+    from `/image PATH`), instead of being silently ignored, so attaching
+    an image and hitting Enter with no text sends it for the model to
+    process right away.
   - `/image` now parses its argument with shlex, so a quoted path
     (`/image "my photo.png"`) with spaces attaches correctly instead of
     being split into multiple bogus paths at each whitespace.
