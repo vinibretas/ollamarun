@@ -694,12 +694,21 @@ class _FakeClient:
         self.ps_entries = list(ps_entries)
         self.show_data = show_data
         self.unloaded = []
+        self.loaded = []
+        self.chat_payloads = []
 
     def is_resident(self, model):
         return model in self.resident
 
     def unload(self, model):
         self.unloaded.append(model)
+
+    def load(self, model, *, keepalive=None):
+        self.loaded.append(model)
+
+    def chat(self, payload, timeout=None):
+        self.chat_payloads.append(payload)
+        return iter([{"message": {"content": "ok"}, "done": True}])
 
     def tags(self):
         return [{"name": name} for name in self.models]
@@ -803,6 +812,70 @@ def test_unload_housekeeping() -> int:
     return failures
 
 
+def test_preload_model() -> int:
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+        config = dict(orun.DEFAULT_CONFIG)
+        client = _FakeClient(models=["m1"])
+        repl = orun.Repl(args, config, client, store, orun.Session.create("m1", client.base))
+        repl._build_prompt_session = lambda: None
+        repl._read_line = lambda message: "/bye"
+
+        repl.run()
+        if repl._preload_thread is not None:
+            repl._preload_thread.join(timeout=2)
+        if client.loaded == ["m1"]:
+            print("PASS  starting the REPL preloads the session's model")
+        else:
+            print(f"FAIL  preload on start: loaded={client.loaded}")
+            failures += 1
+    return failures
+
+
+def test_empty_enter_sends_pending_images() -> int:
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        image = Path(tmp) / "shot.png"
+        image.write_bytes(_tiny_png())
+
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+        config = dict(orun.DEFAULT_CONFIG)
+        client = _FakeClient(models=["m1"])
+        repl = orun.Repl(args, config, client, store, orun.Session.create("m1", client.base))
+        repl._build_prompt_session = lambda: None
+        orun.cmd_image(repl, str(image))
+
+        lines = iter(["", "/bye"])
+        repl._read_line = lambda message: next(lines)
+        with orun.console.capture():
+            repl.run()
+        if (len(client.chat_payloads) == 1 and repl.pending_images == []
+                and repl.session.messages
+                and repl.session.messages[0].get("images")):
+            print("PASS  Enter on an empty line sends pending images immediately")
+        else:
+            print(f"FAIL  empty-enter send: chats={len(client.chat_payloads)} "
+                  f"pending={repl.pending_images} messages={repl.session.messages}")
+            failures += 1
+
+        client2 = _FakeClient(models=["m1"])
+        repl2 = orun.Repl(args, config, client2, store, orun.Session.create("m1", client2.base))
+        repl2._build_prompt_session = lambda: None
+        lines2 = iter(["", "/bye"])
+        repl2._read_line = lambda message: next(lines2)
+        with orun.console.capture():
+            repl2.run()
+        if not client2.chat_payloads:
+            print("PASS  Enter on an empty line with no pending images stays a no-op")
+        else:
+            print(f"FAIL  empty-enter without images: chats={len(client2.chat_payloads)}")
+            failures += 1
+    return failures
+
+
 def test_context_length() -> int:
     failures = 0
     show = {"model_info": {"llama.context_length": 8192},
@@ -867,17 +940,18 @@ def test_chat_bubbles() -> int:
         print(f"FAIL  user_message_box width cap: {wide_panel.width}")
         failures += 1
 
-    model_panel = orun.model_message_panel("body", "llama3:latest")
-    if model_panel.title == "llama3:latest ›" and model_panel.border_style == "ai":
-        print("PASS  model_message_panel titles with the model name")
+    rule = orun.model_message_rule("llama3:latest")
+    if (isinstance(rule, orun.Rule) and rule.style == "ai"
+            and "llama3:latest" in str(rule.title)):
+        print("PASS  model_message_rule is a Rule titled with the model name")
     else:
-        print(f"FAIL  model_message_panel title: {model_panel.title}")
+        print(f"FAIL  model_message_rule: {rule.title!r} style={rule.style}")
         failures += 1
 
-    if orun.model_message_panel("body", "").title == "assistant":
-        print("PASS  model_message_panel falls back to 'assistant' with no model")
+    if "assistant" in str(orun.model_message_rule("").title):
+        print("PASS  model_message_rule falls back to 'assistant' with no model")
     else:
-        print("FAIL  model_message_panel fallback title")
+        print("FAIL  model_message_rule fallback title")
         failures += 1
     return failures
 
@@ -1322,7 +1396,8 @@ if __name__ == "__main__":
              + test_normalize_argv() + test_renderer_plain()
              + test_thinking_display() + test_math_layout()
              + test_render_content() + test_tps_estimator()
-             + test_unload_housekeeping() + test_context_length()
+             + test_unload_housekeeping() + test_preload_model()
+             + test_empty_enter_sends_pending_images() + test_context_length()
              + test_naive_title() + test_chat_bubbles()
              + test_render_transcript_bubbles() + test_ps_table_and_cmd_ps()
              + test_maybe_show_ps() + test_resolve_num_ctx()
