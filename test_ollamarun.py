@@ -12,6 +12,7 @@ import shutil
 import struct
 import sys
 import tempfile
+import threading
 import time
 import zlib
 from pathlib import Path
@@ -926,11 +927,51 @@ def test_preload_shows_ps_before_first_response() -> int:
     return failures
 
 
-def test_generate_waits_for_preload_before_showing_ps() -> int:
-    """If the user sends a message before the background preload finishes,
-    _generate() should wait for that same load instead of firing a second,
-    concurrent one via chat() -- and `ollama ps` should show up right then,
-    not only after the response finishes generating."""
+def test_preload_uses_the_streaming_spinner() -> int:
+    """_preload_model() should show the same animated Spinner used while
+    streaming a response (not a plain static line), and it should finish
+    loading (and show ps) before returning, so the model is already resident
+    by the time the interactive loop can accept a message."""
+    failures = 0
+    original_force_terminal = orun.console._force_terminal
+    original_file = orun.console.file
+    orun.console._force_terminal = True
+    buffer = io.StringIO()
+    orun.console.file = buffer
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
+            args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+            config = dict(orun.DEFAULT_CONFIG)
+            entries = [{"name": "m1", "size": 100, "size_vram": 50, "details": {},
+                        "expires_at": None}]
+            client = _FakeClient(resident=["m1"], models=["m1"], ps_entries=entries)
+            repl = orun.Repl(args, config, client, store, orun.Session.create("m1", client.base))
+            repl._build_prompt_session = lambda: None
+
+            repl._preload_model()
+            loaded_before_return = (repl._preload_thread is not None
+                                     and not repl._preload_thread.is_alive())
+        out = _plain(buffer.getvalue())
+        if (loaded_before_return and "waiting for m1" in out and "ollama ps" in out):
+            print("PASS  preload shows the animated waiting-for-model spinner "
+                  "and finishes loading before returning")
+        else:
+            print(f"FAIL  preload spinner: loaded_before_return={loaded_before_return} "
+                  f"out={out!r}")
+            failures += 1
+    finally:
+        orun.console._force_terminal = original_force_terminal
+        orun.console.file = original_file
+    return failures
+
+
+def test_generate_waits_for_pending_preload_before_showing_ps() -> int:
+    """If a preload thread is still running when a message is sent (e.g. the
+    non-terminal path, where _preload_model() doesn't block), _generate()
+    should wait for that same load instead of firing a second, concurrent
+    one via chat() -- and `ollama ps` should show up right then, not only
+    after the response finishes generating."""
     failures = 0
     original_force_terminal = orun.console._force_terminal
     original_file = orun.console.file
@@ -955,9 +996,10 @@ def test_generate_waits_for_preload_before_showing_ps() -> int:
             repl = orun.Repl(args, config, client, store, orun.Session.create("m1", client.base))
             repl._build_prompt_session = lambda: None
 
-            repl._preload_model()
-            still_loading = (repl._preload_thread is not None
-                              and repl._preload_thread.is_alive())
+            thread = threading.Thread(target=lambda: client.load("m1"), daemon=True)
+            repl._preload_thread = thread
+            thread.start()
+            still_loading = thread.is_alive()
             repl.send("hi")
         out = _plain(buffer.getvalue())
         ps_pos = out.find("ollama ps")
@@ -1539,7 +1581,8 @@ if __name__ == "__main__":
              + test_render_content() + test_tps_estimator()
              + test_unload_housekeeping() + test_preload_model()
              + test_preload_shows_ps_before_first_response()
-             + test_generate_waits_for_preload_before_showing_ps()
+             + test_preload_uses_the_streaming_spinner()
+             + test_generate_waits_for_pending_preload_before_showing_ps()
              + test_empty_enter_sends_pending_images() + test_context_length()
              + test_naive_title() + test_chat_bubbles()
              + test_render_transcript_bubbles() + test_ps_table_and_cmd_ps()
