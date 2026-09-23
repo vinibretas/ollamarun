@@ -552,6 +552,53 @@ def test_thinking_display() -> int:
     return failures
 
 
+def test_live_stream_final_frame_is_complete() -> int:
+    """A throttled live refresh can leave the last live frame stale (missing
+    the final chunk); stream() used to paper over that by printing the whole
+    response a second time via render_final() once the live view stopped."""
+    failures = 0
+    import ollamarun_lib.renderer as renderer_mod
+
+    updates = []
+
+    class _RecordingLive(orun.Live):
+        def update(self, renderable, *, refresh=False):
+            updates.append(renderable)
+            super().update(renderable, refresh=refresh)
+
+    buffer = io.StringIO()
+    console = Console(file=buffer, width=100, force_terminal=True)
+    renderer = orun.Renderer(console, mode="markdown", thinking_mode="hidden")
+    render_final_calls = []
+    renderer.render_final = lambda content: render_final_calls.append(content)
+
+    original_live = renderer_mod.Live
+    renderer_mod.Live = _RecordingLive
+    try:
+        result = renderer.stream(iter([
+            {"message": {"content": "Hello "}},
+            {"message": {"content": "world."}},
+            {"done": True},
+        ]))
+    finally:
+        renderer_mod.Live = original_live
+
+    def render_text(renderable) -> str:
+        out_buffer = io.StringIO()
+        Console(file=out_buffer, width=100, force_terminal=False).print(renderable)
+        return out_buffer.getvalue()
+
+    last_frame = render_text(updates[-1]) if updates else ""
+    if (result.content == "Hello world." and "Hello world." in last_frame
+            and render_final_calls == []):
+        print("PASS  live stream freezes on the complete response and doesn't re-print it")
+    else:
+        print(f"FAIL  live stream final frame: last_frame={last_frame!r} "
+              f"render_final_calls={render_final_calls!r}")
+        failures += 1
+    return failures
+
+
 MATH_LAYOUT_CASES = [
     (r"\frac{a}{b}", ["a", "─", "b"]),
     (r"\frac{a}{b} + c", ["a", "─ + c", "b"]),
@@ -831,6 +878,50 @@ def test_preload_model() -> int:
         else:
             print(f"FAIL  preload on start: loaded={client.loaded}")
             failures += 1
+    return failures
+
+
+def test_preload_shows_ps_before_first_response() -> int:
+    """`ollama ps` should show up once the background-preloaded model is
+    resident, not only after the first response finishes generating.
+
+    The preload runs on a background thread, and Console.capture() only
+    buffers output on the thread that entered it (rich's buffer state is
+    thread-local) -- so this swaps console.file directly instead, which is
+    a plain shared attribute every thread's writes go through.
+    """
+    failures = 0
+    original_force_terminal = orun.console._force_terminal
+    original_file = orun.console.file
+    orun.console._force_terminal = True
+    buffer = io.StringIO()
+    orun.console.file = buffer
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
+            args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+            config = dict(orun.DEFAULT_CONFIG)
+            entries = [{"name": "m1", "size": 100, "size_vram": 50, "details": {},
+                        "expires_at": None}]
+            client = _FakeClient(resident=["m1"], models=["m1"], ps_entries=entries)
+            repl = orun.Repl(args, config, client, store, orun.Session.create("m1", client.base))
+            repl._build_prompt_session = lambda: None
+            repl._read_line = lambda message: "/bye"
+
+            repl.run()
+            if repl._preload_thread is not None:
+                repl._preload_thread.join(timeout=2)
+        out = _plain(buffer.getvalue())
+        if "ollama ps" in out and client.chat_payloads == []:
+            print("PASS  ollama ps shows up as soon as the preloaded model is "
+                  "resident, without waiting for a response")
+        else:
+            print(f"FAIL  preload ps ordering: out={out!r} "
+                  f"chat_payloads={client.chat_payloads!r}")
+            failures += 1
+    finally:
+        orun.console._force_terminal = original_force_terminal
+        orun.console.file = original_file
     return failures
 
 
@@ -1397,13 +1488,15 @@ if __name__ == "__main__":
              + test_thinking_display() + test_math_layout()
              + test_render_content() + test_tps_estimator()
              + test_unload_housekeeping() + test_preload_model()
+             + test_preload_shows_ps_before_first_response()
              + test_empty_enter_sends_pending_images() + test_context_length()
              + test_naive_title() + test_chat_bubbles()
              + test_render_transcript_bubbles() + test_ps_table_and_cmd_ps()
              + test_maybe_show_ps() + test_resolve_num_ctx()
              + test_cmd_num_ctx() + test_emit_and_cli_functions()
              + test_build_parser_flags() + test_slash_completer()
-             + test_client_http() + test_cmd_image())
+             + test_client_http() + test_cmd_image()
+             + test_live_stream_final_frame_is_complete())
     if total:
         print(f"\n{total} failure(s)")
         sys.exit(1)

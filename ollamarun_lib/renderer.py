@@ -325,6 +325,12 @@ class Renderer:
                 result.cancelled = True
         finally:
             if live is not None:
+                # Force a final refresh so the frame frozen when the live
+                # view stops reflects the complete content -- throttled
+                # refreshes during streaming can leave the last live frame
+                # stale otherwise, which used to be papered over by printing
+                # the whole response a second time below.
+                refresh(0.0, force=True)
                 live.stop()
             if fd is not None and saved_term is not None:
                 try:
@@ -337,10 +343,12 @@ class Renderer:
                 sys.stdout.write("\n")
             sys.stdout.flush()
         elif use_live:
+            # The frozen live frame (see the forced refresh above) already
+            # shows the complete rule + rendered content -- printing it
+            # again here would duplicate the whole response.
             if result.thinking and self.thinking_visible() \
                     and self.thinking_mode == "expanded":
                 self.console.print(thinking_panel(result.thinking))
-            self.render_final(result.content)
         elif self.use_pager:
             self._pager_render(result)
         else:
