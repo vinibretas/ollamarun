@@ -265,6 +265,8 @@ class Repl:
         if not model:
             return
         keepalive = self.session.keepalive or self.args.keepalive
+        if console.is_terminal:
+            console.print(f"[dim]loading {escape(model)}…[/dim]")
 
         def _load() -> None:
             try:
@@ -306,6 +308,16 @@ class Repl:
     # ── generation ──────────────────────────────────────────────────────────
 
     def _generate(self) -> GenerationResult:
+        if self._preload_thread is not None and self._preload_thread.is_alive():
+            # The user sent a message before the background preload finished;
+            # wait for our own load call to land (chat() would otherwise
+            # trigger a redundant concurrent load) so ollama ps -- printed
+            # right as the preload thread finishes -- shows up immediately
+            # instead of only after this response is fully generated.
+            if console.is_terminal:
+                console.print(f"[dim]waiting for {escape(self.session.model)} "
+                              f"to finish loading…[/dim]")
+            self._preload_thread.join()
         renderer = self._renderer()
         marker = f"[ai]{escape(self.session.model)} ›[/ai]"
         if renderer.mode != "raw" and not renderer.live_render:
