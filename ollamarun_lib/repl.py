@@ -270,7 +270,9 @@ class Repl:
             try:
                 self.client.load(model, keepalive=keepalive)
             except OllamaError:
-                pass
+                return
+            if console.is_terminal:
+                self._maybe_show_ps()
 
         thread = threading.Thread(target=_load, daemon=True)
         self._preload_thread = thread
