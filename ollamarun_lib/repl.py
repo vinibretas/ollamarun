@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shlex
+import threading
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -176,6 +177,7 @@ class Repl:
         self.no_save = bool(args.no_save)
         self._pt_session: Optional[Any] = None
         self._ps_shown_for: set[str] = set()
+        self._preload_thread: Optional[threading.Thread] = None
 
     # ── prompt plumbing ─────────────────────────────────────────────────────
 
@@ -254,6 +256,25 @@ class Repl:
         if not quiet:
             console.print(f"[dim]unloaded {escape(target)}[/dim]")
         return True
+
+    def _preload_model(self) -> None:
+        """Starts loading the session's model in the background so it's
+        already warm by the time the first message is sent, instead of
+        waiting for the user to type something."""
+        model = self.session.model
+        if not model:
+            return
+        keepalive = self.session.keepalive or self.args.keepalive
+
+        def _load() -> None:
+            try:
+                self.client.load(model, keepalive=keepalive)
+            except OllamaError:
+                pass
+
+        thread = threading.Thread(target=_load, daemon=True)
+        self._preload_thread = thread
+        thread.start()
 
     def _maybe_show_ps(self) -> None:
         """Prints `ollama ps` the first time this session's model shows up loaded."""
@@ -345,6 +366,7 @@ class Repl:
     # ── command dispatch ────────────────────────────────────────────────────
 
     def run(self) -> int:
+        self._preload_model()
         self.refresh_models()
         self._pt_session = self._build_prompt_session()
         self._banner()
@@ -361,7 +383,7 @@ class Repl:
                     console.print()
                     break
                 line = line.strip()
-                if not line:
+                if not line and not self.pending_images:
                     continue
                 if line.startswith("/"):
                     if not self._dispatch(line):
