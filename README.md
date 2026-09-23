@@ -13,7 +13,11 @@ $ ollamarun MODEL [PROMPT] [--host HOST] [--think [STR]] [--render MODE] [--opti
 
 ## Layout
 
-- `ollamarun` — the tool itself (`#! /bin/python3.10`).
+- `ollamarun` — thin executable entry point (`#! /bin/python3.10`); calls
+  into `ollamarun_lib/`.
+- `ollamarun_lib/` — the implementation, one module per pipeline stage
+  (math rendering, HTTP client, sessions, REPL, CLI, ...) — see CLAUDE.md's
+  Architecture section for what lives where.
 - `test_ollamarun.py` — test suite. Run with `python3 test_ollamarun.py`.
 
 ## Usage as a submodule

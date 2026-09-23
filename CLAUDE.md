@@ -4,12 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`ollamarun` is a single-file Python CLI (`ollamarun`, ~4300 lines) that fully
-wraps `ollama run`: every upstream flag plus persistent sessions, a
-prompt_toolkit REPL, live markdown/2D-math rendering, and token/s stats. It
-talks to the Ollama HTTP API directly (`requests`, not the `ollama` Python
-package) so it rides transparently through `llm-jukebox`, the scheduler this
-user runs in front of Ollama on `:11434`.
+`ollamarun` is a Python CLI that fully wraps `ollama run`: every upstream
+flag plus persistent sessions, a prompt_toolkit REPL, live markdown/2D-math
+rendering, and token/s stats. It talks to the Ollama HTTP API directly
+(`requests`, not the `ollama` Python package) so it rides transparently
+through `llm-jukebox`, the scheduler this user runs in front of Ollama on
+`:11434`.
+
+The `ollamarun` file at the repo root is a thin, shebang-pinned entry point
+(`#! /bin/python3.10`); the implementation lives in the `ollamarun_lib/`
+package, one module per pipeline stage — see Architecture below. The entry
+point adds its own directory to `sys.path` and calls `ollamarun_lib.cli.main()`,
+so `ollamarun_lib` must stay next to it (it does, since both live at the repo
+root). `ollamarun_lib/__init__.py` re-exports every submodule's public names
+at the top level, so `import ollamarun_lib as orun` behaves like the old
+single-file script for anything that imports it (tests, one-off scripts).
 
 This repo is checked out as a git submodule at `~/bin/ollamarun` inside the
 `vinibretas/binscripts` repo (`~/bin`). `~/bin/ollamarun` is added to `PATH`
@@ -20,25 +29,33 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 
 ## Commands
 
-- Run tests: `python3 test_ollamarun.py` (plain script, no framework; loads
-  `ollamarun` via `importlib.machinery.SourceFileLoader` since the file has
-  no `.py` extension). Add new cases to the relevant list near the top of
-  the file (e.g. `MATH_CASES` for math-rendering regressions) rather than
-  writing ad hoc scripts.
+- Run tests: `python3 test_ollamarun.py` (plain script, no framework; does
+  `sys.path.insert(0, ...)` then `import ollamarun_lib as orun`). Add new
+  cases to the relevant list/function near the top of the file (e.g.
+  `MATH_CASES` for math-rendering regressions) rather than writing ad hoc
+  scripts; there's also a `test_*` function per subsystem (client HTTP,
+  session storage, REPL commands, CLI parsing, ...) run from `__main__` at
+  the bottom — add a new `test_*` function there for a new subsystem and
+  wire it into the `total = (...)` sum.
 - No build/lint config exists. Verify manually: `./ollamarun --help`, or a
   real one-shot call against a running Ollama (`./ollamarun MODEL "prompt"`).
-- The script is executable and shebang-pinned to `#! /bin/python3.10`
-  (system Python). Do not use stdlib features newer than 3.10 without a
-  try/except fallback (see `HAS_PYLATEXENC`/`HAS_PYPERCLIP` guards near the
-  top for the existing pattern).
+- The entry-point script is executable and shebang-pinned to
+  `#! /bin/python3.10` (system Python). Do not use stdlib features newer
+  than 3.10 without a try/except fallback (see `HAS_PYLATEXENC`/
+  `HAS_PYPERCLIP` guards in `ollamarun_lib/constants.py` for the existing
+  pattern — note that the `except` branch there also binds the names to
+  `None` so `from .constants import LatexNodes2Text` etc. never raises an
+  `ImportError` in another module just because the optional dependency is
+  missing).
 
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant, currently `"1.2"`) and prepend a new bullet list under
-  `Summary of changes in this version:` in the module docstring — read the
-  existing entries at the top of `ollamarun` before adding one; that block
-  is the changelog, there is no separate CHANGELOG file.
+  constant in `ollamarun_lib/constants.py`, currently `"1.4"`) and prepend a
+  new bullet list under `Summary of changes in this version:` in the
+  top-level `ollamarun` entry script's module docstring — read the existing
+  entries there before adding one; that block is the changelog, there is no
+  separate CHANGELOG file.
 - Config lives at `~/etc/config_files/ollamarun.json`, created from
   `DEFAULT_CONFIG` on first run. Session state is one atomic JSON file per
   conversation plus `index.json` under `~/etc/data/ollamarun/sessions/`.
@@ -46,81 +63,121 @@ docstring convention) — it is binding, not optional, for edits in this repo.
   through `trash-put`, never a raw unlink.
 - Inspection-style flags (`--list`, `--show`, `--search`, `--export`) share
   one output convention: rich table by default, `--json`/`--csv`/`--markdown`
-  plus `--out FILE` to redirect — implemented once in `emit()` (~line 2531)
-  and reused by each `cli_*` function; new inspection commands should route
-  through it rather than hand-rolling output.
+  plus `--out FILE` to redirect — implemented once in `emit()`
+  (`ollamarun_lib/emit.py`) and reused by each `cli_*` function; new
+  inspection commands should route through it rather than hand-rolling
+  output.
+- Every module-level `console` used across the package is the same singleton
+  `rich.Console` instance, created once in `ollamarun_lib/constants.py` and
+  imported (`from .constants import console`) wherever it's printed to —
+  don't construct a second `Console()` for real output, only for tests that
+  need to redirect/record it.
 
 ## Architecture
 
-The file is organized top-to-bottom as pipeline stages, marked by `# ════`
-banner comments — read the banner nearest your line number to orient:
+`ollamarun_lib/` is organized as pipeline stages, one module per stage; read
+a module's own docstring for what lives there before editing:
 
-1. **Small helpers** (~L220) — ISO timestamps, id generation, bool/host/think
-   coercion, config load (`load_config`), logging setup.
-2. **Math: LaTeX → Unicode** (~L405) — regex-level conversion for inline math
-   and simple cases, with code fences/spans protected from the passes.
-3. **2D math layout engine** (~L540–1605) — a self-contained parser/box-layout
-   system for *display* math (`$$...$$`, `\[...\]`): `_tokenize_math` →
-   `_MathParser` → an AST of `M*` node classes (`MFrac`, `MSqrt`, `MScript`,
-   `MBigOp`, `MMatrix`, `MCases`, `MAligned`, `MBoxed`, etc.) → `_layout()`
-   builds a `_Box` (list-of-strings + width) recursively → `_flatten()` is
-   the plain-text fallback path. `render_display_math()`/`render_inline_math()`
+1. **`constants.py`** — shared stdlib/`rich`/optional-dependency imports,
+   `VERSION`, config/session/log paths, `THEME`, the shared `console`
+   singleton, `DEFAULT_CONFIG`. Every other module sits on top of this one.
+2. **`helpers.py`** — small helpers: ISO timestamps, id generation,
+   bool/host/think coercion, config load (`load_config`), logging setup.
+3. **`mathrender.py`** — LaTeX → Unicode, combined in one module because the
+   two halves call into each other: regex-level conversion for inline math
+   (`convert_math`, `latex_to_unicode`) falls through to the 2D layout
+   engine's `render_inline_math` for inline math, and the layout engine
+   falls back to `convert_math`/`latex_to_unicode` for anything unsupported.
+   The layout engine is a self-contained parser/box-layout system for
+   *display* math (`$$...$$`, `\[...\]`): `_tokenize_math` → `_MathParser` →
+   an AST of `M*` node classes (`MFrac`, `MSqrt`, `MScript`, `MBigOp`,
+   `MMatrix`, `MCases`, `MAligned`, `MBoxed`, etc.) → `_layout()` builds a
+   `_Box` (list-of-strings + width) recursively → `_flatten()` is the
+   plain-text fallback path. `render_display_math()`/`render_inline_math()`
    are the public entry points; both must never raise — anything unsupported
    (unknown environment, over-wide, over-budget) falls through to
-   `pylatexenc` via `convert_math()`. Changes here need care: the layout is
-   hand-rolled string-grid arithmetic, not a real typesetting library.
-4. **`@file` mentions** (~L1608) — `expand_file_mentions()` inlines file
+   `pylatexenc`. This module also has `render_content()`/`render_thinking()`
+   (markdown + centered display math, used by the renderer and REPL).
+   Changes here need care: the layout is hand-rolled string-grid arithmetic,
+   not a real typesetting library.
+4. **`files.py`** — `@file` mentions: `expand_file_mentions()` inlines file
    contents into a prompt.
-5. **Images** (~L1646) — `encode_image`/`image_payload`, base64 embedding
-   with `max_file_kb` truncation.
-6. **Streaming renderer** (~L1678) — `Renderer` class drives a `rich.Live`
-   view: incremental markdown re-render while tokens stream, the collapsible
+5. **`images.py`** — `encode_image`/`image_payload`, base64 embedding with
+   `max_file_kb` truncation.
+6. **`renderer.py`** — `Renderer` class drives a `rich.Live` view:
+   incremental markdown re-render while tokens stream, the collapsible
    thinking panel (`render_thinking`, Ctrl+T pager handoff), and
-   `TpsEstimator` for the live `~tok/s` footer. This is the piece that talks
-   to the terminal frame-by-frame; changes to streaming UX go here.
-7. **Ollama HTTP client** (~L2078) — `OllamaClient` wraps `/api/chat`,
-   `/api/generate`, `/api/embed`, `/api/ps`, `/api/create` etc. over raw
-   `requests`, streaming response bodies line-by-line. `build_chat_payload()`
-   assembles the request body from CLI args + session history.
-8. **Session storage** (~L2237) — `Session` (in-memory conversation model:
-   messages, model, system prompt, options) and `SessionStore` (atomic
-   read/write of the JSON files + `index.json`, list/search/export/delete).
+   `TpsEstimator` for the live `~tok/s` footer. Also has the chat-bubble
+   helpers (`user_message_box`, small right-aligned box for a user turn;
+   `model_message_panel`, full-width titled box for a model turn) and
+   `render_transcript()` (replays a saved session the way it looked live,
+   used by `/show`/`--show`). This is the piece that talks to the terminal
+   frame-by-frame; changes to streaming UX go here.
+7. **`client.py`** — `OllamaClient` wraps `/api/chat`, `/api/generate`,
+   `/api/embed`, `/api/ps`, `/api/create` etc. over raw `requests`,
+   streaming response bodies line-by-line. `build_chat_payload()` assembles
+   the request body from CLI args + session history.
+8. **`session.py`** — `Session` (in-memory conversation model: messages,
+   model, system prompt, options) and `SessionStore` (atomic read/write of
+   the JSON files + `index.json`, list/search/export/delete).
    `export_markdown`/`export_json`/`export_html` are the three export
    formats.
-9. **Output convention** (~L2529) — `emit()` plus the `cli_list`/`cli_search`/
-   `cli_show`/`cli_export`/`cli_delete` functions that implement the
-   non-interactive inspection flags.
-10. **Interactive helpers** (~L2768) — `open_in_editor` (`$OLLAMA_EDITOR`),
+9. **`emit.py`** — `emit()` plus the `cli_list`/`cli_search`/`cli_show`/
+   `cli_export`/`cli_delete` functions that implement the non-interactive
+   inspection flags.
+10. **`interactive.py`** — `open_in_editor` (`$OLLAMA_EDITOR`),
     `pick_model`/`pick_session` (fuzzy pickers), `model_context_length`
-    (reads context window from `/api/show` + GGUF header heuristics),
-    `SlashCompleter` (prompt_toolkit completion for `/commands`, session ids,
-    models, `@files`).
-11. **REPL** (~L2844 `Repl` class, then ~L3128–3820 `cmd_*` functions) — each
-    slash command (`/set`, `/show`, `/load`, `/save`, `/undo`, `/retry`,
-    `/edit`, `/branch`, `/context`, `/summarize`, `/image`, `/render`,
-    `/math`, `/pager`, `/tps`, `/copy`, `/export`, `/stats`, `/thinking`,
-    ...) is a standalone `cmd_NAME(repl, argument)` function dispatched by
-    name; add a new slash command by adding one function here and wiring it
-    into the dispatch table in `Repl`.
-12. **One-shot / embedding runs** (~L3822) — `run_once()` (non-REPL path) and
-    `run_embed()` (routes embedding-capable models to `/api/embed` instead of
-    chat).
-13. **CLI** (~L3915) — `build_parser()` (the full argparse surface, mirroring
+    (reads context window from `/api/show`).
+11. **`repl.py`** — `SlashCompleter` (prompt_toolkit completion for
+    `/commands`, session ids, models, `@files`), the `Repl` class, then the
+    `cmd_*` functions. Each slash command (`/set`, `/show`, `/load`, `/save`,
+    `/undo`, `/retry`, `/edit`, `/branch`, `/context`, `/summarize`,
+    `/image`, `/render`, `/math`, `/pager`, `/tps`, `/ps`, `/num-ctx`,
+    `/copy`, `/export`, `/stats`, `/thinking`, ...) is a standalone
+    `cmd_NAME(repl, argument)` function dispatched by name through
+    `COMMAND_HANDLERS`; add a new slash command by adding one function here
+    and wiring it into `COMMAND_INFO`/`COMMAND_HANDLERS` (and the
+    `build_parser()` epilog in `cli.py` if it's worth advertising there).
+    `ps_table()`/`resolve_num_ctx()` also live here since `cmd_ps`/
+    `cmd_num_ctx` are their only callers (`resolve_num_ctx` is reused by
+    `main()` in `cli.py` for `--num-ctx`).
+12. **`run.py`** — `run_once()` (non-REPL path, built on an already-constructed
+    `Repl`) and `run_embed()` (routes embedding-capable models to
+    `/api/embed` instead of chat).
+13. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
     every `ollama run` flag), `resolve_model`/`resolve_session` (figuring out
     what model/session a given invocation means, including the `-c`/`-r`/
     `--session` disambiguation in `normalize_argv`), and `main()` as the
-    entry point.
+    entry point (called by the top-level `ollamarun` script).
 
 Model housekeeping (unload-before-switch, unload-on-exit, embedding models
 always resident) is cross-cutting logic that lives in the REPL commands
-(`cmd_model`, `cmd_load`) and `main()`'s exit path, coordinated through
-`/api/ps` lookups in `OllamaClient` — not a separate module.
+(`cmd_model`, `cmd_load`, both in `repl.py`) and `main()`'s exit path
+(`cli.py`), coordinated through `/api/ps` lookups in `OllamaClient` — not a
+separate module.
+
+Cross-module imports follow the numbering above (a module only imports from
+one earlier in the list, plus `constants.py`/`helpers.py` from anywhere) —
+keep new code on that side of the dependency graph rather than reaching
+"backwards" (e.g. don't import from `repl.py` inside `renderer.py`); use
+`typing.TYPE_CHECKING` for a backwards-pointing type hint only, the way
+`renderer.py` does for `Session` (defined later, in `session.py`).
 
 ## Testing notes
 
-`test_ollamarun.py` is table-driven: most sections are a `CASES`-style list
-of `(name, input, predicate)` tuples run through a small harness at the
-bottom of the file, mirroring the pattern documented in `~/bin/AGENTS.md`
-(`test_modelbenchmark.py` is the canonical example there). The math-rendering
-tests (`MATH_CASES`) are the largest block and the most likely place a change
-to the layout engine (stage 3 above) will need new coverage.
+`test_ollamarun.py` is table-driven: some sections are a `CASES`-style list
+of `(name, input, predicate)` tuples run through a small harness, others are
+a `test_*() -> int` function that prints `PASS`/`FAIL` lines and returns a
+failure count, mirroring the pattern documented in `~/bin/AGENTS.md`
+(`test_modelbenchmark.py` is the canonical example there); all `test_*`
+functions are summed in the `if __name__ == "__main__":` block at the
+bottom. The math-rendering tests (`MATH_CASES`) are the largest block and
+the most likely place a change to the layout engine (`mathrender.py`) will
+need new coverage. `OllamaClient` is tested against a fake `requests.Session`
+(`_FakeSession`/`_FakeResponse`) rather than a real HTTP mock library;
+REPL/CLI-level tests use `_FakeClient` (a lighter double with the handful of
+methods those layers actually call) instead. Console output assertions that
+capture the shared `console` singleton (`with orun.console.capture() as cap:`)
+should go through the `_plain()` helper before substring-matching, since
+`rich`'s automatic number/keyword highlighting can split a literal substring
+across ANSI color codes.
