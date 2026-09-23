@@ -17,10 +17,13 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from rich import box
+from rich.live import Live
 from rich.markup import escape
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
+from rich.spinner import Spinner
 from rich.table import Table
+from rich.text import Text
 
 from .client import OllamaClient, OllamaError, build_chat_payload
 from .constants import (
@@ -258,27 +261,28 @@ class Repl:
         return True
 
     def _preload_model(self) -> None:
-        """Starts loading the session's model in the background so it's
-        already warm by the time the first message is sent, instead of
-        waiting for the user to type something."""
+        """Starts loading the session's model right away, showing the same
+        animated "waiting for model" spinner used while streaming a
+        response, instead of waiting for the user to send a message."""
         model = self.session.model
         if not model:
             return
         keepalive = self.session.keepalive or self.args.keepalive
-        if console.is_terminal:
-            console.print(f"[dim]loading {escape(model)}…[/dim]")
 
         def _load() -> None:
             try:
                 self.client.load(model, keepalive=keepalive)
             except OllamaError:
-                return
-            if console.is_terminal:
-                self._maybe_show_ps()
+                pass
 
         thread = threading.Thread(target=_load, daemon=True)
         self._preload_thread = thread
         thread.start()
+        if console.is_terminal:
+            spinner = Spinner("dots", text=Text(f" waiting for {model}…", style="dim"))
+            with Live(spinner, console=console, refresh_per_second=10, transient=True):
+                thread.join()
+            self._maybe_show_ps()
 
     def _maybe_show_ps(self) -> None:
         """Prints `ollama ps` the first time this session's model shows up loaded."""
@@ -318,6 +322,8 @@ class Repl:
                 console.print(f"[dim]waiting for {escape(self.session.model)} "
                               f"to finish loading…[/dim]")
             self._preload_thread.join()
+            if console.is_terminal:
+                self._maybe_show_ps()
         renderer = self._renderer()
         marker = f"[ai]{escape(self.session.model)} ›[/ai]"
         if renderer.mode != "raw" and not renderer.live_render:

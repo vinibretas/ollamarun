@@ -2,9 +2,13 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.9
+Version: 1.10
 
 Summary of changes in this version:
+  - The "loading MODEL…" line the background preload printed at session
+    start is now the same animated dots spinner already used while waiting
+    for a response mid-stream ("waiting for MODEL…"), instead of a plain
+    static line -- reusing the existing widget rather than a one-off.
   - The background model preload now prints a "loading MODEL…" line as soon
     as the session starts, so there's a visible sign it's happening instead
     of the model silently warming up with no feedback. If a message is sent
