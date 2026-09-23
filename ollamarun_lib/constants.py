@@ -73,7 +73,7 @@ except ImportError:  # pragma: no cover - fallback path
     HAS_PYLATEXENC = False
     LatexNodes2Text = None
 
-VERSION = "1.4"
+VERSION = "1.5"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()

@@ -1042,7 +1042,12 @@ def cmd_image(repl: Repl, argument: str) -> None:
         repl.pending_images = []
         console.print("[ok]cleared[/ok]")
         return
-    for token in argument.split():
+    try:
+        tokens = shlex.split(argument)
+    except ValueError as exc:
+        console.print(f"[err]{exc}[/err]")
+        return
+    for token in tokens:
         path = Path(os.path.expanduser(token))
         try:
             repl.pending_images.append(encode_image(path, repl.image_storage))
