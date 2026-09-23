@@ -3,11 +3,11 @@
 Run: python3 test_ollamarun.py
 """
 import base64
-import importlib.machinery
-import importlib.util
+import contextlib
 import io
 import json
 import os
+import re
 import shutil
 import struct
 import sys
@@ -15,15 +15,19 @@ import tempfile
 import zlib
 from pathlib import Path
 
+import requests
 from rich.console import Console
 
-MODULE = Path(__file__).parent / "ollamarun"
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
-loader = importlib.machinery.SourceFileLoader("ollamarun", str(MODULE))
-spec = importlib.util.spec_from_loader("ollamarun", loader)
-orun = importlib.util.module_from_spec(spec)
-sys.modules["ollamarun"] = orun
-loader.exec_module(orun)
+
+def _plain(text: str) -> str:
+    """Strips ANSI color codes so number/keyword highlighting doesn't split substrings."""
+    return _ANSI_RE.sub("", text)
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+import ollamarun_lib as orun
 
 MATH_CASES = [
     ("inline compact",
@@ -641,10 +645,12 @@ def test_tps_estimator() -> int:
 
 
 class _FakeClient:
-    def __init__(self, resident=(), models=()):
+    def __init__(self, resident=(), models=(), ps_entries=(), show_data=None):
         self.base = "http://fake:11434"
         self.resident = list(resident)
         self.models = list(models)
+        self.ps_entries = list(ps_entries)
+        self.show_data = show_data
         self.unloaded = []
 
     def is_resident(self, model):
@@ -657,7 +663,10 @@ class _FakeClient:
         return [{"name": name} for name in self.models]
 
     def show(self, model):
-        return {}
+        return self.show_data if self.show_data is not None else {}
+
+    def ps(self):
+        return list(self.ps_entries)
 
     def model_exists(self, model):
         return model in self.models
@@ -790,6 +799,480 @@ def test_naive_title() -> int:
     return failures
 
 
+def test_chat_bubbles() -> int:
+    failures = 0
+    console = Console(width=80, force_terminal=False)
+
+    box_ = orun.user_message_box("hello", console)
+    if isinstance(box_, orun.Align) and box_.align == "right":
+        print("PASS  user_message_box right-aligns")
+    else:
+        print(f"FAIL  user_message_box alignment: {box_}")
+        failures += 1
+
+    panel = box_.renderable
+    if isinstance(panel, orun.Panel) and panel.width == 12 and panel.border_style == "you" \
+            and panel.title == "you":
+        print("PASS  user_message_box floors narrow content to a minimum width")
+    else:
+        print(f"FAIL  user_message_box panel: width={panel.width} title={panel.title}")
+        failures += 1
+
+    wide_panel = orun.user_message_box("x" * 200, console).renderable
+    if wide_panel.width == 72:
+        print("PASS  user_message_box caps width at 72")
+    else:
+        print(f"FAIL  user_message_box width cap: {wide_panel.width}")
+        failures += 1
+
+    model_panel = orun.model_message_panel("body", "llama3:latest")
+    if model_panel.title == "llama3:latest ›" and model_panel.border_style == "ai":
+        print("PASS  model_message_panel titles with the model name")
+    else:
+        print(f"FAIL  model_message_panel title: {model_panel.title}")
+        failures += 1
+
+    if orun.model_message_panel("body", "").title == "assistant":
+        print("PASS  model_message_panel falls back to 'assistant' with no model")
+    else:
+        print("FAIL  model_message_panel fallback title")
+        failures += 1
+    return failures
+
+
+def test_render_transcript_bubbles() -> int:
+    failures = 0
+    session = orun.Session.create("m1", "http://h", title="chat")
+    session.add_message("user", "hello there")
+    session.add_message("assistant", "hi, how can I help?")
+    buffer = io.StringIO()
+    console = Console(file=buffer, width=100, force_terminal=False, theme=orun.THEME)
+    orun.render_transcript(session, console, show_stats=False)
+    out = buffer.getvalue()
+    if "hello there" in out and "hi, how can I help" in out and "m1" in out:
+        print("PASS  render_transcript renders user/model chat bubbles")
+    else:
+        print(f"FAIL  render_transcript bubbles: {out!r}")
+        failures += 1
+    return failures
+
+
+def test_ps_table_and_cmd_ps() -> int:
+    failures = 0
+    entries = [{"name": "llama3:latest", "size": 4_000_000_000, "size_vram": 3_500_000_000,
+                "details": {"quantization_level": "Q4_0"}, "expires_at": "2026-01-01T00:00:00Z"}]
+    table = orun.ps_table(entries)
+    with orun.console.capture() as cap:
+        orun.console.print(table)
+    out = cap.get()
+    if "llama3:latest" in out and "Q4_0" in out and "GiB" in out:
+        print("PASS  ps_table renders model/quant/size columns")
+    else:
+        print(f"FAIL  ps_table: {out!r}")
+        failures += 1
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+        config = dict(orun.DEFAULT_CONFIG)
+
+        empty_client = _FakeClient()
+        repl = orun.Repl(args, config, empty_client, store, orun.Session.create("m1", empty_client.base))
+        with orun.console.capture() as cap:
+            orun.cmd_ps(repl, "")
+        if "no models currently loaded" in cap.get():
+            print("PASS  cmd_ps reports an empty ps list")
+        else:
+            print(f"FAIL  cmd_ps empty: {cap.get()!r}")
+            failures += 1
+
+        full_client = _FakeClient(ps_entries=entries)
+        repl2 = orun.Repl(args, config, full_client, store, orun.Session.create("m1", full_client.base))
+        with orun.console.capture() as cap:
+            orun.cmd_ps(repl2, "")
+        if "llama3:latest" in cap.get():
+            print("PASS  cmd_ps prints the ollama ps table")
+        else:
+            print(f"FAIL  cmd_ps table: {cap.get()!r}")
+            failures += 1
+    return failures
+
+
+def test_maybe_show_ps() -> int:
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+        config = dict(orun.DEFAULT_CONFIG)
+        entries = [{"name": "m1", "size": 100, "size_vram": 50, "details": {}, "expires_at": None}]
+        client = _FakeClient(resident=["m1"], models=["m1"], ps_entries=entries)
+        repl = orun.Repl(args, config, client, store, orun.Session.create("m1", client.base))
+
+        with orun.console.capture() as cap:
+            repl._maybe_show_ps()
+        first = cap.get()
+        with orun.console.capture() as cap:
+            repl._maybe_show_ps()
+        second = cap.get()
+        if "m1" in first and second == "":
+            print("PASS  _maybe_show_ps prints ollama ps only once per model")
+        else:
+            print(f"FAIL  _maybe_show_ps: first={first!r} second={second!r}")
+            failures += 1
+
+        client2 = _FakeClient(resident=[], models=["m1"])
+        repl2 = orun.Repl(args, config, client2, store, orun.Session.create("m1", client2.base))
+        with orun.console.capture() as cap:
+            repl2._maybe_show_ps()
+        if cap.get() == "":
+            print("PASS  _maybe_show_ps is silent when the model isn't resident")
+        else:
+            print(f"FAIL  _maybe_show_ps non-resident: {cap.get()!r}")
+            failures += 1
+    return failures
+
+
+def test_resolve_num_ctx() -> int:
+    failures = 0
+    client = _FakeClient(show_data={"model_info": {"llama.context_length": 8192}})
+    applied, max_ctx = orun.resolve_num_ctx(client, "m1", 32000)
+    if applied == 8192 and max_ctx == 8192:
+        print("PASS  resolve_num_ctx caps an over-large request to the model max")
+    else:
+        print(f"FAIL  resolve_num_ctx cap: applied={applied} max_ctx={max_ctx}")
+        failures += 1
+
+    applied2, max_ctx2 = orun.resolve_num_ctx(client, "m1", 4096)
+    if applied2 == 4096 and max_ctx2 == 8192:
+        print("PASS  resolve_num_ctx leaves an in-range request unchanged")
+    else:
+        print(f"FAIL  resolve_num_ctx unchanged: applied={applied2} max_ctx={max_ctx2}")
+        failures += 1
+
+    class _ErrClient(_FakeClient):
+        def show(self, model):
+            raise orun.OllamaError("unreachable")
+
+    applied3, max_ctx3 = orun.resolve_num_ctx(_ErrClient(), "m1", 999)
+    if applied3 == 999 and max_ctx3 is None:
+        print("PASS  resolve_num_ctx passes the request through when /api/show fails")
+    else:
+        print(f"FAIL  resolve_num_ctx unreachable server: {applied3}, {max_ctx3}")
+        failures += 1
+    return failures
+
+
+def test_cmd_num_ctx() -> int:
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+        config = dict(orun.DEFAULT_CONFIG)
+        client = _FakeClient(show_data={"model_info": {"llama.context_length": 8192}})
+        repl = orun.Repl(args, config, client, store, orun.Session.create("m1", client.base))
+
+        with orun.console.capture() as cap:
+            orun.cmd_num_ctx(repl, "32000")
+        out = _plain(cap.get())
+        if repl.session.parameters.get("num_ctx") == 8192 and "capped to 8192" in out:
+            print("PASS  /num-ctx caps an over-large request with a warning")
+        else:
+            print(f"FAIL  /num-ctx capping: {out!r} params={repl.session.parameters}")
+            failures += 1
+
+        with orun.console.capture() as cap:
+            orun.cmd_num_ctx(repl, "2048")
+        if repl.session.parameters.get("num_ctx") == 2048:
+            print("PASS  /num-ctx sets an in-range value without a warning")
+        else:
+            print(f"FAIL  /num-ctx in-range set: {repl.session.parameters}")
+            failures += 1
+
+        with orun.console.capture() as cap:
+            orun.cmd_num_ctx(repl, "")
+        out = _plain(cap.get())
+        if "num_ctx = 2048" in out and "model max 8192" in out:
+            print("PASS  /num-ctx with no argument reports the current value and max")
+        else:
+            print(f"FAIL  /num-ctx status: {out!r}")
+            failures += 1
+
+        with orun.console.capture() as cap:
+            orun.cmd_num_ctx(repl, "0")
+        if "positive integer" in cap.get():
+            print("PASS  /num-ctx rejects a non-positive value")
+        else:
+            print(f"FAIL  /num-ctx non-positive: {cap.get()!r}")
+            failures += 1
+
+        with orun.console.capture() as cap:
+            orun.cmd_num_ctx(repl, "abc")
+        if "usage:" in cap.get():
+            print("PASS  /num-ctx rejects a non-numeric value")
+        else:
+            print(f"FAIL  /num-ctx non-numeric: {cap.get()!r}")
+            failures += 1
+    return failures
+
+
+def test_emit_and_cli_functions() -> int:
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
+        session = orun.Session.create("m1", "http://h", title="alpha")
+        session.add_message("user", "find me please")
+        store.save(session)
+
+        args_table = orun.build_parser().parse_args(["--list"])
+        with orun.console.capture() as cap:
+            code = orun.cli_list(args_table, store)
+        if code == 0 and "alpha" in cap.get():
+            print("PASS  cli_list renders a table")
+        else:
+            print(f"FAIL  cli_list table: {cap.get()!r}")
+            failures += 1
+
+        args_json = orun.build_parser().parse_args(["--list", "--json"])
+        with orun.console.capture() as cap:
+            orun.cli_list(args_json, store)
+        try:
+            data = json.loads(cap.get())
+        except ValueError:
+            data = None
+        if isinstance(data, list) and data and data[0]["title"] == "alpha":
+            print("PASS  cli_list --json emits parseable JSON")
+        else:
+            print(f"FAIL  cli_list --json: {cap.get()!r}")
+            failures += 1
+
+        args_csv = orun.build_parser().parse_args(["--list", "--csv"])
+        with orun.console.capture() as cap:
+            orun.cli_list(args_csv, store)
+        out = cap.get()
+        if out.splitlines()[0].split(",")[0] == "id" and "alpha" in out:
+            print("PASS  cli_list --csv emits a CSV header")
+        else:
+            print(f"FAIL  cli_list --csv: {out!r}")
+            failures += 1
+
+        args_search = orun.build_parser().parse_args(["--search", "find", "--markdown"])
+        with orun.console.capture() as cap:
+            code = orun.cli_search(args_search, store)
+        out = cap.get()
+        if code == 0 and out.startswith("| id |") and "alpha" in out:
+            print("PASS  cli_search --markdown emits a markdown table")
+        else:
+            print(f"FAIL  cli_search markdown: {out!r}")
+            failures += 1
+
+        args_export = orun.build_parser().parse_args(
+            ["--export", session.id, "--export-format", "json"])
+        with orun.console.capture() as cap:
+            code = orun.cli_export(args_export, store)
+        if code == 0 and '"title": "alpha"' in cap.get():
+            print("PASS  cli_export --export-format json")
+        else:
+            print(f"FAIL  cli_export json: {cap.get()!r}")
+            failures += 1
+
+        args_missing = orun.build_parser().parse_args(["--show", "no-such-session"])
+        with orun.console.capture() as cap:
+            code = orun.cli_show(args_missing, store, dict(orun.DEFAULT_CONFIG))
+        if code == 1 and "no such session" in cap.get():
+            print("PASS  cli_show reports a missing session")
+        else:
+            print(f"FAIL  cli_show missing: {cap.get()!r}")
+            failures += 1
+    return failures
+
+
+def test_build_parser_flags() -> int:
+    failures = 0
+    parser = orun.build_parser()
+
+    args = parser.parse_args(["m1", "--num-ctx", "4096"])
+    if args.num_ctx == 4096:
+        print("PASS  --num-ctx parses to an int")
+    else:
+        print(f"FAIL  --num-ctx: {args.num_ctx!r}")
+        failures += 1
+
+    if parser.parse_args(["m1"]).num_ctx is None:
+        print("PASS  --num-ctx defaults to None")
+    else:
+        print("FAIL  --num-ctx default")
+        failures += 1
+
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            parser.parse_args(["m1", "--unload", "--keep-loaded"])
+        print("FAIL  --unload/--keep-loaded should be mutually exclusive")
+        failures += 1
+    except SystemExit:
+        print("PASS  --unload/--keep-loaded are mutually exclusive")
+
+    if orun.COMMAND_HANDLERS.get("/ps") is orun.cmd_ps \
+            and orun.COMMAND_HANDLERS.get("/num-ctx") is orun.cmd_num_ctx \
+            and "/ps" in orun.COMMAND_INFO and "/num-ctx" in orun.COMMAND_INFO:
+        print("PASS  /ps and /num-ctx are wired into the REPL command tables")
+    else:
+        print("FAIL  /ps or /num-ctx missing from the REPL command tables")
+        failures += 1
+    return failures
+
+
+def test_slash_completer() -> int:
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+        config = dict(orun.DEFAULT_CONFIG)
+        client = _FakeClient(models=["m1", "m2"])
+        repl = orun.Repl(args, config, client, store, orun.Session.create("m1", client.base))
+        repl.model_names = ["m1", "m2"]
+        completer = orun.SlashCompleter(repl)
+
+        class _Doc:
+            def __init__(self, text):
+                self.text_before_cursor = text
+
+        names = {c.text for c in completer.get_completions(_Doc("/nu"), None)}
+        if names == {"/num-ctx"}:
+            print("PASS  SlashCompleter completes slash commands")
+        else:
+            print(f"FAIL  SlashCompleter commands: {names}")
+            failures += 1
+
+        names = {c.text for c in completer.get_completions(_Doc("/model m"), None)}
+        if names == {"m1", "m2"}:
+            print("PASS  SlashCompleter completes model names after /model")
+        else:
+            print(f"FAIL  SlashCompleter models: {names}")
+            failures += 1
+    return failures
+
+
+class _FakeResponse:
+    def __init__(self, status=200, payload=None, text="", lines=None):
+        self.status_code = status
+        self._payload = payload
+        self.text = text
+        self._lines = lines or []
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("no json body")
+        return self._payload
+
+    def close(self):
+        pass
+
+    def iter_lines(self, decode_unicode=False):
+        yield from self._lines
+
+
+class _FakeSession:
+    def __init__(self, handler):
+        self.handler = handler
+
+    def request(self, method, url, *, json=None, stream=False, timeout=None, verify=None):
+        return self.handler(method, url, json, stream)
+
+
+def test_client_http() -> int:
+    failures = 0
+
+    def check(name, cond, detail=""):
+        nonlocal failures
+        if cond:
+            print(f"PASS  {name}")
+        else:
+            print(f"FAIL  {name} {detail}")
+            failures += 1
+
+    client = orun.OllamaClient("127.0.0.1:11434")
+
+    def ok_handler(method, url, payload, stream):
+        if url.endswith("/api/version"):
+            return _FakeResponse(200, {"version": "0.9.0"})
+        if url.endswith("/api/tags"):
+            return _FakeResponse(200, {"models": [{"name": "m1"}, {"name": "m2:latest"}]})
+        if url.endswith("/api/ps"):
+            return _FakeResponse(200, {"models": [{"name": "m1"}]})
+        if url.endswith("/api/show"):
+            return _FakeResponse(200, {"capabilities": ["completion"]})
+        raise AssertionError(f"unexpected url {url}")
+
+    client.http = _FakeSession(ok_handler)
+    check("version()", client.version() == "0.9.0")
+    check("tags()", [m["name"] for m in client.tags()] == ["m1", "m2:latest"])
+    check("resident_models()", client.resident_models() == ["m1"])
+    check("is_resident() canonicalizes tags", client.is_resident("m1:latest") is True)
+    check("is_resident() false for an absent model", client.is_resident("other") is False)
+    check("capabilities()", client.capabilities("m1") == ["completion"])
+    check("model_exists() true", client.model_exists("m1") is True)
+
+    def error_handler(method, url, payload, stream):
+        return _FakeResponse(404, payload={"error": "model not found"}, text="not found")
+
+    client.http = _FakeSession(error_handler)
+    try:
+        client.show("missing")
+        check("HTTP error raises OllamaError", False)
+    except orun.OllamaError as exc:
+        check("HTTP error raises OllamaError", "model not found" in str(exc))
+    check("model_exists() false on error", client.model_exists("missing") is False)
+
+    def bad_json_handler(method, url, payload, stream):
+        return _FakeResponse(200, payload=None, text="not json")
+
+    client.http = _FakeSession(bad_json_handler)
+    try:
+        client.version()
+        check("invalid JSON raises OllamaError", False)
+    except orun.OllamaError:
+        check("invalid JSON raises OllamaError", True)
+
+    class _ExplodingSession:
+        def request(self, *a, **k):
+            raise requests.RequestException("boom")
+
+    client.http = _ExplodingSession()
+    try:
+        client.version()
+        check("network failure raises OllamaError", False)
+    except orun.OllamaError as exc:
+        check("network failure raises OllamaError", "cannot reach Ollama" in str(exc))
+
+    def stream_handler(method, url, payload, stream):
+        check("chat() streams with stream=True", payload.get("stream") is True)
+        return _FakeResponse(200, lines=[b'{"message": {"content": "a"}}', b"",
+                                         b'{"done": true}'])
+
+    client.http = _FakeSession(stream_handler)
+    events = list(client.chat({"model": "m1", "messages": []}))
+    check("chat() parses NDJSON and skips blank lines",
+          events == [{"message": {"content": "a"}}, {"done": True}])
+
+    def bad_chunk_handler(method, url, payload, stream):
+        return _FakeResponse(200, lines=[b"not-json"])
+
+    client.http = _FakeSession(bad_chunk_handler)
+    try:
+        list(client.stream_ndjson("/api/chat", {}))
+        check("bad NDJSON chunk raises OllamaError", False)
+    except orun.OllamaError:
+        check("bad NDJSON chunk raises OllamaError", True)
+
+    def unload_handler(method, url, payload, stream):
+        check("unload() posts keep_alive=0", payload == {"model": "m1", "keep_alive": 0})
+        return _FakeResponse(200, {})
+
+    client.http = _FakeSession(unload_handler)
+    client.unload("m1")
+    return failures
+
+
 if __name__ == "__main__":
     total = (test_math() + test_parsing_helpers() + test_stats_helpers()
              + test_file_mentions() + test_images() + test_session_store()
@@ -798,7 +1281,12 @@ if __name__ == "__main__":
              + test_thinking_display() + test_math_layout()
              + test_render_content() + test_tps_estimator()
              + test_unload_housekeeping() + test_context_length()
-             + test_naive_title())
+             + test_naive_title() + test_chat_bubbles()
+             + test_render_transcript_bubbles() + test_ps_table_and_cmd_ps()
+             + test_maybe_show_ps() + test_resolve_num_ctx()
+             + test_cmd_num_ctx() + test_emit_and_cli_functions()
+             + test_build_parser_flags() + test_slash_completer()
+             + test_client_http())
     if total:
         print(f"\n{total} failure(s)")
         sys.exit(1)
