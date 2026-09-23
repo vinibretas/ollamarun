@@ -2,9 +2,17 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.7
+Version: 1.8
 
 Summary of changes in this version:
+  - Fixed the model's response being printed twice at the end of a stream:
+    the live view's last frame could go stale (throttled refreshes may skip
+    the final chunk), and the code used to paper over that by printing the
+    whole rule + response a second time below it. It now forces one last
+    live refresh before the live view freezes, so nothing is rendered twice.
+  - `ollama ps` now prints as soon as the background-preloaded model finishes
+    loading (typically while you're still typing the first message), instead
+    of waiting until after the first response finished generating.
   - Model turns are now marked with a `rich` rule/divider instead of a full
     box, and the user/model chat colors are softer, muted pastel tones
     (was bold cyan/green) instead of the previous saturated colors.
