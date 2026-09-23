@@ -12,6 +12,7 @@ import shutil
 import struct
 import sys
 import tempfile
+import time
 import zlib
 from pathlib import Path
 
@@ -925,6 +926,55 @@ def test_preload_shows_ps_before_first_response() -> int:
     return failures
 
 
+def test_generate_waits_for_preload_before_showing_ps() -> int:
+    """If the user sends a message before the background preload finishes,
+    _generate() should wait for that same load instead of firing a second,
+    concurrent one via chat() -- and `ollama ps` should show up right then,
+    not only after the response finishes generating."""
+    failures = 0
+    original_force_terminal = orun.console._force_terminal
+    original_file = orun.console.file
+    orun.console._force_terminal = True
+    buffer = io.StringIO()
+    orun.console.file = buffer
+
+    class _SlowLoadClient(_FakeClient):
+        def load(self, model, *, keepalive=None):
+            time.sleep(0.15)
+            self.resident.append(model)
+            super().load(model, keepalive=keepalive)
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
+            args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+            config = dict(orun.DEFAULT_CONFIG)
+            entries = [{"name": "m1", "size": 100, "size_vram": 50, "details": {},
+                        "expires_at": None}]
+            client = _SlowLoadClient(models=["m1"], ps_entries=entries)
+            repl = orun.Repl(args, config, client, store, orun.Session.create("m1", client.base))
+            repl._build_prompt_session = lambda: None
+
+            repl._preload_model()
+            still_loading = (repl._preload_thread is not None
+                              and repl._preload_thread.is_alive())
+            repl.send("hi")
+        out = _plain(buffer.getvalue())
+        ps_pos = out.find("ollama ps")
+        marker_pos = out.find("m1 ›")
+        if still_loading and ps_pos != -1 and marker_pos != -1 and ps_pos < marker_pos:
+            print("PASS  ollama ps shows up before the response when the message "
+                  "was sent while the model was still preloading")
+        else:
+            print(f"FAIL  generate/preload ordering: still_loading={still_loading} "
+                  f"ps_pos={ps_pos} marker_pos={marker_pos} out={out!r}")
+            failures += 1
+    finally:
+        orun.console._force_terminal = original_force_terminal
+        orun.console.file = original_file
+    return failures
+
+
 def test_empty_enter_sends_pending_images() -> int:
     failures = 0
     with tempfile.TemporaryDirectory() as tmp:
@@ -1489,6 +1539,7 @@ if __name__ == "__main__":
              + test_render_content() + test_tps_estimator()
              + test_unload_housekeeping() + test_preload_model()
              + test_preload_shows_ps_before_first_response()
+             + test_generate_waits_for_preload_before_showing_ps()
              + test_empty_enter_sends_pending_images() + test_context_length()
              + test_naive_title() + test_chat_bubbles()
              + test_render_transcript_bubbles() + test_ps_table_and_cmd_ps()
