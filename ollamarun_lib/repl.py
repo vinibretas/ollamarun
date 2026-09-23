@@ -181,6 +181,8 @@ class Repl:
         self._pt_session: Optional[Any] = None
         self._ps_shown_for: set[str] = set()
         self._preload_thread: Optional[threading.Thread] = None
+        self._preload_live: Optional[Live] = None
+        self._preload_spinner_stopped: Optional[threading.Event] = None
 
     # ── prompt plumbing ─────────────────────────────────────────────────────
 
@@ -261,28 +263,49 @@ class Repl:
         return True
 
     def _preload_model(self) -> None:
-        """Starts loading the session's model right away, showing the same
-        animated "waiting for model" spinner used while streaming a
-        response, instead of waiting for the user to send a message."""
+        """Starts loading the session's model in the background -- without
+        blocking the prompt from appearing -- showing the same animated
+        "waiting for model" spinner used mid-stream while it loads."""
         model = self.session.model
         if not model:
             return
         keepalive = self.session.keepalive or self.args.keepalive
+        spinner_stopped = threading.Event()
+        self._preload_spinner_stopped = spinner_stopped
 
         def _load() -> None:
             try:
                 self.client.load(model, keepalive=keepalive)
             except OllamaError:
-                pass
+                return
+            # Don't print from this thread while the spinner's Live view is
+            # still animating -- a foreign print during that window can
+            # corrupt Live's own redraw. _stop_preload_spinner() releases
+            # this once it's safe (right before the prompt can be typed
+            # into, or immediately if there's no spinner to wait on).
+            spinner_stopped.wait()
+            if console.is_terminal:
+                self._maybe_show_ps()
 
         thread = threading.Thread(target=_load, daemon=True)
         self._preload_thread = thread
         thread.start()
         if console.is_terminal:
             spinner = Spinner("dots", text=Text(f" waiting for {model}…", style="dim"))
-            with Live(spinner, console=console, refresh_per_second=10, transient=True):
-                thread.join()
-            self._maybe_show_ps()
+            self._preload_live = Live(spinner, console=console, refresh_per_second=10,
+                                      transient=True)
+            self._preload_live.start()
+        else:
+            spinner_stopped.set()
+
+    def _stop_preload_spinner(self) -> None:
+        """Clears the startup spinner once the synchronous setup (banner,
+        model refresh) is done, right before the prompt can accept input."""
+        if self._preload_live is not None:
+            self._preload_live.stop()
+            self._preload_live = None
+        if self._preload_spinner_stopped is not None:
+            self._preload_spinner_stopped.set()
 
     def _maybe_show_ps(self) -> None:
         """Prints `ollama ps` the first time this session's model shows up loaded."""
@@ -391,6 +414,7 @@ class Repl:
         self._pt_session = self._build_prompt_session()
         self._banner()
         self._context_warning()
+        self._stop_preload_spinner()
         try:
             while True:
                 prompt_text = f"{shortcut(self.session.model, 24)} › "

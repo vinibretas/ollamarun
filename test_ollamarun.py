@@ -929,9 +929,10 @@ def test_preload_shows_ps_before_first_response() -> int:
 
 def test_preload_uses_the_streaming_spinner() -> int:
     """_preload_model() should show the same animated Spinner used while
-    streaming a response (not a plain static line), and it should finish
-    loading (and show ps) before returning, so the model is already resident
-    by the time the interactive loop can accept a message."""
+    streaming a response (not a plain static line), without blocking the
+    prompt from appearing -- ollama ps only shows up once
+    _stop_preload_spinner() (called from run(), right before the prompt can
+    accept input) releases it."""
     failures = 0
     original_force_terminal = orun.console._force_terminal
     original_file = orun.console.file
@@ -950,15 +951,21 @@ def test_preload_uses_the_streaming_spinner() -> int:
             repl._build_prompt_session = lambda: None
 
             repl._preload_model()
-            loaded_before_return = (repl._preload_thread is not None
-                                     and not repl._preload_thread.is_alive())
+            non_blocking = (repl._preload_thread is not None
+                             and repl._preload_thread.is_alive())
+            time.sleep(0.1)  # let the Live's own refresh thread paint a frame
+            before_release = _plain(buffer.getvalue())
+            repl._stop_preload_spinner()
+            if repl._preload_thread is not None:
+                repl._preload_thread.join(timeout=2)
         out = _plain(buffer.getvalue())
-        if (loaded_before_return and "waiting for m1" in out and "ollama ps" in out):
+        if (non_blocking and "waiting for m1" in before_release
+                and "ollama ps" not in before_release and "ollama ps" in out):
             print("PASS  preload shows the animated waiting-for-model spinner "
-                  "and finishes loading before returning")
+                  "without blocking the prompt")
         else:
-            print(f"FAIL  preload spinner: loaded_before_return={loaded_before_return} "
-                  f"out={out!r}")
+            print(f"FAIL  preload spinner: non_blocking={non_blocking} "
+                  f"before_release={before_release!r} out={out!r}")
             failures += 1
     finally:
         orun.console._force_terminal = original_force_terminal

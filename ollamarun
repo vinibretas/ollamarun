@@ -2,9 +2,15 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.10
+Version: 1.11
 
 Summary of changes in this version:
+  - Fixed a regression from the previous version, which had accidentally
+    made the startup model preload block the prompt from appearing until
+    loading finished. It's non-blocking again: the "waiting for MODEL…"
+    spinner now runs in the background and clears itself once the prompt
+    is ready to accept input, without waiting for the model to finish
+    loading. Only sending an actual message still waits on that load.
   - The "loading MODEL…" line the background preload printed at session
     start is now the same animated dots spinner already used while waiting
     for a response mid-stream ("waiting for MODEL…"), instead of a plain
