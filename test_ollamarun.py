@@ -237,6 +237,48 @@ def test_images() -> int:
     return failures
 
 
+def test_cmd_image() -> int:
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        spaced = Path(tmp) / "my photo.png"
+        spaced.write_bytes(_tiny_png())
+        plain = Path(tmp) / "plain.png"
+        plain.write_bytes(_tiny_png())
+
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+        config = dict(orun.DEFAULT_CONFIG)
+        client = _FakeClient()
+        repl = orun.Repl(args, config, client, store, orun.Session.create("m1", client.base))
+
+        with orun.console.capture() as cap:
+            orun.cmd_image(repl, f'"{spaced}"')
+        out = _plain(cap.get())
+        if len(repl.pending_images) == 1 and "my photo.png" in out:
+            print("PASS  /image attaches a quoted path containing spaces")
+        else:
+            print(f"FAIL  /image quoted path: {out!r} pending={repl.pending_images}")
+            failures += 1
+
+        with orun.console.capture() as cap:
+            orun.cmd_image(repl, str(plain))
+        if len(repl.pending_images) == 2:
+            print("PASS  /image still accepts an unquoted plain path")
+        else:
+            print(f"FAIL  /image unquoted path: pending={repl.pending_images}")
+            failures += 1
+
+        with orun.console.capture() as cap:
+            orun.cmd_image(repl, f'"{spaced}')
+        out = _plain(cap.get())
+        if len(repl.pending_images) == 2 and out.strip():
+            print("PASS  /image reports an error on unbalanced quoting without crashing")
+        else:
+            print(f"FAIL  /image unbalanced quoting: {out!r} pending={repl.pending_images}")
+            failures += 1
+    return failures
+
+
 def test_session_store() -> int:
     failures = 0
     with tempfile.TemporaryDirectory() as tmp:
@@ -1286,7 +1328,7 @@ if __name__ == "__main__":
              + test_maybe_show_ps() + test_resolve_num_ctx()
              + test_cmd_num_ctx() + test_emit_and_cli_functions()
              + test_build_parser_flags() + test_slash_completer()
-             + test_client_http())
+             + test_client_http() + test_cmd_image())
     if total:
         print(f"\n{total} failure(s)")
         sys.exit(1)
