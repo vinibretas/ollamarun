@@ -13,17 +13,15 @@ import os
 import re
 import shlex
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from rich import box
-from rich.live import Live
 from rich.markup import escape
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
-from rich.spinner import Spinner
 from rich.table import Table
-from rich.text import Text
 
 from .client import OllamaClient, OllamaError, build_chat_payload
 from .constants import (
@@ -38,6 +36,7 @@ from .constants import (
     KeyBindings,
     PromptSession,
     console,
+    patch_stdout,
     pyperclip,
 )
 from .files import expand_file_mentions
@@ -181,8 +180,6 @@ class Repl:
         self._pt_session: Optional[Any] = None
         self._ps_shown_for: set[str] = set()
         self._preload_thread: Optional[threading.Thread] = None
-        self._preload_live: Optional[Live] = None
-        self._preload_spinner_stopped: Optional[threading.Event] = None
 
     # ── prompt plumbing ─────────────────────────────────────────────────────
 
@@ -218,12 +215,34 @@ class Repl:
 
         try:
             return PromptSession(history=history, completer=SlashCompleter(self),
-                                 key_bindings=bindings, complete_while_typing=True)
+                                 key_bindings=bindings, complete_while_typing=True,
+                                 rprompt=self._loading_rprompt,
+                                 refresh_interval=0.1)
         except Exception:
             return None
 
+    _SPINNER_FRAMES = "⠋⠙⠹⠸⠴⠦⠧⠇"
+
+    def _loading_rprompt(self) -> Optional[str]:
+        """Right-side prompt text (same line as the input, right-aligned):
+        an animated "waiting for model" spinner for as long as the
+        background preload is still running, driven by the prompt
+        session's own refresh_interval -- this is what makes it show up
+        without blocking the prompt, unlike a separate rich.Live view
+        fighting prompt_toolkit for the terminal. `rprompt` (not
+        `bottom_toolbar`, which anchors to the terminal's last row and
+        leaves a large blank gap) keeps this on the prompt's own line."""
+        thread = self._preload_thread
+        if thread is None or not thread.is_alive():
+            return None
+        frame = self._SPINNER_FRAMES[int(time.monotonic() * 10) % len(self._SPINNER_FRAMES)]
+        return f"{frame} waiting for {self.session.model}… "
+
     def _read_line(self, message: str) -> str:
         if self._pt_session is not None:
+            if patch_stdout is not None:
+                with patch_stdout(raw=True):
+                    return self._pt_session.prompt(message)
             return self._pt_session.prompt(message)
         return input(message)
 
@@ -263,49 +282,29 @@ class Repl:
         return True
 
     def _preload_model(self) -> None:
-        """Starts loading the session's model in the background -- without
-        blocking the prompt from appearing -- showing the same animated
-        "waiting for model" spinner used mid-stream while it loads."""
+        """Starts loading the session's model in the background so it's
+        already warm by the time the first message is sent, without
+        blocking the prompt from appearing -- see _loading_rprompt() for
+        the "waiting for model" indicator shown while this runs, and
+        _read_line()'s use of patch_stdout() for how `ollama ps` (printed
+        below, once loading finishes) safely interleaves with an active
+        prompt instead of corrupting it."""
         model = self.session.model
         if not model:
             return
         keepalive = self.session.keepalive or self.args.keepalive
-        spinner_stopped = threading.Event()
-        self._preload_spinner_stopped = spinner_stopped
 
         def _load() -> None:
             try:
                 self.client.load(model, keepalive=keepalive)
             except OllamaError:
                 return
-            # Don't print from this thread while the spinner's Live view is
-            # still animating -- a foreign print during that window can
-            # corrupt Live's own redraw. _stop_preload_spinner() releases
-            # this once it's safe (right before the prompt can be typed
-            # into, or immediately if there's no spinner to wait on).
-            spinner_stopped.wait()
             if console.is_terminal:
                 self._maybe_show_ps()
 
         thread = threading.Thread(target=_load, daemon=True)
         self._preload_thread = thread
         thread.start()
-        if console.is_terminal:
-            spinner = Spinner("dots", text=Text(f" waiting for {model}…", style="dim"))
-            self._preload_live = Live(spinner, console=console, refresh_per_second=10,
-                                      transient=True)
-            self._preload_live.start()
-        else:
-            spinner_stopped.set()
-
-    def _stop_preload_spinner(self) -> None:
-        """Clears the startup spinner once the synchronous setup (banner,
-        model refresh) is done, right before the prompt can accept input."""
-        if self._preload_live is not None:
-            self._preload_live.stop()
-            self._preload_live = None
-        if self._preload_spinner_stopped is not None:
-            self._preload_spinner_stopped.set()
 
     def _maybe_show_ps(self) -> None:
         """Prints `ollama ps` the first time this session's model shows up loaded."""
@@ -414,7 +413,6 @@ class Repl:
         self._pt_session = self._build_prompt_session()
         self._banner()
         self._context_warning()
-        self._stop_preload_spinner()
         try:
             while True:
                 prompt_text = f"{shortcut(self.session.model, 24)} › "
