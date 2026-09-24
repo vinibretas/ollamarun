@@ -4,6 +4,7 @@ Run: python3 test_ollamarun.py
 """
 import base64
 import contextlib
+import inspect
 import io
 import json
 import os
@@ -927,49 +928,62 @@ def test_preload_shows_ps_before_first_response() -> int:
     return failures
 
 
-def test_preload_uses_the_streaming_spinner() -> int:
-    """_preload_model() should show the same animated Spinner used while
-    streaming a response (not a plain static line), without blocking the
-    prompt from appearing -- ollama ps only shows up once
-    _stop_preload_spinner() (called from run(), right before the prompt can
-    accept input) releases it."""
+def test_preload_loading_rprompt() -> int:
+    """_preload_model() must not block the prompt from appearing. The
+    "waiting for model" indicator is the prompt session's own animated
+    rprompt (see _loading_rprompt()), driven by its refresh_interval,
+    instead of a separate rich.Live view fighting prompt_toolkit for the
+    terminal -- that fight is what caused the garbled startup output and
+    vanishing spinner from a previous attempt at this. rprompt (not
+    bottom_toolbar, which anchors to the terminal's bottom row and leaves a
+    large blank gap -- confirmed with a pty-driven repro) keeps it on the
+    prompt's own line."""
     failures = 0
-    original_force_terminal = orun.console._force_terminal
-    original_file = orun.console.file
-    orun.console._force_terminal = True
-    buffer = io.StringIO()
-    orun.console.file = buffer
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
-            args = orun.build_parser().parse_args(["m1", "--render", "plain"])
-            config = dict(orun.DEFAULT_CONFIG)
-            entries = [{"name": "m1", "size": 100, "size_vram": 50, "details": {},
-                        "expires_at": None}]
-            client = _FakeClient(resident=["m1"], models=["m1"], ps_entries=entries)
-            repl = orun.Repl(args, config, client, store, orun.Session.create("m1", client.base))
-            repl._build_prompt_session = lambda: None
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+        config = dict(orun.DEFAULT_CONFIG)
 
-            repl._preload_model()
-            non_blocking = (repl._preload_thread is not None
-                             and repl._preload_thread.is_alive())
-            time.sleep(0.1)  # let the Live's own refresh thread paint a frame
-            before_release = _plain(buffer.getvalue())
-            repl._stop_preload_spinner()
-            if repl._preload_thread is not None:
-                repl._preload_thread.join(timeout=2)
-        out = _plain(buffer.getvalue())
-        if (non_blocking and "waiting for m1" in before_release
-                and "ollama ps" not in before_release and "ollama ps" in out):
-            print("PASS  preload shows the animated waiting-for-model spinner "
-                  "without blocking the prompt")
+        class _SlowLoadClient(_FakeClient):
+            def load(self, model, *, keepalive=None):
+                time.sleep(0.2)
+                super().load(model, keepalive=keepalive)
+
+        client = _SlowLoadClient(models=["m1"])
+        repl = orun.Repl(args, config, client, store, orun.Session.create("m1", client.base))
+
+        rprompt_before = repl._loading_rprompt()
+
+        t0 = time.monotonic()
+        repl._preload_model()
+        elapsed = time.monotonic() - t0
+        still_loading = repl._preload_thread is not None and repl._preload_thread.is_alive()
+        rprompt_while_loading = repl._loading_rprompt()
+
+        if repl._preload_thread is not None:
+            repl._preload_thread.join(timeout=2)
+        rprompt_after = repl._loading_rprompt()
+
+        if (rprompt_before is None and elapsed < 0.1 and still_loading
+                and rprompt_while_loading is not None and "waiting for m1" in rprompt_while_loading
+                and rprompt_after is None):
+            print("PASS  preload doesn't block, and the rprompt spinner "
+                  "reflects loading state correctly")
         else:
-            print(f"FAIL  preload spinner: non_blocking={non_blocking} "
-                  f"before_release={before_release!r} out={out!r}")
+            print(f"FAIL  preload rprompt: rprompt_before={rprompt_before!r} "
+                  f"elapsed={elapsed:.3f} still_loading={still_loading} "
+                  f"rprompt_while_loading={rprompt_while_loading!r} "
+                  f"rprompt_after={rprompt_after!r}")
             failures += 1
-    finally:
-        orun.console._force_terminal = original_force_terminal
-        orun.console.file = original_file
+
+    if orun.HAS_PROMPT_TOOLKIT:
+        source = inspect.getsource(orun.Repl._read_line)
+        if "patch_stdout" in source:
+            print("PASS  _read_line wraps the prompt in patch_stdout so "
+                  "background prints don't corrupt it")
+        else:
+            print("FAIL  _read_line no longer uses patch_stdout")
+            failures += 1
     return failures
 
 
@@ -1588,7 +1602,7 @@ if __name__ == "__main__":
              + test_render_content() + test_tps_estimator()
              + test_unload_housekeeping() + test_preload_model()
              + test_preload_shows_ps_before_first_response()
-             + test_preload_uses_the_streaming_spinner()
+             + test_preload_loading_rprompt()
              + test_generate_waits_for_pending_preload_before_showing_ps()
              + test_empty_enter_sends_pending_images() + test_context_length()
              + test_naive_title() + test_chat_bubbles()

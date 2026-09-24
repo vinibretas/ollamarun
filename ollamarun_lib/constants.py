@@ -54,10 +54,12 @@ try:
     from prompt_toolkit.completion import Completer, Completion
     from prompt_toolkit.history import FileHistory
     from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.patch_stdout import patch_stdout
     HAS_PROMPT_TOOLKIT = True
 except ImportError:  # pragma: no cover - fallback path
     HAS_PROMPT_TOOLKIT = False
     PromptSession = Completer = Completion = FileHistory = KeyBindings = None
+    patch_stdout = None
 
 try:
     import pyperclip
@@ -73,7 +75,7 @@ except ImportError:  # pragma: no cover - fallback path
     HAS_PYLATEXENC = False
     LatexNodes2Text = None
 
-VERSION = "1.11"
+VERSION = "1.12"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
