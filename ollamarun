@@ -2,9 +2,19 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.11
+Version: 1.12
 
 Summary of changes in this version:
+  - Rewrote the startup "waiting for model" indicator again: the previous
+    two attempts (a rich Live spinner that ended up blocking the prompt,
+    then a prompt_toolkit bottom_toolbar) both turned out broken in a real
+    terminal -- the toolbar anchors to the terminal's last row, leaving a
+    large blank gap and never appearing near the prompt. It's now the
+    prompt's `rprompt` (right-aligned, same line as the input), animated via
+    the session's refresh_interval: visible immediately, updates in place,
+    doesn't block typing, and disappears once the model is resident. The
+    background thread's `ollama ps` print is now safely interleaved with the
+    active prompt via prompt_toolkit's own `patch_stdout()` helper.
   - Fixed a regression from the previous version, which had accidentally
     made the startup model preload block the prompt from appearing until
     loading finished. It's non-blocking again: the "waiting for MODEL…"
