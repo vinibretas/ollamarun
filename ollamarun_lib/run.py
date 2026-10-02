@@ -80,7 +80,10 @@ def run_once(args: argparse.Namespace, config: dict[str, Any], client: OllamaCli
         message = response.get("message") or {}
         session.add_message("assistant", message.get("content", ""),
                             thinking=message.get("thinking") or None)
-        session.record_turn(stats_from_final(response))
+        json_stats = stats_from_final(response)
+        session.record_turn(json_stats)
+        session.stats["last_prompt_tokens"] = json_stats.get("prompt_tokens")
+        session.stats["last_completion_tokens"] = json_stats.get("completion_tokens")
         if not args.no_save:
             store.save(session)
         if args.unload:
@@ -102,6 +105,7 @@ def run_once(args: argparse.Namespace, config: dict[str, Any], client: OllamaCli
     if result.stats:
         session.record_turn(result.stats)
         session.stats["last_prompt_tokens"] = result.stats.get("prompt_tokens")
+        session.stats["last_completion_tokens"] = result.stats.get("completion_tokens")
     if not args.no_save:
         store.save(session)
     if args.unload:

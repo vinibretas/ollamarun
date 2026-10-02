@@ -2,9 +2,16 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.12
+Version: 1.13
 
 Summary of changes in this version:
+  - Fixed context-window accounting: `/context`, the "context nearly full"
+    warning and auto-compact used only `last_prompt_tokens` (the
+    `prompt_eval_count` of the request that produced the last answer), which
+    excludes that answer even though it is re-sent on the next turn. They now
+    count prompt + completion tokens (the tokens the next request will carry),
+    so usage no longer under-reports by the length of the last reply. `cmd_stats`
+    gained `last completion`/`last context` rows, and `/summarize` resets both.
   - Rewrote the startup "waiting for model" indicator again: the previous
     two attempts (a rich Live spinner that ended up blocking the prompt,
     then a prompt_toolkit bottom_toolbar) both turned out broken in a real
