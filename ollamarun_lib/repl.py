@@ -366,6 +366,7 @@ class Repl:
         if result.stats:
             self.session.record_turn(result.stats)
             self.session.stats["last_prompt_tokens"] = result.stats.get("prompt_tokens")
+            self.session.stats["last_completion_tokens"] = result.stats.get("completion_tokens")
         if not self.no_save:
             self.store.save(self.session)
         if console.is_terminal and not result.error:
@@ -467,6 +468,16 @@ class Repl:
         console.print(Panel("\n".join(lines), title="ollamarun", border_style="cyan",
                             title_align="left"))
 
+    def context_used(self) -> Optional[int]:
+        """Tokens that the next request will carry: the last prompt plus the
+        output just generated (both are re-sent; `prompt_eval_count` alone
+        omits the assistant reply that was appended after it was counted)."""
+        prompt = self.session.stats.get("last_prompt_tokens")
+        completion = self.session.stats.get("last_completion_tokens")
+        if prompt is None and completion is None:
+            return None
+        return (prompt or 0) + (completion or 0)
+
     def _context_warning(self) -> None:
         if not self.session.messages:
             return
@@ -475,7 +486,7 @@ class Repl:
         except OllamaError:
             return
         total = model_context_length(show, self.session.parameters)
-        used = self.session.stats.get("last_prompt_tokens")
+        used = self.context_used()
         if total and used and used / total >= 0.8:
             console.print(f"[warn]context {used}/{total} tokens "
                           f"({used * 100 // total}%) — /summarize to compact[/warn]")
@@ -486,7 +497,7 @@ class Repl:
         except OllamaError:
             return
         total = model_context_length(show, self.session.parameters)
-        used = self.session.stats.get("last_prompt_tokens")
+        used = self.context_used()
         if total and used and used / total >= 0.85 and len(self.session.messages) > 4:
             console.print("[warn]context almost full — summarizing older messages[/warn]")
             cmd_summarize(self, "auto")
@@ -1025,7 +1036,9 @@ def cmd_context(repl: Repl, argument: str) -> None:
     roles: dict[str, int] = {}
     for message in messages:
         roles[message.get("role", "?")] = roles.get(message.get("role", "?"), 0) + 1
-    used = repl.session.stats.get("last_prompt_tokens")
+    prompt = repl.session.stats.get("last_prompt_tokens")
+    completion = repl.session.stats.get("last_completion_tokens")
+    used = repl.context_used()
     total = None
     try:
         total = model_context_length(repl.client.show(repl.session.model),
@@ -1038,7 +1051,10 @@ def cmd_context(repl: Repl, argument: str) -> None:
     table.add_row("messages", str(len(messages)))
     for role, count in sorted(roles.items()):
         table.add_row(f"  {role}", str(count))
-    table.add_row("last prompt tokens", str(used if used is not None else "?"))
+    table.add_row("last prompt tokens", str(prompt if prompt is not None else "?"))
+    table.add_row("last completion tokens",
+                  str(completion if completion is not None else "?"))
+    table.add_row("context used", str(used if used is not None else "?"))
     table.add_row("context length", str(total if total else "unknown"))
     if used and total:
         pct = used * 100 / total
@@ -1088,6 +1104,7 @@ def cmd_summarize(repl: Repl, argument: str) -> None:
     ]
     repl.session.touch()
     repl.session.stats["last_prompt_tokens"] = None
+    repl.session.stats["last_completion_tokens"] = None
     if not repl.no_save:
         repl.store.save(repl.session)
     console.print(f"[ok]compacted[/ok] {len(older)} messages → summary")
@@ -1239,6 +1256,11 @@ def cmd_stats(repl: Repl, argument: str) -> None:
         table.add_row("last speed", f"{stats['last_eval_tps']:.1f} tok/s")
     if stats.get("last_prompt_tokens"):
         table.add_row("last prompt", f"{stats['last_prompt_tokens']} tok")
+    if stats.get("last_completion_tokens"):
+        table.add_row("last completion", f"{stats['last_completion_tokens']} tok")
+    used = repl.context_used()
+    if used:
+        table.add_row("last context", f"{used} tok")
     console.print(table)
 
 

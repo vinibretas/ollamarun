@@ -1252,6 +1252,51 @@ def test_maybe_show_ps() -> int:
     return failures
 
 
+def test_context_usage() -> int:
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+        config = dict(orun.DEFAULT_CONFIG)
+        show = {"model_info": {"llama.context_length": 8192}}
+        client = _FakeClient(models=["m1"], show_data=show)
+        session = orun.Session.create("m1", client.base)
+        session.add_message("user", "hello")
+        session.add_message("assistant", "hi there")
+        session.stats["last_prompt_tokens"] = 100
+        session.stats["last_completion_tokens"] = 40
+        repl = orun.Repl(args, config, client, store, session)
+
+        if repl.context_used() == 140:
+            print("PASS  context_used sums last prompt + completion tokens")
+        else:
+            print(f"FAIL  context_used: {repl.context_used()}")
+            failures += 1
+
+        with orun.console.capture() as cap:
+            orun.cmd_context(repl, "")
+        out = _plain(cap.get())
+        if "last completion tokens" in out and "140" in out:
+            print("PASS  /context reports prompt + completion output tokens")
+        else:
+            print(f"FAIL  /context rows: {out!r}")
+            failures += 1
+
+        # The warning must key off the combined usage: 100/150 alone is only
+        # 67%, but 100 + 40 over a 150-token window is 93% and must warn.
+        warn_client = _FakeClient(models=["m1"],
+                                  show_data={"model_info": {"llama.context_length": 150}})
+        warn_repl = orun.Repl(args, config, warn_client, store, session)
+        with orun.console.capture() as cap:
+            warn_repl._context_warning()
+        if "140/150" in _plain(cap.get()):
+            print("PASS  context warning counts the last output tokens")
+        else:
+            print(f"FAIL  context warning: {_plain(cap.get())!r}")
+            failures += 1
+    return failures
+
+
 def test_resolve_num_ctx() -> int:
     failures = 0
     client = _FakeClient(show_data={"model_info": {"llama.context_length": 8192}})
@@ -1608,6 +1653,7 @@ if __name__ == "__main__":
              + test_naive_title() + test_chat_bubbles()
              + test_render_transcript_bubbles() + test_ps_table_and_cmd_ps()
              + test_maybe_show_ps() + test_resolve_num_ctx()
+             + test_context_usage()
              + test_cmd_num_ctx() + test_emit_and_cli_functions()
              + test_build_parser_flags() + test_slash_completer()
              + test_client_http() + test_cmd_image()
