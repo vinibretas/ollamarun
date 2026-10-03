@@ -42,7 +42,15 @@ from .helpers import (
     tailscale_peer_state,
 )
 from .images import encode_image
-from .interactive import ensure_model, pick_model, pick_session
+from .interactive import (
+    ensure_model,
+    gpu_layers_label,
+    model_block_count,
+    parse_gpu_layers_spec,
+    pick_model,
+    pick_session,
+    resolve_gpu_layers,
+)
 from .repl import Repl, resolve_num_ctx
 from .run import run_embed, run_once
 from .session import Session, SessionStore
@@ -69,6 +77,7 @@ interactive commands:
   /tps [on|off]         live tokens/s footer
   /ps                   resident models (ollama ps)
   /num-ctx [N]          context window size, capped to the model's max
+  /gpu-layers [SPEC]    GPU layers: N, P%, +N/-N, all, cpu or auto
   /image PATH           attach an image to the next message
   /export [FILE]        export mid-session as md/json/html
 
@@ -149,6 +158,10 @@ sessions live in ~/etc/data/ollamarun; config in ~/etc/config_files/ollamarun.js
     wrapper.add_argument("--num-ctx", type=int, metavar="N",
                          help="context window size; capped to the model's max "
                               "(from /api/show) with a warning")
+    wrapper.add_argument("--gpu-layers", metavar="SPEC",
+                         help="GPU layers for the model: N (absolute), P%% of its "
+                              "layers, +N/-N (adjust the current value), all, cpu "
+                              "or auto (default)")
     wrapper.add_argument("--options-json", metavar="JSON",
                          help="model options as a JSON object")
     wrapper.add_argument("--image", action="append", metavar="PATH",
@@ -292,7 +305,8 @@ def resolve_session(args: argparse.Namespace, config: dict[str, Any],
             system=args.system if args.system is not None else config.get("system"),
             parameters=options, think=think,
             keepalive=args.keepalive or config.get("keepalive"),
-            format=fmt, tags=list(args.tag or []), title=args.title or "")
+            format=fmt, tags=list(args.tag or []), title=args.title or "",
+            gpu_layers=config.get("gpu_layers"))
     try:
         if args.system is not None:
             session.system = args.system
@@ -484,6 +498,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         host_label, ssh_target = None, None
 
+    if args.gpu_layers is not None:
+        try:
+            parse_gpu_layers_spec(args.gpu_layers)
+        except ValueError as exc:
+            console.print(f"[err]{escape(str(exc))}[/err]")
+            return 2
+        session.gpu_layers = args.gpu_layers
+
     model = resolve_model(args, config, client, session)
     if not model:
         return 2
@@ -499,6 +521,22 @@ def main(argv: Optional[list[str]] = None) -> int:
         session.remote = remote_name
     elif args.host or is_local_host(client.base):
         session.remote = None
+
+    gpu_layers_value: Optional[int] = None
+    if session.gpu_layers:
+        block_count: Optional[int] = None
+        try:
+            block_count = model_block_count(client.show(model))
+        except OllamaError:
+            pass
+        if not quiet:
+            console.print("[dim]gpu layers: "
+                          f"{escape(gpu_layers_label(session.gpu_layers, block_count))}[/dim]")
+        try:
+            gpu_layers_value = resolve_gpu_layers(session.gpu_layers, block_count)
+        except (ValueError, RuntimeError):
+            gpu_layers_value = None
+
     if args.num_ctx is not None:
         if args.num_ctx <= 0:
             console.print("[err]--num-ctx must be a positive integer[/err]")
@@ -525,8 +563,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                 console.print("[err]embedding models need a prompt (or stdin)[/err]")
                 return 2
             truncate = parse_bool(args.truncate, True)
+            embed_options = {"num_gpu": gpu_layers_value} if gpu_layers_value is not None else None
             return run_embed(client, model, prompt_text, truncate=truncate,
-                             dimensions=args.dimensions, json_out=args.json)
+                             dimensions=args.dimensions, json_out=args.json,
+                             options=embed_options)
         if has_embed_flags and "embedding" not in capabilities:
             console.print("[warn]--dimensions/--truncate only apply to embedding models; "
                           "ignored[/warn]")

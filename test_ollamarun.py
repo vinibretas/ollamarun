@@ -1796,6 +1796,136 @@ def test_ensure_model() -> int:
     return failures
 
 
+def test_gpu_layers() -> int:
+    failures = 0
+
+    def check(name, got, expected):
+        nonlocal failures
+        if got == expected:
+            print(f"PASS  {name}")
+        else:
+            print(f"FAIL  {name}: {got!r} != {expected!r}")
+            failures += 1
+
+    check("block_count parsed",
+          orun.model_block_count({"model_info": {"llama.block_count": 32}}), 32)
+    check("block_count absent", orun.model_block_count({"model_info": {}}), None)
+
+    check("parse absolute", orun.parse_gpu_layers_spec("20"), ("abs", 20))
+    check("parse percent", orun.parse_gpu_layers_spec("50%"), ("pct", 50))
+    check("parse plus delta", orun.parse_gpu_layers_spec("+4"), ("delta", 4))
+    check("parse minus delta", orun.parse_gpu_layers_spec("-4"), ("delta", -4))
+    check("parse all", orun.parse_gpu_layers_spec("all"), ("all", None))
+    check("parse cpu", orun.parse_gpu_layers_spec("cpu"), ("cpu", None))
+    check("parse auto", orun.parse_gpu_layers_spec("auto"), ("auto", None))
+    for bad in ("abc", "-50%", "150%", "1.5", ""):
+        try:
+            orun.parse_gpu_layers_spec(bad)
+            print(f"FAIL  parse {bad!r} should raise")
+            failures += 1
+        except ValueError:
+            print(f"PASS  parse {bad!r} raises")
+
+    check("resolve absolute", orun.resolve_gpu_layers("20", 32), 20)
+    check("resolve percent rounds", orun.resolve_gpu_layers("50%", 32), 17)
+    check("resolve 100% is a full offload", orun.resolve_gpu_layers("100%", 36), 37)
+    check("resolve all", orun.resolve_gpu_layers("all", 32), 33)
+    check("resolve all without layer count", orun.resolve_gpu_layers("all", None), 999)
+    check("resolve cpu", orun.resolve_gpu_layers("cpu", None), 0)
+    check("resolve auto", orun.resolve_gpu_layers("auto", 32), None)
+    check("resolve delta from current", orun.resolve_gpu_layers("+4", 32, 20), 24)
+    check("resolve delta from full", orun.resolve_gpu_layers("-4", 32), 29)
+    check("resolve delta clamps at zero", orun.resolve_gpu_layers("-99", 32, 3), 0)
+    try:
+        orun.resolve_gpu_layers("50%", None)
+        print("FAIL  percent without a layer count should raise")
+        failures += 1
+    except RuntimeError:
+        print("PASS  percent without a layer count raises")
+    try:
+        orun.resolve_gpu_layers("-4", None)
+        print("FAIL  delta without a layer count should raise")
+        failures += 1
+    except RuntimeError:
+        print("PASS  delta without a layer count raises")
+
+    check("label percent", orun.gpu_layers_label("50%", 36), "50% → 19 of 37 layers")
+    check("label cpu", orun.gpu_layers_label("cpu", 36), "cpu → cpu only")
+    check("label auto", orun.gpu_layers_label(None, None), "auto (ollama decides)")
+    check("label all without layer count",
+          orun.gpu_layers_label("all", None), "all → all layers")
+
+    parser = orun.build_parser()
+    check("--gpu-layers parses",
+          parser.parse_args(["m1", "--gpu-layers", "50%"]).gpu_layers, "50%")
+    check("--gpu-layers defaults off", parser.parse_args(["m1"]).gpu_layers, None)
+    try:
+        help_text = parser.format_help()
+        check("--help formats (percent signs escaped)", "gpu-layers" in help_text, True)
+    except (TypeError, ValueError) as exc:
+        check("--help formats (percent signs escaped)", f"{exc}", "no error")
+    check("/gpu-layers is wired into the REPL command tables",
+          orun.COMMAND_HANDLERS.get("/gpu-layers") is orun.cmd_gpu_layers
+          and "/gpu-layers" in orun.COMMAND_INFO, True)
+
+    session = orun.Session.create("m1", "http://h:11434", gpu_layers="50%")
+    check("session round-trips gpu_layers",
+          orun.Session.from_dict(session.to_dict()).gpu_layers, "50%")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+        client = _FakeClient(models=["m1"],
+                             show_data={"model_info": {"llama.block_count": 32}})
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store,
+                         orun.Session.create("m1", client.base, gpu_layers="50%"))
+        check("payload resolves the percent",
+              repl._payload([]).get("options", {}).get("num_gpu"), 17)
+        repl.session.parameters["num_gpu"] = 3
+        check("dedicated setting beats /set parameter",
+              repl._payload([])["options"]["num_gpu"], 17)
+        repl.session.gpu_layers = "cpu"
+        check("cpu resolves to zero", repl._payload([])["options"]["num_gpu"], 0)
+        repl.session.gpu_layers = None
+        check("auto leaves an explicit parameter alone",
+              repl._payload([])["options"]["num_gpu"], 3)
+
+        with orun.console.capture() as cap:
+            orun.cmd_gpu_layers(repl, "20")
+        check("cmd sets an absolute value", repl.session.gpu_layers, "20")
+        with orun.console.capture() as cap:
+            orun.cmd_gpu_layers(repl, "+4")
+        check("cmd normalizes a delta", repl.session.gpu_layers, "24")
+        with orun.console.capture() as cap:
+            orun.cmd_gpu_layers(repl, "-100")
+        check("cmd clamps a delta", repl.session.gpu_layers, "0")
+        with orun.console.capture() as cap:
+            orun.cmd_gpu_layers(repl, "auto")
+        check("cmd auto clears the spec", repl.session.gpu_layers, None)
+        with orun.console.capture() as cap:
+            orun.cmd_gpu_layers(repl, "")
+        check("cmd status shows auto", "auto" in _plain(cap.get()), True)
+        with orun.console.capture() as cap:
+            orun.cmd_gpu_layers(repl, "bogus")
+        check("cmd rejects garbage", "invalid gpu layers" in _plain(cap.get()), True)
+        with orun.console.capture() as cap:
+            orun.cmd_params(repl, "")
+        check("/params shows the gpu layers row", "gpu layers" in _plain(cap.get()), True)
+
+    seen: dict = {}
+
+    def embed_handler(method, url, json, stream):
+        seen.update(json or {})
+        return _FakeResponse(status=200, payload={"embeddings": [[0.1]]})
+
+    client = orun.OllamaClient("127.0.0.1:11434")
+    client.http = _FakeSession(embed_handler)
+    client.embed("m1", ["x"], options={"num_gpu": 5})
+    check("embed forwards options", seen.get("options"), {"num_gpu": 5})
+    return failures
+
+
 def test_slash_completer() -> int:
     failures = 0
     with tempfile.TemporaryDirectory() as tmp:
@@ -2481,7 +2611,7 @@ if __name__ == "__main__":
              + test_cmd_num_ctx() + test_emit_and_cli_functions()
              + test_build_parser_flags() + test_remote_hosts()
              + test_pull_and_disk_helpers() + test_ensure_model()
-             + test_slash_completer()
+             + test_gpu_layers() + test_slash_completer()
              + test_tools_policy() + test_tool_execution() + test_tool_loop()
              + test_tool_commands() + test_tool_payloads() + test_tool_cli_flags()
              + test_tts_tools() + test_tts_command() + test_tts_auto_speak()

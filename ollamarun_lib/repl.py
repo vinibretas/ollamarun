@@ -57,14 +57,19 @@ from .helpers import (
 )
 from .images import encode_image
 from .interactive import (
+    GPU_LAYERS_USAGE,
     _CODE_BLOCK_RE,
     disk_free_line,
     ensure_model,
+    gpu_layers_label,
+    model_block_count,
     model_context_length,
     open_in_editor,
+    parse_gpu_layers_spec,
     pick_model,
     pick_session,
     pull_with_progress,
+    resolve_gpu_layers,
 )
 from .renderer import (GenerationResult, Renderer, thinking_panel,
                        tool_result_panel, user_message_box)
@@ -98,6 +103,7 @@ COMMAND_INFO: dict[str, tuple[str, str]] = {
     "/model": ("[NAME|--list]", "switch model"),
     "/ps": ("", "show resident models (ollama ps)"),
     "/num-ctx": ("[N]", "context window size, capped to the model's max"),
+    "/gpu-layers": ("[N|N%|+N|-N|all|cpu|auto]", "GPU layers for this model"),
     "/params": ("", "show session parameters"),
     "/tools": ("[on|off|policy MODE|enable|disable NAME…|allow]", "tool harness and approvals"),
     "/tts": ("[on|off|voice NAME|lang CODE|tools on|off|voices]", "auto-speak via tts-remote"),
@@ -249,6 +255,7 @@ class Repl:
         self._pt_session: Optional[Any] = None
         self._ps_shown_for: set[str] = set()
         self._preload_thread: Optional[threading.Thread] = None
+        self._block_counts: dict[str, Optional[int]] = {}
 
     # ── prompt plumbing ─────────────────────────────────────────────────────
 
@@ -393,6 +400,31 @@ class Repl:
     def effective_think(self) -> Optional[Any]:
         return self.session.think
 
+    def _model_block_count(self) -> Optional[int]:
+        """Cached `<arch>.block_count` for the session model (None if unknown)."""
+        model = self.session.model
+        if not model:
+            return None
+        if model not in self._block_counts:
+            try:
+                show = self.client.show(model)
+            except OllamaError:
+                show = {}
+            self._block_counts[model] = model_block_count(show)
+        return self._block_counts[model]
+
+    def gpu_layers_value(self) -> Optional[int]:
+        """Resolved num_gpu for the session's gpu-layers spec (None = automatic)."""
+        if not self.session.gpu_layers:
+            return None
+        try:
+            return resolve_gpu_layers(self.session.gpu_layers, self._model_block_count())
+        except (ValueError, RuntimeError):
+            return None
+
+    def gpu_layers_summary(self) -> str:
+        return gpu_layers_label(self.session.gpu_layers, self._model_block_count())
+
     def _payload(self, messages: list[dict[str, Any]], *, stream: bool = True,
                  with_tools: Optional[bool] = None) -> dict[str, Any]:
         if with_tools is None:
@@ -408,6 +440,9 @@ class Repl:
             tools = build_tool_schemas(self.tool_registry,
                                        set(self.session.tools_disabled)) or None
         options = dict(self.session.parameters)
+        gpu_layers = self.gpu_layers_value()
+        if gpu_layers is not None:
+            options["num_gpu"] = gpu_layers
         return build_chat_payload(self.session.model, messages, stream=stream,
                                   fmt=self.session.format, think=self.effective_think(),
                                   keepalive=self.session.keepalive or self.args.keepalive,
@@ -835,6 +870,7 @@ def cmd_params(repl: Repl, argument: str) -> None:
         table.add_row("[dim]none[/dim]", "")
     table.add_row("think", escape(str(repl.session.think)))
     table.add_row("keep_alive", escape(str(repl.session.keepalive or "")))
+    table.add_row("gpu layers", escape(repl.gpu_layers_summary()))
     table.add_row("format", escape(str(repl.session.format or "")))
     table.add_row("system", shortcut(repl.session.system or "", 60))
     console.print(table)
@@ -1107,6 +1143,43 @@ def cmd_num_ctx(repl: Repl, argument: str) -> None:
     console.print(f"[ok]num_ctx set to {applied}[/ok]")
 
 
+def cmd_gpu_layers(repl: Repl, argument: str) -> None:
+    argument = argument.strip()
+    if not argument:
+        console.print(f"[key]gpu layers[/key] {escape(repl.gpu_layers_summary())}")
+        console.print(f"[dim]{GPU_LAYERS_USAGE}[/dim]")
+        return
+    try:
+        kind, number = parse_gpu_layers_spec(argument)
+    except ValueError as exc:
+        console.print(f"[err]{escape(str(exc))}[/err]")
+        return
+    if kind == "auto":
+        new_spec: Optional[str] = None
+    elif kind == "cpu":
+        new_spec = "cpu"
+    elif kind == "all":
+        new_spec = "all"
+    else:
+        current = repl.gpu_layers_value()
+        try:
+            resolved = resolve_gpu_layers(argument, repl._model_block_count(), current)
+        except (ValueError, RuntimeError) as exc:
+            console.print(f"[err]{escape(str(exc))}[/err]")
+            return
+        # Deltas are normalized to an absolute value; percentages stay relative
+        # so switching models re-resolves them against the new layer count.
+        new_spec = f"{number}%" if kind == "pct" else str(resolved)
+    if new_spec == repl.session.gpu_layers:
+        console.print(f"[dim]already set[/dim] — {escape(repl.gpu_layers_summary())}")
+        return
+    repl.session.gpu_layers = new_spec
+    repl.session.touch()
+    console.print(f"[ok]gpu layers[/ok] {escape(repl.gpu_layers_summary())}")
+    if repl.unload_model():
+        console.print("[dim]the model will reload with the new setting[/dim]")
+
+
 def _switch_session(repl: Repl, session: Session) -> None:
     current_model = repl.session.model
     target_model = session.model
@@ -1244,7 +1317,8 @@ def cmd_new(repl: Repl, argument: str) -> None:
     if not repl.no_save:
         repl.store.save(repl.session)
     repl.session = Session.create(model, repl.client.base, title=title, system=system,
-                                  parameters=parameters)
+                                  parameters=parameters,
+                                  gpu_layers=repl.session.gpu_layers)
     console.print(f"[ok]new session[/ok] {repl.session.id}")
 
 
@@ -1453,6 +1527,7 @@ def cmd_branch(repl: Repl, argument: str) -> None:
     branch.think = repl.session.think
     branch.keepalive = repl.session.keepalive
     branch.format = repl.session.format
+    branch.gpu_layers = repl.session.gpu_layers
     branch.tags = list(repl.session.tags)
     branch.stats = dict(repl.session.stats)
     branch.tool_allow = list(repl.session.tool_allow)
@@ -1719,6 +1794,7 @@ COMMAND_HANDLERS: dict[str, Callable[[Repl, str], Any]] = {
     "/model": cmd_model,
     "/ps": cmd_ps,
     "/num-ctx": cmd_num_ctx,
+    "/gpu-layers": cmd_gpu_layers,
     "/params": cmd_params,
     "/tools": cmd_tools,
     "/tts": cmd_tts,

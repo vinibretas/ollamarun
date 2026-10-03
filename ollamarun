@@ -2,9 +2,18 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.17
+Version: 1.18
 
 Summary of changes in this version:
+  - GPU layers. `--gpu-layers SPEC` and `/gpu-layers [SPEC]` control how
+    many model layers run on the GPU: `20` (absolute), `50%` (relative to
+    the model's layer count from /api/show, so 100% is a full offload),
+    `+4`/`-4` (adjust the current value; with nothing set, "all except the
+    last N" against a full offload), `all`, `cpu` or `auto`. The spec is
+    stored in the session and re-resolved per model, wins over a
+    `/set parameter num_gpu`, unloads a resident model on change so the
+    next request reloads with the new placement, and `/params` shows the
+    resolved value.
   - Missing models now offer to pull. Starting (or switching to) a model
     that is not installed on the target machine -- local or `--remote` --
     prints that machine's free disk space and asks to pull it with live

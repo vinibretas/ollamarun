@@ -128,10 +128,13 @@ class OllamaClient:
         return self._json("POST", "/api/chat", payload)
 
     def embed(self, model: str, inputs: list[str], *, truncate: bool = True,
-              dimensions: Optional[int] = None) -> dict[str, Any]:
+              dimensions: Optional[int] = None,
+              options: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         payload: dict[str, Any] = {"model": model, "input": inputs, "truncate": truncate}
         if dimensions:
             payload["dimensions"] = dimensions
+        if options:
+            payload["options"] = options
         return self._json("POST", "/api/embed", payload)
 
     def create_model(self, name: str, from_model: str, *, system: Optional[str] = None,
