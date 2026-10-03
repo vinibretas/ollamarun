@@ -83,7 +83,7 @@ except ImportError:  # pragma: no cover - fallback path
     HAS_PYLATEXENC = False
     LatexNodes2Text = None
 
-VERSION = "1.17"
+VERSION = "1.18"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -145,6 +145,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "pager": False,
     "think": None,
     "keepalive": None,
+    "gpu_layers": None,
     "unload_on_exit": True,
     "tps_footer": True,
     "timeout": DEFAULT_TIMEOUT,

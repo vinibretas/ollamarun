@@ -258,3 +258,101 @@ def model_context_length(show_data: dict[str, Any],
         if match:
             return int(match.group(1))
     return None
+
+
+def model_block_count(show_data: dict[str, Any]) -> Optional[int]:
+    """Transformer block count from `/api/show`'s `<arch>.block_count`."""
+    for key, value in (show_data.get("model_info") or {}).items():
+        if (key == "block_count" or key.endswith(".block_count")) \
+                and isinstance(value, int) and value > 0:
+            return value
+    return None
+
+
+_LAYER_SPEC_RE = re.compile(r"^(?P<sign>[+-])?(?P<number>\d+)(?P<percent>%)?$")
+
+GPU_LAYERS_USAGE = ("N (absolute), P% (of the model's layers), +N/-N (adjust the "
+                    "current value), all, cpu or auto")
+
+
+def parse_gpu_layers_spec(text: Optional[str]) -> tuple[str, Optional[int]]:
+    """('abs'|'pct'|'delta'|'all'|'cpu'|'auto', number) for a gpu-layers spec."""
+    spec = (text or "").strip().lower()
+    if spec in {"auto", "default", "dynamic"}:
+        return "auto", None
+    if spec == "all":
+        return "all", None
+    if spec in {"cpu", "none"}:
+        return "cpu", None
+    match = _LAYER_SPEC_RE.match(spec)
+    if not match:
+        raise ValueError(f"invalid gpu layers {text!r} — use {GPU_LAYERS_USAGE}")
+    number = int(match.group("number"))
+    if match.group("percent"):
+        if match.group("sign"):
+            raise ValueError("a percentage cannot have a sign (use N% alone)")
+        if number > 100:
+            raise ValueError("a percentage must be between 0 and 100")
+        return "pct", number
+    if match.group("sign") == "-":
+        return "delta", -number
+    if match.group("sign") == "+":
+        return "delta", number
+    return "abs", number
+
+
+def resolve_gpu_layers(spec: Optional[str], block_count: Optional[int],
+                       current: Optional[int] = None) -> Optional[int]:
+    """Resolve a gpu-layers spec to `num_gpu` (None = leave it automatic).
+
+    Percent resolves against `block_count + 1` (the value Ollama treats as a
+    full offload, including the output layer). A delta adjusts `current`, or
+    a full offload when no value is set yet, so `-4` means "all layers except
+    the last 4". Raises ValueError for a bad spec and RuntimeError when the
+    spec cannot be resolved without knowing the model's layer count.
+    """
+    if spec is None:
+        return None
+    kind, number = parse_gpu_layers_spec(spec)
+    if kind == "auto":
+        return None
+    if kind == "cpu":
+        return 0
+    if kind == "all":
+        return block_count + 1 if block_count is not None else 999
+    if kind == "abs":
+        return number
+    if kind == "pct":
+        if block_count is None:
+            raise RuntimeError(f"cannot resolve {spec} without the model's layer count")
+        full = block_count + 1
+        return (number * full + 50) // 100
+    if kind == "delta":
+        if current is None:
+            if block_count is None:
+                raise RuntimeError(f"cannot resolve {spec} without the model's layer count")
+            base = block_count + 1
+        else:
+            base = current
+        value = max(0, base + number)
+        if block_count is not None:
+            value = min(value, block_count + 1)
+        return value
+    return None
+
+
+def gpu_layers_label(spec: Optional[str], block_count: Optional[int]) -> str:
+    """One-line status for a gpu-layers spec, e.g. '50% → 17 of 37 layers'."""
+    if not spec:
+        return "auto (ollama decides)"
+    try:
+        value = resolve_gpu_layers(spec, block_count)
+    except (ValueError, RuntimeError):
+        return f"{spec} (unresolved — layer count unavailable)"
+    if value is None:
+        return "auto (ollama decides)"
+    if value == 0:
+        return f"{spec} → cpu only"
+    if block_count is None:
+        return f"{spec} → all layers" if value >= 999 else f"{spec} → {value} layers"
+    return f"{spec} → {min(value, block_count + 1)} of {block_count + 1} layers"

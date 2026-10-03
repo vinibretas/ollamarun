@@ -23,9 +23,11 @@ from .session import Session, SessionStore
 
 
 def run_embed(client: OllamaClient, model: str, prompt: str, *,
-              truncate: bool, dimensions: Optional[int], json_out: bool) -> int:
+              truncate: bool, dimensions: Optional[int], json_out: bool,
+              options: Optional[dict[str, Any]] = None) -> int:
     try:
-        response = client.embed(model, [prompt], truncate=truncate, dimensions=dimensions)
+        response = client.embed(model, [prompt], truncate=truncate,
+                                dimensions=dimensions, options=options)
     except OllamaError as exc:
         console.print(f"[err]{escape(str(exc))}[/err]")
         return 1

@@ -31,6 +31,13 @@ the model picker, and `/pull` pulls or updates from the REPL. Pulls stream
 `/api/pull` through `OllamaClient.pull_model()` behind a rich per-layer
 progress display.
 
+`--gpu-layers SPEC` / `/gpu-layers` set how many model layers run on the GPU
+(`N`, `P%`, `+N`/`-N`, `all`, `cpu`, `auto`). The spec lives in the session
+(`session.gpu_layers`), resolves per model against `/api/show`'s
+`<arch>.block_count` (via `interactive.py`'s `resolve_gpu_layers()`), wins over
+`session.parameters["num_gpu"]` in `Repl._payload()`, and a change unloads a
+resident model so the next request reloads with the new placement.
+
 The `ollamarun` file at the repo root is a thin, shebang-pinned entry point
 (`#! /bin/python3.10`); the implementation lives in the `ollamarun_lib/`
 package, one module per pipeline stage — see Architecture below. The entry
@@ -71,7 +78,7 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"1.17"`) and prepend a
+  constant in `ollamarun_lib/constants.py`, currently `"1.18"`) and prepend a
   new bullet list under `Summary of changes in this version:` in the
   top-level `ollamarun` entry script's module docstring — read the existing
   entries there before adding one; that block is the changelog, there is no
@@ -160,14 +167,16 @@ a module's own docstring for what lives there before editing:
    `pick_model`/`pick_session` (fuzzy pickers), `model_context_length`
    (reads context window from `/api/show`), and the missing-model flow:
    `ensure_model()` (free-space line + y/N pull prompt, `--pull` skip,
-   picker on decline), `pull_with_progress()` and `disk_free_line()`.
+   picker on decline), `pull_with_progress()` and `disk_free_line()`. Also
+   the GPU-layer spec logic: `model_block_count()`,
+   `parse_gpu_layers_spec()`, `resolve_gpu_layers()`, `gpu_layers_label()`.
 12. **`repl.py`** — `SlashCompleter` (prompt_toolkit completion for
    `/commands`, session ids, models, `@files`), the `Repl` class (including
    the multi-round tool loop `_generate` → `_execute_tool_calls` and the
    y/a/n approval prompt), then the `cmd_*` functions. Each slash command
    (`/set`, `/show`, `/load`, `/save`, `/pull`, `/undo`, `/retry`, `/edit`,
    `/branch`, `/context`, `/summarize`, `/image`, `/render`, `/math`,
-   `/pager`, `/tps`, `/ps`, `/num-ctx`, `/copy`, `/export`, `/stats`,
+   `/pager`, `/tps`, `/ps`, `/num-ctx`, `/gpu-layers`, `/copy`, `/export`, `/stats`,
    `/thinking`, `/tools`, `/tts`, ...) is a standalone
    `cmd_NAME(repl, argument)` function dispatched by name through
    `COMMAND_HANDLERS`; add a new slash command by adding one function here

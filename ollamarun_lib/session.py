@@ -38,6 +38,7 @@ class Session:
     think: Optional[Any] = None
     keepalive: Optional[str] = None
     format: Optional[Any] = None
+    gpu_layers: Optional[str] = None
     messages: list[dict[str, Any]] = field(default_factory=list)
     stats: dict[str, Any] = field(default_factory=dict)
     tool_allow: list[str] = field(default_factory=list)
