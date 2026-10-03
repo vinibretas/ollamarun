@@ -16,25 +16,30 @@ from typing import Any, Optional
 
 from rich.markup import escape
 
-from .client import OllamaClient
+from .client import OllamaClient, OllamaError
 from .constants import (
     CONFIG_PATH,
     DEFAULT_HOST,
     DEFAULT_TIMEOUT,
     EMBED_MODEL_HINTS,
     LOG_PATH,
+    REMOTE_PROBE_TIMEOUT,
     VERSION,
     console,
 )
 from .emit import cli_delete, cli_export, cli_list, cli_search, cli_show
 from .helpers import (
+    is_local_host,
     load_config,
     parse_bool,
     parse_format,
     parse_options,
     parse_think,
+    remote_node,
+    resolve_remote,
     setup_logging,
     shortcut,
+    tailscale_peer_state,
 )
 from .images import encode_image
 from .interactive import pick_model, pick_session
@@ -80,6 +85,14 @@ environment:
   OLLAMA_EDITOR         editor for Ctrl+G / /edit (falls back to $EDITOR)
   OLLAMA_NOHISTORY      do not keep prompt input history
 
+remote:
+  --remote NAME         run on a tailnet machine: pi, kiddo, g3, optiplex7070
+                        (alias optiplex) or guri, or any host[:port]. The name
+                        is resolved through tailscale; models load and unload
+                        there while sessions, files and tools stay local.
+                        Resuming a session reconnects to the machine it was
+                        created on unless --host/--remote override it.
+
 sessions live in ~/etc/data/ollamarun; config in ~/etc/config_files/ollamarun.json
 """
     parser = argparse.ArgumentParser(
@@ -114,9 +127,14 @@ sessions live in ~/etc/data/ollamarun; config in ~/etc/config_files/ollamarun.js
                         help="show timings for response")
 
     wrapper = parser.add_argument_group("wrapper flags")
-    wrapper.add_argument("--host", metavar="HOST",
-                         help=f"ollama server, e.g. 127.0.0.1:11434 (default: "
-                              f"OLLAMA_HOST or {DEFAULT_HOST})")
+    host_group = wrapper.add_mutually_exclusive_group()
+    host_group.add_argument("--host", metavar="HOST",
+                            help=f"ollama server, e.g. 127.0.0.1:11434 (default: "
+                                 f"OLLAMA_HOST or {DEFAULT_HOST})")
+    host_group.add_argument("--remote", metavar="NAME",
+                            help="run on a tailnet machine (pi, kiddo, g3, "
+                                 "optiplex7070 or optiplex, guri) or any host[:port]; "
+                                 "models load and unload there")
     wrapper.add_argument("-m", "--model", dest="model_flag", metavar="MODEL",
                          help="model name (same as the positional MODEL)")
     wrapper.add_argument("--system", metavar="TEXT", help="system prompt")
@@ -333,6 +351,40 @@ def normalize_argv(argv: Optional[list[str]], store: SessionStore) -> Optional[l
     return out
 
 
+def remote_preflight(client: OllamaClient, label: str, config: dict[str, Any],
+                     *, quiet: bool = False) -> bool:
+    """Probe a remote Ollama with a short timeout; False (and a message) when down."""
+    try:
+        version = client.version(timeout=REMOTE_PROBE_TIMEOUT)
+    except OllamaError as exc:
+        detail = str(exc)
+        prefix = f"cannot reach Ollama at {client.base}: "
+        if detail.startswith(prefix):
+            detail = detail[len(prefix):]
+        node = remote_node(label, config)
+        state = tailscale_peer_state(node)
+        hint = f" — tailscale reports {node} {state}" if state.startswith("offline") else ""
+        console.print(f"[err]cannot reach remote {escape(label)} at {client.base}: "
+                      f"{escape(detail)}{escape(hint)}[/err]")
+        return False
+    if not quiet:
+        console.print(f"[dim]remote {escape(label)} · {client.base} · ollama {version}[/dim]")
+    return True
+
+
+def session_reconnect(args: argparse.Namespace, config: dict[str, Any],
+                      session: Session,
+                      ts_map: Optional[dict[str, str]] = None) -> Optional[str]:
+    """Base URL a resumed session should reconnect to, or None for the usual chain.
+
+    A session that last ran somewhere other than the local default host is
+    sticky -- unless --host/--remote explicitly says where to go instead.
+    """
+    if args.host or args.remote or not session.host or is_local_host(session.host):
+        return None
+    return resolve_remote(session.remote, config, ts_map) if session.remote else session.host
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     store = SessionStore()
@@ -371,10 +423,21 @@ def main(argv: Optional[list[str]] = None) -> int:
             console.print(f"[err]--system-file: {exc}[/err]")
             return 2
 
-    host = args.host or config.get("host") or os.environ.get("OLLAMA_HOST") or DEFAULT_HOST
+    timeout = args.timeout or config.get("timeout") or DEFAULT_TIMEOUT
+    quiet = not console.is_terminal or args.json or args.raw
+    remote_name: Optional[str] = None
     try:
-        client = OllamaClient(host, insecure=args.insecure,
-                              timeout=args.timeout or config.get("timeout") or DEFAULT_TIMEOUT)
+        if args.remote:
+            host = resolve_remote(args.remote, config)
+            remote_name = args.remote
+        elif args.host:
+            host = args.host
+        elif config.get("remote"):
+            remote_name = str(config["remote"])
+            host = resolve_remote(remote_name, config)
+        else:
+            host = config.get("host") or os.environ.get("OLLAMA_HOST") or DEFAULT_HOST
+        client = OllamaClient(host, insecure=args.insecure, timeout=timeout)
     except ValueError as exc:
         console.print(f"[err]{escape(str(exc))}[/err]")
         return 2
@@ -384,11 +447,37 @@ def main(argv: Optional[list[str]] = None) -> int:
     except SessionError as exc:
         console.print(f"[err]{escape(str(exc))}[/err]")
         return 1
+
+    # Reconnect where the session last ran: a session whose host is not the
+    # local default resumes there unless --host/--remote says otherwise.
+    try:
+        reconnect = session_reconnect(args, config, session)
+    except ValueError as exc:
+        console.print(f"[err]{escape(str(exc))}[/err]")
+        return 2
+    adopted = reconnect is not None
+    if reconnect and reconnect != client.base:
+        client = OllamaClient(reconnect, insecure=args.insecure, timeout=timeout)
+        console.print(f"[dim]resuming session on {escape(session.remote or reconnect)} "
+                      f"({client.base})[/dim]")
+    if not adopted and (args.host or args.remote) and session.host \
+            and not is_local_host(session.host) and session.host != client.base:
+        console.print(f"[dim]session was created on {escape(session.remote or session.host)}"
+                      f"; using {escape(args.remote or args.host or '')} instead[/dim]")
+
+    probe_label = (session.remote or session.host) if adopted else remote_name
+    if probe_label and not remote_preflight(client, probe_label, config, quiet=quiet):
+        return 1
+
     model = resolve_model(args, config, client, session)
     if not model:
         return 2
     session.model = model
     session.host = client.base
+    if remote_name and not adopted:
+        session.remote = remote_name
+    elif args.host or is_local_host(client.base):
+        session.remote = None
     if args.num_ctx is not None:
         if args.num_ctx <= 0:
             console.print("[err]--num-ctx must be a positive integer[/err]")

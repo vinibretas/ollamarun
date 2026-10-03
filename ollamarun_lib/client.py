@@ -48,8 +48,9 @@ class OllamaClient:
             raise OllamaError(f"HTTP {response.status_code} on {path}: {detail}")
         return response
 
-    def _json(self, method: str, path: str, payload: Optional[dict] = None) -> Any:
-        response = self._request(method, path, payload=payload)
+    def _json(self, method: str, path: str, payload: Optional[dict] = None,
+              timeout: Optional[float] = None) -> Any:
+        response = self._request(method, path, payload=payload, timeout=timeout)
         try:
             return response.json()
         except ValueError as exc:
@@ -57,8 +58,8 @@ class OllamaClient:
         finally:
             response.close()
 
-    def version(self) -> str:
-        return self._json("GET", "/api/version").get("version", "?")
+    def version(self, timeout: Optional[float] = None) -> str:
+        return self._json("GET", "/api/version", timeout=timeout).get("version", "?")
 
     def tags(self) -> list[dict[str, Any]]:
         return self._json("GET", "/api/tags").get("models", [])

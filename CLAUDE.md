@@ -11,6 +11,17 @@ rendering, and token/s stats. It talks to the Ollama HTTP API directly
 through `llm-jukebox`, the scheduler this user runs in front of Ollama on
 `:11434`.
 
+`--remote NAME` retargets every Ollama call at a tailnet machine: the known
+names are `pi`, `kiddo`, `g3`, `optiplex7070` (alias `optiplex`) and `guri`,
+plus any `host[:port]`. `helpers.py` maps the name through `REMOTE_NODES` /
+config `remote_hosts` and resolves it to a tailnet IP via
+`tailscale status --json` (falling back to the MagicDNS name); `cli.py` builds
+the client from it, probes `/api/version` with a short timeout before starting
+and reconnects a resumed session to the host it last ran on. Load/unload,
+streaming and all `/api/*` calls then happen on that machine while sessions,
+files, images and the tool harness stay local — there is no separate remote
+code path.
+
 The `ollamarun` file at the repo root is a thin, shebang-pinned entry point
 (`#! /bin/python3.10`); the implementation lives in the `ollamarun_lib/`
 package, one module per pipeline stage — see Architecture below. The entry
@@ -51,7 +62,7 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"1.4"`) and prepend a
+  constant in `ollamarun_lib/constants.py`, currently `"1.16"`) and prepend a
   new bullet list under `Summary of changes in this version:` in the
   top-level `ollamarun` entry script's module docstring — read the existing
   entries there before adding one; that block is the changelog, there is no
@@ -82,7 +93,9 @@ a module's own docstring for what lives there before editing:
    `VERSION`, config/session/log paths, `THEME`, the shared `console`
    singleton, `DEFAULT_CONFIG`. Every other module sits on top of this one.
 2. **`helpers.py`** — small helpers: ISO timestamps, id generation,
-   bool/host/think coercion, config load (`load_config`), logging setup.
+   bool/host/think coercion, `--remote` resolution (`resolve_remote`,
+   `remote_node`, `tailscale_map`, `tailscale_peer_state`, `is_local_host`),
+   config load (`load_config`), logging setup.
 3. **`mathrender.py`** — LaTeX → Unicode, combined in one module because the
    two halves call into each other: regex-level conversion for inline math
    (`convert_math`, `latex_to_unicode`) falls through to the 2D layout

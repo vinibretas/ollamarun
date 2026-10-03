@@ -28,6 +28,7 @@ class Session:
     model: str = ""
     title: str = ""
     host: str = ""
+    remote: Optional[str] = None
     created_at: str = ""
     updated_at: str = ""
     tags: list[str] = field(default_factory=list)

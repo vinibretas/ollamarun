@@ -2,9 +2,23 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.15
+Version: 1.16
 
 Summary of changes in this version:
+  - Remote machines. `--remote NAME` runs the model on a tailnet box --
+    pi, kiddo, g3, optiplex7070 (alias optiplex) or guri, plus any
+    host[:port] -- resolving the name through `tailscale status --json`
+    and pointing every call at that machine's API. Models load, generate
+    and unload there (background preload, /api/ps, /model and /load,
+    REPL exit), while sessions, files, images and the tool harness stay
+    local exactly as before. A short /api/version preflight fails fast
+    with the tailscale node state when the machine is unreachable.
+  - Resuming a session reconnects to the machine it last ran on (the
+    session records both the resolved base and the `--remote` name), so
+    `ollamarun -c` continues on e.g. kiddo without flags; the banner
+    shows the remote name next to the host. --host/--remote override it.
+  - Config keys `remote` (default machine, like `host` for the local
+    server) and `remote_hosts` (extra or overridden name -> host[:port]).
   - tts-remote integration. The speak tool queues text through `tts-remote say`
     (text piped on stdin, fire-and-forget, never blocks the answer) and
     list_voices exposes the installed voice catalog, so the model can read
@@ -184,6 +198,7 @@ Summary of changes in this version:
 
 Usage:
     ollamarun MODEL [PROMPT]                 # one-shot or interactive REPL
+    ollamarun --remote kiddo MODEL [PROMPT]  # run on a tailnet machine
     ollamarun                                # pick a model, start a session
     ollamarun -c                             # continue the most recent session
     ollamarun -c SESSION_ID                  # continue a specific session
@@ -195,9 +210,10 @@ Usage:
     ollamarun --delete SESSION_ID [-y]       # move session to trash
 
 Config: ~/etc/config_files/ollamarun.json (created with defaults on first
-run). Sessions: ~/etc/data/ollamarun/sessions/<id>.json + index.json.
-Prompt history: ~/etc/data/ollamarun/history. Debug log:
-~/etc/logs/ollamarun.log (with --debug).
+run; `remote` picks a default machine, `remote_hosts` adds names). Sessions:
+~/etc/data/ollamarun/sessions/<id>.json + index.json. Prompt history:
+~/etc/data/ollamarun/history. Debug log: ~/etc/logs/ollamarun.log
+(with --debug).
 
 Implementation: ollamarun_lib/ (see CLAUDE.md's Architecture section).
 """

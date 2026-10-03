@@ -75,7 +75,7 @@ except ImportError:  # pragma: no cover - fallback path
     HAS_PYLATEXENC = False
     LatexNodes2Text = None
 
-VERSION = "1.15"
+VERSION = "1.16"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -89,6 +89,19 @@ LOG_PATH = HOME / "etc/logs/ollamarun.log"
 DEFAULT_HOST = "127.0.0.1:11434"
 DEFAULT_PORT = 11434
 DEFAULT_TIMEOUT = 600
+
+# `--remote NAME` names for the tailnet machines: alias -> tailscale hostname
+# (resolved to its tailnet IP at run time; `remote_hosts` in the config file
+# adds or overrides entries).
+REMOTE_NODES: dict[str, str] = {
+    "pi": "vinipi",
+    "kiddo": "kiddo",
+    "g3": "g3",
+    "optiplex7070": "optiplex7070",
+    "optiplex": "optiplex7070",
+    "guri": "guri",
+}
+REMOTE_PROBE_TIMEOUT = 4.0
 
 THEME = Theme({
     "info": "cyan",
@@ -107,6 +120,8 @@ rich.traceback.install()
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "host": None,
+    "remote": None,
+    "remote_hosts": {},
     "model": None,
     "system": None,
     "options": {},

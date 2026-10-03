@@ -1497,6 +1497,113 @@ def test_build_parser_flags() -> int:
     return failures
 
 
+def test_remote_hosts() -> int:
+    failures = 0
+    config = dict(orun.DEFAULT_CONFIG)
+    ts = {"vinipi": "100.64.0.1", "kiddo": "100.64.0.2", "g3": "100.64.0.3",
+          "optiplex7070": "100.64.0.4", "guri": "100.64.0.5"}
+
+    def check(name, got, expected):
+        nonlocal failures
+        if got == expected:
+            print(f"PASS  {name}")
+        else:
+            print(f"FAIL  {name}: {got!r} != {expected!r}")
+            failures += 1
+
+    check("remote pi maps to vinipi", orun.resolve_remote("pi", config, ts),
+          "http://100.64.0.1:11434")
+    check("remote alias optiplex -> optiplex7070",
+          orun.resolve_remote("optiplex", config, ts), "http://100.64.0.4:11434")
+    check("remote name case-insensitive", orun.resolve_remote("KIDDO", config, ts),
+          "http://100.64.0.2:11434")
+    check("remote explicit port", orun.resolve_remote("kiddo:11435", config, ts),
+          "http://100.64.0.2:11435")
+    check("remote magicdns fallback", orun.resolve_remote("kiddo", config, {}),
+          "http://kiddo:11434")
+    check("remote arbitrary host", orun.resolve_remote("lab-box", config, ts),
+          "http://lab-box:11434")
+    check("remote url passthrough", orun.resolve_remote("https://box:9999/x", config, ts),
+          "https://box:9999")
+    check("remote config override",
+          orun.resolve_remote("lab", {**config, "remote_hosts": {"lab": "kiddo:11435"}}, ts),
+          "http://100.64.0.2:11435")
+    check("remote override keeps explicit port",
+          orun.resolve_remote("lab:9999", {**config, "remote_hosts": {"lab": "kiddo:11435"}}, ts),
+          "http://100.64.0.2:9999")
+    check("remote_node resolves alias", orun.remote_node("optiplex", config), "optiplex7070")
+    check("is_local_host localhost", orun.is_local_host("localhost:11434"), True)
+    check("is_local_host remote", orun.is_local_host("g3:11434"), False)
+    check("is_local_host default", orun.is_local_host(orun.DEFAULT_HOST), True)
+    try:
+        orun.resolve_remote("", config, ts)
+        print("FAIL  empty --remote value should raise")
+        failures += 1
+    except ValueError:
+        print("PASS  empty --remote value raises")
+
+    parser = orun.build_parser()
+    args = parser.parse_args(["m1", "--remote", "kiddo"])
+    check("--remote parses", args.remote, "kiddo")
+    check("--remote defaults to None", parser.parse_args(["m1"]).remote, None)
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            parser.parse_args(["m1", "--remote", "g3", "--host", "127.0.0.1"])
+        print("FAIL  --remote/--host should be mutually exclusive")
+        failures += 1
+    except SystemExit:
+        print("PASS  --remote/--host are mutually exclusive")
+
+    plain_args = parser.parse_args(["m1"])
+    explicit = parser.parse_args(["m1", "--remote", "g3"])
+    check("session reconnect keeps a remote host",
+          orun.session_reconnect(plain_args, config, orun.Session.create(
+              "m1", "http://100.64.0.2:11434")),
+          "http://100.64.0.2:11434")
+    check("session reconnect re-resolves the remote name",
+          orun.session_reconnect(plain_args, config, orun.Session.create(
+              "m1", "http://100.64.0.2:11434", remote="kiddo"), ts),
+          "http://100.64.0.2:11434")
+    check("session reconnect skips the local default",
+          orun.session_reconnect(plain_args, config, orun.Session.create(
+              "m1", "http://127.0.0.1:11434")),
+          None)
+    check("session reconnect yields to --remote",
+          orun.session_reconnect(explicit, config, orun.Session.create(
+              "m1", "http://100.64.0.2:11434")),
+          None)
+
+    class _DownClient:
+        base = "http://100.64.0.9:11434"
+
+        def version(self, timeout=None):
+            raise orun.OllamaError(f"cannot reach Ollama at {self.base}: boom")
+
+    class _UpClient:
+        base = "http://100.64.0.9:11434"
+
+        def version(self, timeout=None):
+            return "0.34.4"
+
+    saved_cache = orun.helpers._TAILSCALE_CACHE
+    orun.helpers._TAILSCALE_CACHE = {
+        "ghost": {"Online": False, "LastSeen": "2026-10-03T10:00:00Z"}}
+    try:
+        with orun.console.capture() as cap:
+            ok = orun.remote_preflight(_DownClient(), "ghost", config)
+        text = _plain(cap.get())
+        check("remote_preflight fails fast", ok, False)
+        check("remote_preflight names the remote", "cannot reach remote ghost" in text, True)
+        check("remote_preflight reports the tailscale state", "offline" in text, True)
+    finally:
+        orun.helpers._TAILSCALE_CACHE = saved_cache
+    with orun.console.capture() as cap:
+        ok = orun.remote_preflight(_UpClient(), "ghost", config)
+    check("remote_preflight accepts a live remote", ok, True)
+    check("remote_preflight prints the version", "0.34.4" in _plain(cap.get()), True)
+    return failures
+
+
 def test_slash_completer() -> int:
     failures = 0
     with tempfile.TemporaryDirectory() as tmp:
@@ -2180,7 +2287,7 @@ if __name__ == "__main__":
              + test_maybe_show_ps() + test_resolve_num_ctx()
              + test_context_usage()
              + test_cmd_num_ctx() + test_emit_and_cli_functions()
-             + test_build_parser_flags() + test_slash_completer()
+             + test_build_parser_flags() + test_remote_hosts() + test_slash_completer()
              + test_tools_policy() + test_tool_execution() + test_tool_loop()
              + test_tool_commands() + test_tool_payloads() + test_tool_cli_flags()
              + test_tts_tools() + test_tts_command() + test_tts_auto_speak()
