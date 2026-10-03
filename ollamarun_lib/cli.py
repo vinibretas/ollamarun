@@ -55,6 +55,8 @@ interactive commands:
   /clear /new           start fresh context or a brand new session
   /undo /retry /edit    fix or regenerate the last exchange
   /summarize /context   manage the context window
+  /tools [on|off]       tool harness, approvals and per-tool enable/disable
+                        (`/tools policy auto|allowlist|ask`, `/tools allow`)
   /thinking [MODE]      thinking display: show|collapse|hide|toggle|full
   /tps [on|off]         live tokens/s footer
   /ps                   resident models (ollama ps)
@@ -144,6 +146,12 @@ sessions live in ~/etc/data/ollamarun; config in ~/etc/config_files/ollamarun.js
                                    "the unload_on_exit config default)")
     wrapper.add_argument("--pager", action="store_true",
                          help="page long transcripts")
+    tools_group = wrapper.add_mutually_exclusive_group()
+    tools_group.add_argument("--tools", action="store_true",
+                             help="enable the tool harness (default: on; the model "
+                                  "needs tool-calling support)")
+    tools_group.add_argument("--no-tools", action="store_true",
+                             help="disable the tool harness for this run")
     wrapper.add_argument("--no-save", action="store_true",
                          help="do not persist this session")
     wrapper.add_argument("--raw", action="store_true",
@@ -185,7 +193,7 @@ sessions live in ~/etc/data/ollamarun; config in ~/etc/config_files/ollamarun.js
     inspect.add_argument("--delete", metavar="SESSION_ID",
                          help="move a session to the trash")
     inspect.add_argument("-y", "--yes", action="store_true",
-                         help="skip confirmation for --delete")
+                         help="skip confirmations (--delete, tool runs)")
     inspect.add_argument("--reindex", action="store_true",
                          help="rebuild the session index")
     inspect.add_argument("--json", action="store_true",
@@ -406,6 +414,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                           "ignored[/warn]")
 
         repl = Repl(args, config, client, store, session)
+        if args.json and not args.tools:
+            repl.tools_enabled = False
         for image in args.image or []:
             try:
                 repl.pending_images.append(encode_image(Path(os.path.expanduser(image)),

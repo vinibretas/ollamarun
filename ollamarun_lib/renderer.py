@@ -132,6 +132,28 @@ def thinking_panel(text: str, title: str = "thinking",
                  border_style="dim", title_align="left", padding=(0, 1))
 
 
+def tool_result_panel(name: str, detail: str = "", text: str = "", *,
+                      ok: bool = True, duration: Optional[float] = None,
+                      head: int = 12, max_chars: int = 1400) -> Panel:
+    """Compact view of what a tool returned; the model gets the full text."""
+    lines = (text or "").splitlines()
+    shown = lines[:head]
+    if len(lines) > head:
+        shown.append(f"… {len(lines) - head} more lines (full output sent to the model)")
+    body = "\n".join(shown) or "(no output)"
+    if len(body) > max_chars:
+        body = body[:max_chars].rstrip() + "…"
+    rendered = Text()
+    if detail:
+        rendered.append("$ " + detail + "\n", style="dim")
+    rendered.append(body)
+    bits = [f"tool · {name}", "ok" if ok else "failed"]
+    if duration is not None:
+        bits.append(f"{duration:.2f}s")
+    return Panel(rendered, title=" · ".join(bits),
+                 border_style="green" if ok else "red", title_align="left")
+
+
 def user_message_box(text: str, console: Console) -> Align:
     """Small right-aligned box for a user turn."""
     lines = text.splitlines() or [""]
@@ -454,6 +476,11 @@ def render_transcript(session: "Session", console: Console, *, show_stats: bool 
                     console.print(Panel(escape(str(function.get("arguments", ""))),
                                         title=f"tool · {function.get('name', 'tool')}",
                                         border_style="magenta", title_align="left"))
+            elif role == "tool":
+                content = message.get("content") or ""
+                if content:
+                    console.print(tool_result_panel(message.get("tool_name") or "tool",
+                                                    text=content))
             else:
                 console.print(Panel(escape(content), title=role, border_style="dim",
                                     title_align="left"))
