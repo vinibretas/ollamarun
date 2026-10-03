@@ -42,6 +42,14 @@ from rich.live import Live
 from rich.markdown import Markdown
 from rich.markup import escape
 from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    DownloadColumn,
+    Progress,
+    TextColumn,
+    TimeRemainingColumn,
+    TransferSpeedColumn,
+)
 from rich.prompt import Confirm, Prompt
 from rich.rule import Rule
 from rich.spinner import Spinner
@@ -75,7 +83,7 @@ except ImportError:  # pragma: no cover - fallback path
     HAS_PYLATEXENC = False
     LatexNodes2Text = None
 
-VERSION = "1.16"
+VERSION = "1.17"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -122,6 +130,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "host": None,
     "remote": None,
     "remote_hosts": {},
+    "remote_ssh_user": None,
     "model": None,
     "system": None,
     "options": {},

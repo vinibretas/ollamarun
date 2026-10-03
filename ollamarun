@@ -2,9 +2,19 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.16
+Version: 1.17
 
 Summary of changes in this version:
+  - Missing models now offer to pull. Starting (or switching to) a model
+    that is not installed on the target machine -- local or `--remote` --
+    prints that machine's free disk space and asks to pull it with live
+    per-layer progress. Declining opens the model picker for the machine.
+    `--pull` skips the question (one-shots/scripts), `/pull [MODEL]` pulls
+    or updates a model from the REPL, and non-interactive runs without
+    `--pull` fail with a clear hint. Disk space comes from
+    shutil.disk_usage locally and a BatchMode ssh `df` probe (reading
+    OLLAMA_MODELS from the ollama unit) for `--remote` machines; when ssh
+    is unavailable it degrades to "unknown".
   - Remote machines. `--remote NAME` runs the model on a tailnet box --
     pi, kiddo, g3, optiplex7070 (alias optiplex) or guri, plus any
     host[:port] -- resolving the name through `tailscale status --json`

@@ -51,16 +51,20 @@ from .helpers import (
     now_iso,
     parse_bool,
     parse_think,
+    remote_node,
     short_stamp,
     shortcut,
 )
 from .images import encode_image
 from .interactive import (
     _CODE_BLOCK_RE,
+    disk_free_line,
+    ensure_model,
     model_context_length,
     open_in_editor,
     pick_model,
     pick_session,
+    pull_with_progress,
 )
 from .renderer import (GenerationResult, Renderer, thinking_panel,
                        tool_result_panel, user_message_box)
@@ -85,6 +89,7 @@ COMMAND_INFO: dict[str, tuple[str, str]] = {
     "/show": ("[info|license|modelfile|parameters|system|template]", "model details"),
     "/load": ("[MODEL|SESSION]", "load a saved session or switch model"),
     "/save": ("NAME", "create an Ollama model from this session"),
+    "/pull": ("[MODEL]", "pull a model onto this host (updates if present)"),
     "/clear": ("", "forget the context, keep settings, start a new session"),
     "/new": ("", "start a brand new session"),
     "/sessions": ("[filter]", "browse and switch saved sessions"),
@@ -1152,8 +1157,10 @@ def cmd_load(repl: Repl, argument: str) -> None:
     if not name:
         console.print("[err]usage: /load [MODEL|SESSION][/err]")
         return
-    if not repl.client.model_exists(name):
-        console.print(f"[err]no session or model named {escape(argument)}[/err]")
+    ssh_target = remote_node(repl.session.remote, repl.config) if repl.session.remote else None
+    name = ensure_model(repl.client, name, repl.config, ssh_target=ssh_target,
+                        host_label=repl.session.remote)
+    if not name:
         return
     if name == repl.session.model:
         console.print("[dim]already using that model[/dim]")
@@ -1196,6 +1203,25 @@ def cmd_save(repl: Repl, argument: str) -> None:
         console.print(f"[err]{escape(str(exc))}[/err]")
         return
     console.print(f"[ok]created[/ok] {escape(name)} — `ollamarun {escape(name)}`")
+
+
+def cmd_pull(repl: Repl, argument: str) -> None:
+    name = argument.strip() or pick_model(repl.client, None)
+    if not name:
+        return
+    ssh_target = remote_node(repl.session.remote, repl.config) if repl.session.remote else None
+    summary = disk_free_line(repl.client, repl.config, ssh_target=ssh_target,
+                             host_label=repl.session.remote)
+    console.print(f"[dim]{escape(summary)}[/dim]")
+    if repl.client.model_exists(name):
+        console.print(f"[dim]{escape(name)} is installed — checking for updates[/dim]")
+    try:
+        pull_with_progress(repl.client, name, quiet=not console.is_terminal)
+    except OllamaError as exc:
+        console.print(f"[err]pull failed: {escape(str(exc))}[/err]")
+        return
+    repl.refresh_models()
+    console.print(f"[ok]pulled[/ok] {escape(name)}")
 
 
 def cmd_clear(repl: Repl, argument: str) -> None:
@@ -1285,9 +1311,12 @@ def cmd_model(repl: Repl, argument: str) -> None:
     name = argument.strip() or pick_model(repl.client, repl.session.model)
     if not name:
         return
-    if not repl.client.model_exists(name):
-        console.print(f"[err]model {escape(name)} not found[/err]")
+    ssh_target = remote_node(repl.session.remote, repl.config) if repl.session.remote else None
+    chosen = ensure_model(repl.client, name, repl.config, ssh_target=ssh_target,
+                          host_label=repl.session.remote)
+    if not chosen:
         return
+    name = chosen
     if name == repl.session.model:
         console.print("[dim]already using that model[/dim]")
         return
@@ -1681,6 +1710,7 @@ COMMAND_HANDLERS: dict[str, Callable[[Repl, str], Any]] = {
     "/show": cmd_show,
     "/load": cmd_load,
     "/save": cmd_save,
+    "/pull": cmd_pull,
     "/clear": cmd_clear,
     "/new": cmd_new,
     "/sessions": cmd_sessions,

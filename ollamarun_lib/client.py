@@ -159,6 +159,15 @@ class OllamaClient:
             payload["keep_alive"] = keepalive
         self._json("POST", "/api/generate", payload)
 
+    def pull_model(self, model: str,
+                   progress: Optional[Callable[[dict[str, Any]], None]] = None) -> None:
+        """Downloads a model from the registry, streaming progress events."""
+        for event in self.stream_ndjson("/api/pull", {"model": model, "stream": True}):
+            if event.get("error"):
+                raise OllamaError(str(event["error"]))
+            if progress:
+                progress(event)
+
 
 def build_chat_payload(model: str, messages: list[dict[str, Any]], *, stream: bool = True,
                        fmt: Optional[Any] = None, think: Optional[Any] = None,
