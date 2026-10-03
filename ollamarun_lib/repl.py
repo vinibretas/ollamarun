@@ -697,7 +697,8 @@ class Repl:
         lines = [
             f"[key]model[/key]   {escape(self.session.model)}",
             f"[key]session[/key] {self.session.id} · {escape(self.session.display_title())}",
-            f"[key]host[/key]    {escape(self.client.base)}",
+            f"[key]host[/key]    {escape(self.client.base)}"
+            + (f" · {escape(self.session.remote)}" if self.session.remote else ""),
             f"[key]render[/key]  {self.render_mode}"
             + ("" if self.math else " · math off")
             + f" · thinking {self.thinking_mode}"

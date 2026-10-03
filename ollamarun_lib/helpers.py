@@ -4,13 +4,24 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
+import subprocess
 import urllib.parse
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from .constants import CONFIG_PATH, DEFAULT_CONFIG, DEFAULT_HOST, DEFAULT_PORT, LOG_PATH, VERSION, console
+from .constants import (
+    CONFIG_PATH,
+    DEFAULT_CONFIG,
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    LOG_PATH,
+    REMOTE_NODES,
+    VERSION,
+    console,
+)
 
 
 def now_iso() -> str:
@@ -51,6 +62,122 @@ def normalize_host(value: Optional[str]) -> str:
     netloc = f"[{host}]" if ":" in host else host
     netloc += f":{port}"
     return f"{scheme}://{netloc}"
+
+
+_TAILSCALE_CACHE: Optional[dict[str, dict[str, Any]]] = None
+
+
+def _tailscale_records() -> dict[str, dict[str, Any]]:
+    """Tailnet peers keyed by hostname(lower), from `tailscale status --json`.
+
+    Cached for the process; {} when tailscale is missing or the call fails.
+    """
+    global _TAILSCALE_CACHE
+    if _TAILSCALE_CACHE is not None:
+        return _TAILSCALE_CACHE
+    records: dict[str, dict[str, Any]] = {}
+    if shutil.which("tailscale"):
+        try:
+            raw = subprocess.check_output(
+                ["tailscale", "status", "--json"], text=True, timeout=10,
+                stderr=subprocess.DEVNULL)
+            data = json.loads(raw)
+            peers = list((data.get("Peer") or {}).values())
+            self_peer = data.get("Self") or {}
+            if self_peer:
+                peers.append(self_peer)
+            for peer in peers:
+                name = (peer.get("HostName") or "").lower()
+                if name:
+                    records[name] = peer
+        except (OSError, ValueError, subprocess.SubprocessError):
+            records = {}
+    _TAILSCALE_CACHE = records
+    return records
+
+
+def tailscale_map() -> dict[str, str]:
+    """hostname(lower) -> first Tailscale IP, from `tailscale status --json`."""
+    out: dict[str, str] = {}
+    for name, peer in _tailscale_records().items():
+        ips = peer.get("TailscaleIPs") or []
+        if ips:
+            out[name] = ips[0]
+    return out
+
+
+def tailscale_peer_state(name: str) -> str:
+    """'online' / 'offline, last seen …' for a tailnet node; '' when unknown."""
+    peer = _tailscale_records().get((name or "").lower())
+    if peer is None:
+        return ""
+    if peer.get("Online"):
+        return "online"
+    seen = short_stamp(peer.get("LastSeen"))[:16]
+    return f"offline, last seen {seen}" if seen else "offline"
+
+
+def _remote_parts(value: str, config: Optional[dict[str, Any]]) -> tuple[str, Optional[int]]:
+    """(node, port) for a `--remote` value, before tailnet-IP resolution.
+
+    Known names/aliases map through `config["remote_hosts"]` then
+    REMOTE_NODES; anything else is taken as a hostname. The port is only set
+    when the value carries one explicitly.
+    """
+    config = config or {}
+    raw = (value or "").strip()
+    if not raw:
+        raise ValueError("--remote needs a machine name (pi, kiddo, g3, optiplex7070, guri)")
+    if "://" in raw:
+        parsed = urllib.parse.urlsplit(raw)
+        return (parsed.hostname or raw).lower(), parsed.port
+    parsed = urllib.parse.urlsplit("http://" + raw)
+    name = (parsed.hostname or raw).lower()
+    override = (config.get("remote_hosts") or {}).get(name)
+    if override:
+        seen = urllib.parse.urlsplit("http://" + str(override))
+        node = (seen.hostname or str(override)).lower()
+        return node, parsed.port or seen.port
+    return str(REMOTE_NODES.get(name) or name).lower(), parsed.port
+
+
+def remote_node(value: str, config: Optional[dict[str, Any]] = None) -> str:
+    """Machine (tailnet hostname or literal address) behind a `--remote` value."""
+    return _remote_parts(value, config)[0]
+
+
+def resolve_remote(value: str, config: Optional[dict[str, Any]] = None,
+                   ts_map: Optional[dict[str, str]] = None) -> str:
+    """`--remote` value -> base URL, e.g. 'kiddo' -> 'http://100.64.0.2:11434'.
+
+    Known names map through `config["remote_hosts"]` then REMOTE_NODES and are
+    resolved to their tailnet IP through `tailscale status --json` when
+    available (falling back to the name itself, which MagicDNS resolves);
+    every other value goes through `normalize_host` exactly like `--host`.
+    `ts_map` is injectable for tests.
+    """
+    raw = (value or "").strip()
+    if not raw:
+        raise ValueError("--remote needs a machine name (pi, kiddo, g3, optiplex7070, guri)")
+    if "://" in raw:
+        return normalize_host(raw)
+    node, port = _remote_parts(value, config)
+    if ts_map is None:
+        ts_map = tailscale_map()
+    node = ts_map.get(node) or node
+    if not port:
+        port = DEFAULT_PORT
+    bracketed = f"[{node}]" if ":" in node else node
+    return normalize_host(f"{bracketed}:{port}")
+
+
+def is_local_host(base: str) -> bool:
+    """True when a base URL points at this machine's default local Ollama."""
+    try:
+        hostname = urllib.parse.urlsplit(normalize_host(base)).hostname or ""
+    except ValueError:
+        return False
+    return hostname.lower() in {"127.0.0.1", "localhost", "::1"}
 
 
 def parse_think(value: Any) -> Optional[Any]:
