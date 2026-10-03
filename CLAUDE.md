@@ -122,7 +122,8 @@ a module's own docstring for what lives there before editing:
    (`shell_safety`, `python_safety`, `approval_decision`), argument
    normalization, output truncation and `execute_tool()`. The agent loop that
    calls into it lives in `repl.py` (approve → execute → append a `role: tool`
-   message → ask the model again); rendering of calls/results is `renderer.py`.
+   message → ask the model again), auto-speak lives in `Repl.speak_text`, and
+   rendering of calls/results is `renderer.py`.
 9. **`session.py`** — `Session` (in-memory conversation model: messages,
    model, system prompt, options) and `SessionStore` (atomic read/write of
    the JSON files + `index.json`, list/search/export/delete).
@@ -141,7 +142,7 @@ a module's own docstring for what lives there before editing:
    (`/set`, `/show`, `/load`, `/save`, `/undo`, `/retry`, `/edit`,
    `/branch`, `/context`, `/summarize`, `/image`, `/render`, `/math`,
    `/pager`, `/tps`, `/ps`, `/num-ctx`, `/copy`, `/export`, `/stats`,
-   `/thinking`, `/tools`, ...) is a standalone
+   `/thinking`, `/tools`, `/tts`, ...) is a standalone
    `cmd_NAME(repl, argument)` function dispatched by name through
    `COMMAND_HANDLERS`; add a new slash command by adding one function here
    and wiring it into `COMMAND_INFO`/`COMMAND_HANDLERS` (and the

@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -72,6 +73,7 @@ from .tools import (
     call_fingerprint,
     default_registry,
     execute_tool,
+    find_tts_remote,
     normalize_arguments,
     tool_schemas as build_tool_schemas,
 )
@@ -93,6 +95,7 @@ COMMAND_INFO: dict[str, tuple[str, str]] = {
     "/num-ctx": ("[N]", "context window size, capped to the model's max"),
     "/params": ("", "show session parameters"),
     "/tools": ("[on|off|policy MODE|enable|disable NAME…|allow]", "tool harness and approvals"),
+    "/tts": ("[on|off|voice NAME|lang CODE|tools on|off|voices]", "auto-speak via tts-remote"),
     "/think": ("[on|off|low|medium|high]", "thinking mode"),
     "/thinking": ("[show|collapse|hide|toggle|full]", "thinking display (Ctrl+T while streaming)"),
     "/system": ("[TEXT|clear]", "show or set the system prompt"),
@@ -216,10 +219,22 @@ class Repl:
         except (TypeError, ValueError):
             tool_max_output = 4000
         self.tool_ctx = ToolContext(cwd=os.getcwd(), timeout=tool_timeout,
-                                    max_output=tool_max_output)
-        self.tool_registry = default_registry()
+                                    max_output=tool_max_output,
+                                    tts_remote=config.get("tts_remote") or None)
+        tts_option = None if config.get("tts_tools", True) else False
+        self.tool_registry = default_registry(tts=tts_option)
         self._tool_support_checked = False
         self._format_tools_warned = False
+        if getattr(args, "no_speak", False):
+            self.tts_auto = False
+        elif getattr(args, "speak", False):
+            self.tts_auto = True
+        elif session.tts_auto is not None:
+            self.tts_auto = bool(session.tts_auto)
+        else:
+            self.tts_auto = bool(config.get("tts_auto", False))
+        self.tts_voice = session.tts_voice or config.get("tts_voice") or None
+        self.tts_lang = session.tts_lang or config.get("tts_lang") or None
         self._pt_session: Optional[Any] = None
         self._ps_shown_for: set[str] = set()
         self._preload_thread: Optional[threading.Thread] = None
@@ -495,6 +510,34 @@ class Repl:
             self.store.save(self.session)
         return interrupted
 
+    # ── tts ─────────────────────────────────────────────────────────────────
+
+    def speak_text(self, text: str) -> bool:
+        """Queue `text` for tts-remote playback; never blocks or raises."""
+        if not text or not text.strip():
+            return False
+        binary = find_tts_remote(self.tool_ctx)
+        if not binary:
+            return False
+        command = [binary, "say", "-q", "--markdown"]
+        if self.tts_voice:
+            command += ["--voice", str(self.tts_voice)]
+        if self.tts_lang:
+            command += ["--lang", str(self.tts_lang)]
+        try:
+            proc = subprocess.run(command, input=text, capture_output=True,
+                                  text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            console.print(f"[warn]tts: {escape(str(exc))}[/warn]")
+            return False
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout).strip()
+            console.print(f"[warn]tts: {escape(detail or 'tts-remote failed')}[/warn]")
+            return False
+        if console.is_terminal:
+            console.print(f"[dim]speaking · {len(text)} chars[/dim]")
+        return True
+
     # ── generation ──────────────────────────────────────────────────────────
 
     def _generate(self) -> GenerationResult:
@@ -559,6 +602,8 @@ class Repl:
                                         quiet=(self.render_mode == "raw")):
                 console.print("[warn]tool execution interrupted; stopping this turn[/warn]")
                 break
+        if self.tts_auto and result.content and not result.cancelled and not result.error:
+            self.speak_text(result.content)
         if console.is_terminal and not result.error:
             self._maybe_show_ps()
         return result
@@ -650,6 +695,7 @@ class Repl:
             f"[key]render[/key]  {self.render_mode}"
             + ("" if self.math else " · math off")
             + f" · thinking {self.thinking_mode}"
+            + (" · tts auto" if self.tts_auto else "")
             + f" · {model_count} local models",
         ]
         if self.session.messages:
@@ -856,6 +902,80 @@ def cmd_tools(repl: Repl, argument: str) -> None:
                   "enable NAME…|disable NAME…|allow][/err]")
 
 
+def cmd_tts(repl: Repl, argument: str) -> None:
+    parts = argument.split()
+    topic = parts[0].lower() if parts else ""
+    binary = find_tts_remote(repl.tool_ctx)
+    if not topic or topic == "status":
+        table = Table(title="tts-remote", box=box.ROUNDED, header_style="bold magenta")
+        table.add_column("setting")
+        table.add_column("value")
+        table.add_row("binary", escape(binary) if binary else "[err]not found[/err]")
+        table.add_row("auto-speak", "[ok]on[/ok]" if repl.tts_auto else "off")
+        table.add_row("voice", escape(repl.tts_voice or "(default)"))
+        table.add_row("language", escape(repl.tts_lang or "(default)"))
+        states = []
+        for name in ("speak", "list_voices"):
+            if name not in repl.tool_registry:
+                states.append(f"{name}: not installed")
+            elif name in repl.session.tools_disabled:
+                states.append(f"{name}: disabled")
+            else:
+                states.append(f"{name}: on")
+        table.add_row("model access", escape(", ".join(states)))
+        console.print(table)
+        return
+    if topic in {"on", "off"}:
+        repl.tts_auto = topic == "on"
+        repl.session.tts_auto = repl.tts_auto
+        repl.session.touch()
+        console.print(f"[ok]auto-speak[/ok] {'on' if repl.tts_auto else 'off'}")
+        return
+    if topic in {"voice", "lang"}:
+        value = " ".join(parts[1:]).strip()
+        if topic == "voice":
+            repl.tts_voice = value or None
+            repl.session.tts_voice = repl.tts_voice
+        else:
+            repl.tts_lang = value or None
+            repl.session.tts_lang = repl.tts_lang
+        repl.session.touch()
+        console.print(f"[ok]{topic}[/ok] {escape(value or '(default)')}")
+        return
+    if topic == "tools":
+        action = parts[1].lower() if len(parts) > 1 else ""
+        if action not in {"on", "off"}:
+            console.print("[err]usage: /tts tools on|off[/err]")
+            return
+        if not {"speak", "list_voices"} & set(repl.tool_registry):
+            console.print("[warn]tts-remote not found; nothing to toggle[/warn]")
+            return
+        disabled = list(repl.session.tools_disabled)
+        for name in ("speak", "list_voices"):
+            if name not in repl.tool_registry:
+                continue
+            if action == "off" and name not in disabled:
+                disabled.append(name)
+            if action == "on" and name in disabled:
+                disabled.remove(name)
+        repl.session.tools_disabled = disabled
+        repl.session.touch()
+        console.print(f"[ok]tts tools {action}[/ok]")
+        return
+    if topic == "voices":
+        spec = repl.tool_registry.get("list_voices")
+        if spec is None:
+            console.print("[err]tts-remote not found[/err]")
+            return
+        outcome = execute_tool(spec, {}, repl.tool_ctx)
+        console.print(Panel(escape(outcome.text), title="tts voices",
+                            border_style="dim" if outcome.ok else "red",
+                            title_align="left"))
+        return
+    console.print("[err]usage: /tts [on|off|voice NAME|lang CODE|tools on|off|"
+                  "voices][/err]")
+
+
 def cmd_show(repl: Repl, argument: str) -> None:
     topic = (argument or "info").split()[0]
     try:
@@ -996,6 +1116,12 @@ def _switch_session(repl: Repl, session: Session) -> None:
     repl.session = session
     repl.session.host = repl.client.base
     repl.session.touch()
+    if session.tts_auto is not None:
+        repl.tts_auto = bool(session.tts_auto)
+    if session.tts_voice:
+        repl.tts_voice = session.tts_voice
+    if session.tts_lang:
+        repl.tts_lang = session.tts_lang
     console.print(f"[ok]loaded[/ok] {session.id} · {escape(session.display_title())} "
                   f"· model {escape(session.model)}")
     repl.refresh_models()
@@ -1293,6 +1419,9 @@ def cmd_branch(repl: Repl, argument: str) -> None:
     branch.stats = dict(repl.session.stats)
     branch.tool_allow = list(repl.session.tool_allow)
     branch.tools_disabled = list(repl.session.tools_disabled)
+    branch.tts_auto = repl.session.tts_auto
+    branch.tts_voice = repl.session.tts_voice
+    branch.tts_lang = repl.session.tts_lang
     if not repl.no_save:
         repl.store.save(repl.session)
         repl.store.save(branch)
@@ -1553,6 +1682,7 @@ COMMAND_HANDLERS: dict[str, Callable[[Repl, str], Any]] = {
     "/num-ctx": cmd_num_ctx,
     "/params": cmd_params,
     "/tools": cmd_tools,
+    "/tts": cmd_tts,
     "/think": cmd_think,
     "/thinking": cmd_thinking,
     "/system": cmd_system,

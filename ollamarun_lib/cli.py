@@ -57,6 +57,8 @@ interactive commands:
   /summarize /context   manage the context window
   /tools [on|off]       tool harness, approvals and per-tool enable/disable
                         (`/tools policy auto|allowlist|ask`, `/tools allow`)
+  /tts [on|off]         auto-speak answers via tts-remote; voice/lang/voices,
+                        and `/tts tools on|off` for the model's tts access
   /thinking [MODE]      thinking display: show|collapse|hide|toggle|full
   /tps [on|off]         live tokens/s footer
   /ps                   resident models (ollama ps)
@@ -152,6 +154,12 @@ sessions live in ~/etc/data/ollamarun; config in ~/etc/config_files/ollamarun.js
                                   "needs tool-calling support)")
     tools_group.add_argument("--no-tools", action="store_true",
                              help="disable the tool harness for this run")
+    speak_group = wrapper.add_mutually_exclusive_group()
+    speak_group.add_argument("--speak", action="store_true",
+                             help="speak every final answer through tts-remote "
+                                  "(fire-and-forget)")
+    speak_group.add_argument("--no-speak", action="store_true",
+                             help="never auto-speak answers (config tts_auto)")
     wrapper.add_argument("--no-save", action="store_true",
                          help="do not persist this session")
     wrapper.add_argument("--raw", action="store_true",

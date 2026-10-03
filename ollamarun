@@ -2,9 +2,21 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.14
+Version: 1.15
 
 Summary of changes in this version:
+  - tts-remote integration. The speak tool queues text through `tts-remote say`
+    (text piped on stdin, fire-and-forget, never blocks the answer) and
+    list_voices exposes the installed voice catalog, so the model can read
+    things aloud or pick a voice/language on request.
+  - Auto-speak: `--speak` (or config `tts_auto`, or `/tts on`) reads every
+    final answer aloud through `tts-remote say --markdown`; only the final
+    answer is spoken (not thinking or tool rounds). `--no-speak` overrides a
+    session that remembered it.
+  - New `/tts` command: status, `on|off`, `voice NAME`, `lang CODE`,
+    `tools on|off` (whether the model may call speak/list_voices) and `voices`.
+    Voice/language/auto-speak are stored in the session like other settings.
+    Config keys: tts_auto, tts_voice, tts_lang, tts_remote, tts_tools.
   - Tool harness. The model can now call tools through Ollama's function-calling
     API and the results are fed back for a final answer (up to 8 rounds, each
     streamed and rendered as before). Built-in tools: run_shell, run_python,
