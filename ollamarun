@@ -2,9 +2,33 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.13
+Version: 1.14
 
 Summary of changes in this version:
+  - Tool harness. The model can now call tools through Ollama's function-calling
+    API and the results are fed back for a final answer (up to 8 rounds, each
+    streamed and rendered as before). Built-in tools: run_shell, run_python,
+    read_file, write_file, list_dir and fetch_url, plus tts-remote's speak and
+    list_voices when it is installed -- all built in ollamarun_lib/tools.py.
+  - Allowlist-based approvals. Read-only tools (read_file/list_dir/fetch_url)
+    always run; run_shell runs unattended only when every command segment is on
+    the safe list (ls, cat, grep, rg, find without -exec/-delete, read-only git,
+    ...) and run_python only when an AST scan proves the snippet cannot touch
+    files or the OS; everything else asks y/a/n, where `a` remembers that exact
+    call in the session. Unattended runs deny non-approved calls with a note the
+    model can explain, unless -y/--yes or `/tools policy auto`; write_file
+    always asks by default.
+  - Tool calls and results are stored in the session (assistant tool_calls plus
+    role:tool messages carrying tool_name) and replayed on later turns; exports,
+    --show and /undo understand them. --format switches tools off (the two
+    cannot be combined) and a model that does not advertise tool support gets a
+    warning while the schemas are still sent.
+  - New flags and commands: --tools/--no-tools, -y/--yes now also skips tool
+    confirmations, and /tools [on|off|policy auto|allowlist|ask|enable NAME|
+    disable NAME|allow]. Config keys: tools, tools_policy, tools_shell_allow,
+    tools_timeout, tools_max_output, tools_max_rounds.
+  - Fixed --raw: it now actually switches the renderer to raw mode (it was
+    accepted but ignored; use --render raw as before too).
   - Fixed context-window accounting: `/context`, the "context nearly full"
     warning and auto-compact used only `last_prompt_tokens` (the
     `prompt_eval_count` of the request that produced the last answer), which

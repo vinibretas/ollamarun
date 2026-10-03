@@ -737,12 +737,16 @@ def test_tps_estimator() -> int:
 
 
 class _FakeClient:
-    def __init__(self, resident=(), models=(), ps_entries=(), show_data=None):
+    def __init__(self, resident=(), models=(), ps_entries=(), show_data=None,
+                 capabilities=("completion",), chat_script=None):
         self.base = "http://fake:11434"
         self.resident = list(resident)
         self.models = list(models)
         self.ps_entries = list(ps_entries)
         self.show_data = show_data
+        self.capability_list = list(capabilities)
+        self.chat_script = [list(events) for events in (chat_script or [])]
+        self.chat_calls = 0
         self.unloaded = []
         self.loaded = []
         self.chat_payloads = []
@@ -756,8 +760,15 @@ class _FakeClient:
     def load(self, model, *, keepalive=None):
         self.loaded.append(model)
 
+    def capabilities(self, model):
+        return list(self.capability_list)
+
     def chat(self, payload, timeout=None):
         self.chat_payloads.append(payload)
+        if self.chat_script:
+            events = self.chat_script[self.chat_calls % len(self.chat_script)]
+            self.chat_calls += 1
+            return iter(events)
         return iter([{"message": {"content": "ok"}, "done": True}])
 
     def tags(self):
@@ -1544,6 +1555,364 @@ class _FakeSession:
         return self.handler(method, url, json, stream)
 
 
+def _check(failures, name, cond, detail=""):
+    if cond:
+        print(f"PASS  {name}")
+    else:
+        print(f"FAIL  {name} {detail}")
+        return failures + 1
+    return failures
+
+
+def test_tools_policy() -> int:
+    failures = 0
+    safe_shell = [
+        "ls -la", "cat README.md", "head -n 5 file.txt", "tail file.txt",
+        "grep -rn TODO .", "rg --files", "git log --oneline -5", "git status",
+        "git diff --stat", "git config --get user.name", "find . -name '*.py'",
+        "ls | grep foo", "ls && pwd", "sort file.txt", "du -sh .", "df -h",
+        "tree -L 2", "date", "which python3", "uname -a", "cut -d: -f1 /etc/passwd",
+    ]
+    risky_shell = [
+        "rm -rf /", "ls; rm x", "ls && rm x", "cat $(pwd)/secret",
+        "cat `pwd`/secret", "echo hi > out.txt", "echo hi >> out.txt",
+        "python3 -c 'print(1)'", "bash -c 'rm x'", "sh -c 'x'", "sudo ls",
+        "git -c core.pager=less log", "git config user.name admin",
+        "git branch -D main", "git remote add origin x", "find . -exec rm {} ;",
+        "find . -delete", "find . -fprint out", "rg --pre 'sh -c' needle",
+        "sort -o out.txt in.txt", "curl http://example.com", "wget x",
+        "FOO=1 ls", "ls $(echo hi)", "xargs rm", "env ls", "nice ls",
+        "diff <(ls) <(ls)", "ls > log",
+    ]
+    for command in safe_shell:
+        reason = orun.shell_safety(command)
+        failures = _check(failures, f"shell safe: {command}", reason == "",
+                          f"reason={reason!r}")
+    for command in risky_shell:
+        reason = orun.shell_safety(command)
+        failures = _check(failures, f"shell needs approval: {command}",
+                          reason != "", "unexpectedly allowed")
+
+    safe_python = [
+        "print(2 + 2)", "import math\nprint(math.pi)",
+        "from collections import Counter\nprint(Counter('aab'))",
+        "print(len('x' * 10))",
+        "import json\nprint(json.dumps({'a': 1}))",
+    ]
+    risky_python = [
+        "import os\nos.system('ls')", "open('/etc/passwd').read()",
+        "__import__('os')", "exec('print(1)')", "eval('1+1')",
+        "from subprocess import run", "import pathlib\n"
+        "pathlib.Path('x').write_text('y')", "import socket",
+        "f = open\nf('/etc/passwd')", "print(open)",
+        "from math import *", "import sys\nsys.exit()",
+    ]
+    for code in safe_python:
+        reason = orun.python_safety(code)
+        failures = _check(failures, f"python safe: {code.splitlines()[0]}",
+                          reason == "", f"reason={reason!r}")
+    for code in risky_python:
+        reason = orun.python_safety(code)
+        failures = _check(failures, f"python needs approval: {code.splitlines()[0]}",
+                          reason != "", "unexpectedly allowed")
+
+    registry = orun.default_registry(tts=False)
+    read_only = registry["read_file"]
+    shell = registry["run_shell"]
+    write = registry["write_file"]
+    decisions = [
+        ("read-only always auto",
+         orun.approval_decision(read_only, {}, policy="ask").allowed, True),
+        ("safe shell auto under allowlist",
+         orun.approval_decision(shell, {"command": "ls -la"}, policy="allowlist").allowed, True),
+        ("risky shell asks under allowlist",
+         orun.approval_decision(shell, {"command": "rm -rf /"}, policy="allowlist").allowed, False),
+        ("safe shell asks under policy=ask",
+         orun.approval_decision(shell, {"command": "ls"}, policy="ask").allowed, False),
+        ("write asks under allowlist",
+         orun.approval_decision(write, {"path": "x", "content": "y"},
+                                policy="allowlist").allowed, False),
+        ("write auto under auto",
+         orun.approval_decision(write, {"path": "x", "content": "y"},
+                                policy="auto").allowed, True),
+    ]
+    for name, got, expected in decisions:
+        failures = _check(failures, name, got is expected, f"got={got}")
+
+    normalized = [
+        ({"command": "ls"}, {"command": "ls"}),
+        ('{"command": "ls"}', {"command": "ls"}),
+        (None, {}),
+        ("", {}),
+    ]
+    for raw, expected in normalized:
+        got = orun.normalize_arguments(raw)
+        failures = _check(failures, f"normalize_arguments({raw!r})", got == expected,
+                          f"got={got!r}")
+    failures = _check(failures, "normalize_arguments rejects junk",
+                      orun.normalize_arguments("{not json") is None)
+    failures = _check(failures, "normalize_arguments rejects non-objects",
+                      orun.normalize_arguments("[1, 2]") is None)
+    failures = _check(failures, "fingerprint is stable",
+                      orun.call_fingerprint("run_shell", {"a": 1})
+                      == orun.call_fingerprint("run_shell", {"a": 1}))
+    failures = _check(failures, "call_detail summarizes shell",
+                      orun.call_detail("run_shell", {"command": "ls -la"}) == "ls -la")
+    return failures
+
+
+def test_tool_execution() -> int:
+    failures = 0
+    registry = orun.default_registry(tts=False)
+    ctx = orun.ToolContext(cwd=os.getcwd(), timeout=30, max_output=2000)
+
+    outcome = orun.execute_tool(registry["run_shell"], {"command": "echo from-shell"}, ctx)
+    failures = _check(failures, "run_shell echoes and reports exit 0",
+                      outcome.ok and outcome.text.startswith("exit 0")
+                      and "from-shell" in outcome.text, outcome.text)
+
+    outcome = orun.execute_tool(registry["run_shell"], {"command": "exit 3"}, ctx)
+    failures = _check(failures, "run_shell reports a failing exit code",
+                      outcome.ok and outcome.text.startswith("exit 3"), outcome.text)
+
+    outcome = orun.execute_tool(registry["run_python"], {"code": "print(6 * 7)"}, ctx)
+    failures = _check(failures, "run_python prints", outcome.ok and "42" in outcome.text,
+                      outcome.text)
+
+    outcome = orun.execute_tool(registry["run_python"], {"code": "raise ValueError('boom')"},
+                                ctx)
+    failures = _check(failures, "run_python captures tracebacks",
+                      "boom" in outcome.text and "exit 1" in outcome.text, outcome.text)
+
+    tiny = orun.ToolContext(cwd=os.getcwd(), timeout=30, max_output=200)
+    outcome = orun.execute_tool(registry["run_python"], {"code": "print('x' * 2000)"}, tiny)
+    failures = _check(failures, "output is truncated to the cap",
+                      "truncated" in outcome.text and len(outcome.text) < 1000,
+                      f"len={len(outcome.text)}")
+
+    outcome = orun.execute_tool(registry["run_shell"], {"command": "printf 'raw\\n'"}, ctx)
+    failures = _check(failures, "executor runs whatever it is given (policy is separate)",
+                      outcome.ok and outcome.text.startswith("exit 0"), outcome.text)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "notes.txt"
+        write = orun.execute_tool(registry["write_file"],
+                                  {"path": str(target), "content": "hello\nthere"}, ctx)
+        failures = _check(failures, "write_file writes", target.read_text() == "hello\nthere",
+                          write.text)
+        append = orun.execute_tool(registry["write_file"],
+                                   {"path": str(target), "content": "\nmore", "append": True},
+                                   ctx)
+        failures = _check(failures, "write_file appends",
+                          target.read_text().endswith("more"), append.text)
+        read = orun.execute_tool(registry["read_file"], {"path": str(target)}, ctx)
+        failures = _check(failures, "read_file numbers lines",
+                          "1: hello" in read.text and "3: more" in read.text, read.text)
+        listing = orun.execute_tool(registry["list_dir"], {"path": tmp}, ctx)
+        failures = _check(failures, "list_dir lists entries",
+                          "notes.txt" in listing.text, listing.text)
+        missing = orun.execute_tool(registry["read_file"], {"path": str(Path(tmp) / "nope")},
+                                    ctx)
+        failures = _check(failures, "read_file reports missing files",
+                          not missing.ok and "not a file" in missing.text, missing.text)
+
+    bad = orun.execute_tool(registry["run_shell"], {"command": ""}, ctx)
+    failures = _check(failures, "missing command is an error", not bad.ok, bad.text)
+    return failures
+
+
+def test_tool_loop() -> int:
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        config = dict(orun.DEFAULT_CONFIG)
+        args = orun.build_parser().parse_args(["m1", "--render", "plain", "--no-save", "-y"])
+        first = [
+            {"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "run_shell",
+                              "arguments": {"command": "echo from-tool"}}}]},
+             "done": False},
+            {"message": {"role": "assistant", "content": ""}, "done": True},
+        ]
+        second = [
+            {"message": {"role": "assistant", "content": "all done"}, "done": False},
+            {"message": {"role": "assistant", "content": ""}, "done": True},
+        ]
+        client = _FakeClient(models=["m1"], capabilities=["completion", "tools"],
+                             chat_script=[first, second])
+        repl = orun.Repl(args, config, client, store,
+                         orun.Session.create("m1", client.base))
+        repl._build_prompt_session = lambda: None
+        repl.session.add_message("user", "run something")
+        with orun.console.capture() as cap:
+            result = repl._generate()
+        out = _plain(cap.get())
+
+        failures = _check(failures, "tool loop returns the final answer",
+                          result.content == "all done", result.content)
+        failures = _check(failures, "tool loop makes one call per round",
+                          len(client.chat_payloads) == 2, str(len(client.chat_payloads)))
+        failures = _check(failures, "tools are sent with the request",
+                          "run_shell" in json.dumps(client.chat_payloads[0].get("tools", [])))
+        roles = [message["role"] for message in repl.session.messages]
+        failures = _check(failures, "session records assistant/tool/assistant",
+                          roles == ["user", "assistant", "tool", "assistant"], str(roles))
+        tool_message = repl.session.messages[2]
+        failures = _check(failures, "tool result carries the name and output",
+                          tool_message.get("tool_name") == "run_shell"
+                          and "from-tool" in tool_message.get("content", ""),
+                          str(tool_message))
+        failures = _check(failures, "second request replays tool history",
+                          any(m.get("role") == "tool"
+                              for m in client.chat_payloads[1]["messages"])
+                          and any(m.get("tool_calls")
+                                  for m in client.chat_payloads[1]["messages"]))
+        failures = _check(failures, "tool round does not inflate the turn count",
+                          repl.session.stats.get("turns") == 1,
+                          str(repl.session.stats.get("turns")))
+        failures = _check(failures, "tool result panel is rendered",
+                          "tool · run_shell" in out and "ok" in out, out)
+
+        # Non-interactive + no -y: a risky call is denied with a note.
+        args2 = orun.build_parser().parse_args(["m1", "--render", "plain", "--no-save"])
+        script2 = [
+            {"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "run_shell",
+                              "arguments": {"command": "rm -rf /tmp/definitely-not"}}}]},
+             "done": False},
+            {"message": {"role": "assistant", "content": ""}, "done": True},
+        ]
+        script3 = [{"message": {"role": "assistant", "content": "understood"}, "done": True}]
+        client2 = _FakeClient(models=["m1"], capabilities=["completion", "tools"],
+                              chat_script=[script2, script3])
+        repl2 = orun.Repl(args2, dict(orun.DEFAULT_CONFIG), client2, store,
+                          orun.Session.create("m1", client2.base))
+        repl2._build_prompt_session = lambda: None
+        repl2.session.add_message("user", "do it")
+        with orun.console.capture():
+            result2 = repl2._generate()
+        denial = repl2.session.messages[2].get("content", "")
+        failures = _check(failures, "unattended risky call is denied, model continues",
+                          denial.startswith("tool not run:") and result2.content == "understood",
+                          denial)
+
+        # A remembered fingerprint runs even without -y.
+        client3 = _FakeClient(models=["m1"], capabilities=["completion", "tools"],
+                              chat_script=[script2, script3])
+        repl3 = orun.Repl(args2, dict(orun.DEFAULT_CONFIG), client3, store,
+                          orun.Session.create("m1", client3.base))
+        repl3._build_prompt_session = lambda: None
+        repl3.session.tool_allow.append(orun.call_fingerprint(
+            "run_shell", {"command": "rm -rf /tmp/definitely-not"}))
+        repl3.session.add_message("user", "do it")
+        with orun.console.capture():
+            repl3._generate()
+        allowed_text = repl3.session.messages[2].get("content", "")
+        failures = _check(failures, "remembered fingerprints run unattended",
+                          allowed_text.startswith("exit"), allowed_text)
+    return failures
+
+
+def test_tool_commands() -> int:
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+        client = _FakeClient(models=["m1"], capabilities=["completion", "tools"])
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store,
+                         orun.Session.create("m1", client.base))
+        repl._build_prompt_session = lambda: None
+
+        with orun.console.capture() as cap:
+            orun.cmd_tools(repl, "")
+        out = _plain(cap.get())
+        failures = _check(failures, "/tools lists the registry",
+                          "run_shell" in out and "run_python" in out
+                          and "policy" in out, out)
+        failures = _check(failures, "/tools reports the active policy",
+                          "allowlist" in out, out)
+
+        with orun.console.capture():
+            orun.cmd_tools(repl, "disable run_shell")
+        names = [schema["function"]["name"] for schema in repl.active_tool_schemas()]
+        failures = _check(failures, "/tools disable drops the schema",
+                          "run_shell" not in names and "run_python" in names, str(names))
+        with orun.console.capture():
+            orun.cmd_tools(repl, "enable run_shell")
+        names = [schema["function"]["name"] for schema in repl.active_tool_schemas()]
+        failures = _check(failures, "/tools enable restores the schema",
+                          "run_shell" in names, str(names))
+
+        with orun.console.capture():
+            orun.cmd_tools(repl, "policy auto")
+        failures = _check(failures, "/tools policy sets the mode",
+                          repl.tools_policy == "auto", repl.tools_policy)
+        with orun.console.capture():
+            orun.cmd_tools(repl, "off")
+        failures = _check(failures, "/tools off stops sending schemas",
+                          repl.active_tool_schemas() == [])
+        with orun.console.capture() as cap:
+            orun.cmd_tools(repl, "allow")
+        failures = _check(failures, "/tools allow shows the shell allowlist",
+                          "ls" in _plain(cap.get()) and "git" in _plain(cap.get()))
+    return failures
+
+
+def test_tool_payloads() -> int:
+    failures = 0
+    session = orun.Session.create("m", "http://h")
+    session.add_message("user", "hi")
+    session.add_message("assistant", "", tool_calls=[
+        {"function": {"name": "run_shell", "arguments": {"command": "ls"}}}])
+    session.add_message("tool", "exit 0\nfile.txt", tool_name="run_shell")
+    session.add_message("assistant", "there is one file")
+
+    without = session.message_payloads()
+    roles = [message["role"] for message in without]
+    failures = _check(failures, "tool history is hidden when tools are off",
+                      roles == ["user", "assistant"], str(roles))
+    with_tools = session.message_payloads(with_tools=True)
+    roles = [message["role"] for message in with_tools]
+    failures = _check(failures, "tool history is replayed when tools are on",
+                      roles == ["user", "assistant", "tool", "assistant"], str(roles))
+    failures = _check(failures, "assistant tool_calls survive the round trip",
+                      with_tools[1].get("tool_calls")
+                      and with_tools[2].get("tool_name") == "run_shell",
+                      json.dumps(with_tools))
+
+    stats = {"prompt_tokens": 10, "completion_tokens": 3, "total_duration": 1.5}
+    session.record_turn(stats, count_turn=False)
+    session.record_turn(stats)
+    failures = _check(failures, "record_turn can skip the turn counter",
+                      session.stats["turns"] == 1
+                      and session.stats["prompt_tokens"] == 20,
+                      json.dumps(session.stats))
+
+    payload = orun.build_chat_payload("m", [], tools=[{"type": "function"}])
+    failures = _check(failures, "build_chat_payload passes tools through",
+                      payload.get("tools") == [{"type": "function"}], json.dumps(payload))
+    return failures
+
+
+def test_tool_cli_flags() -> int:
+    failures = 0
+    parser = orun.build_parser()
+    args = parser.parse_args(["m1", "--tools"])
+    failures = _check(failures, "--tools parses", args.tools is True
+                      and args.no_tools is False)
+    args = parser.parse_args(["m1", "--no-tools"])
+    failures = _check(failures, "--no-tools parses", args.no_tools is True
+                      and args.tools is False)
+    try:
+        parser.parse_args(["m1", "--tools", "--no-tools"])
+        failures = _check(failures, "--tools/--no-tools are exclusive", False)
+    except SystemExit:
+        failures = _check(failures, "--tools/--no-tools are exclusive", True)
+    return failures
+
+
 def test_client_http() -> int:
     failures = 0
 
@@ -1656,6 +2025,8 @@ if __name__ == "__main__":
              + test_context_usage()
              + test_cmd_num_ctx() + test_emit_and_cli_functions()
              + test_build_parser_flags() + test_slash_completer()
+             + test_tools_policy() + test_tool_execution() + test_tool_loop()
+             + test_tool_commands() + test_tool_payloads() + test_tool_cli_flags()
              + test_client_http() + test_cmd_image()
              + test_live_stream_final_frame_is_complete())
     if total:

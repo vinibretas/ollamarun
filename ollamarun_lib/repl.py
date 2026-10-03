@@ -61,8 +61,20 @@ from .interactive import (
     pick_model,
     pick_session,
 )
-from .renderer import GenerationResult, Renderer, thinking_panel, user_message_box
+from .renderer import (GenerationResult, Renderer, thinking_panel,
+                       tool_result_panel, user_message_box)
 from .session import Session, SessionStore, export_html, export_json, export_markdown
+from .tools import (
+    DEFAULT_SHELL_ALLOW,
+    ToolContext,
+    approval_decision,
+    call_detail,
+    call_fingerprint,
+    default_registry,
+    execute_tool,
+    normalize_arguments,
+    tool_schemas as build_tool_schemas,
+)
 
 
 COMMAND_INFO: dict[str, tuple[str, str]] = {
@@ -80,6 +92,7 @@ COMMAND_INFO: dict[str, tuple[str, str]] = {
     "/ps": ("", "show resident models (ollama ps)"),
     "/num-ctx": ("[N]", "context window size, capped to the model's max"),
     "/params": ("", "show session parameters"),
+    "/tools": ("[on|off|policy MODE|enable|disable NAME…|allow]", "tool harness and approvals"),
     "/think": ("[on|off|low|medium|high]", "thinking mode"),
     "/thinking": ("[show|collapse|hide|toggle|full]", "thinking display (Ctrl+T while streaming)"),
     "/system": ("[TEXT|clear]", "show or set the system prompt"),
@@ -157,7 +170,8 @@ class Repl:
         self.max_render_chars = config.get("max_render_chars", 12000)
         self.timeout = args.timeout or config.get("timeout") or DEFAULT_TIMEOUT
         self.pager = args.pager or config.get("pager", False)
-        self.render_mode = args.render or config.get("render", "markdown")
+        self.render_mode = args.render or ("raw" if getattr(args, "raw", False)
+                                           else config.get("render", "markdown"))
         self.math = config.get("math", True) and not args.no_math
         if args.hidethinking:
             self.thinking_mode = "hidden"
@@ -177,6 +191,35 @@ class Repl:
         self.show_stats = bool(args.verbose or config.get("show_stats", False))
         self.verbose = bool(args.verbose)
         self.no_save = bool(args.no_save)
+        if getattr(args, "no_tools", False):
+            self.tools_enabled = False
+        elif getattr(args, "tools", False):
+            self.tools_enabled = True
+        else:
+            self.tools_enabled = bool(config.get("tools", True))
+        self.auto_approve = bool(getattr(args, "yes", False))
+        self.tools_policy = str(config.get("tools_policy") or "allowlist").lower()
+        if self.tools_policy not in {"auto", "allowlist", "ask"}:
+            self.tools_policy = "allowlist"
+        try:
+            self.tools_max_rounds = max(1, int(config.get("tools_max_rounds") or 8))
+        except (TypeError, ValueError):
+            self.tools_max_rounds = 8
+        self.shell_allow = set(DEFAULT_SHELL_ALLOW) | {
+            str(item) for item in (config.get("tools_shell_allow") or []) if item}
+        try:
+            tool_timeout = float(config.get("tools_timeout") or 120)
+        except (TypeError, ValueError):
+            tool_timeout = 120.0
+        try:
+            tool_max_output = int(config.get("tools_max_output") or 4000)
+        except (TypeError, ValueError):
+            tool_max_output = 4000
+        self.tool_ctx = ToolContext(cwd=os.getcwd(), timeout=tool_timeout,
+                                    max_output=tool_max_output)
+        self.tool_registry = default_registry()
+        self._tool_support_checked = False
+        self._format_tools_warned = False
         self._pt_session: Optional[Any] = None
         self._ps_shown_for: set[str] = set()
         self._preload_thread: Optional[threading.Thread] = None
@@ -324,12 +367,133 @@ class Repl:
     def effective_think(self) -> Optional[Any]:
         return self.session.think
 
-    def _payload(self, messages: list[dict[str, Any]], *, stream: bool = True) -> dict[str, Any]:
+    def _payload(self, messages: list[dict[str, Any]], *, stream: bool = True,
+                 with_tools: Optional[bool] = None) -> dict[str, Any]:
+        if with_tools is None:
+            with_tools = self.tools_enabled
+        tools = None
+        if with_tools and self.session.format:
+            if not self._format_tools_warned:
+                self._format_tools_warned = True
+                console.print("[warn]--format and tools cannot be combined; tools "
+                              "disabled for this session[/warn]")
+            with_tools = False
+        if with_tools:
+            tools = build_tool_schemas(self.tool_registry,
+                                       set(self.session.tools_disabled)) or None
         options = dict(self.session.parameters)
         return build_chat_payload(self.session.model, messages, stream=stream,
                                   fmt=self.session.format, think=self.effective_think(),
                                   keepalive=self.session.keepalive or self.args.keepalive,
-                                  options=options)
+                                  options=options, tools=tools)
+
+    # ── tool harness ────────────────────────────────────────────────────────
+
+    def active_tool_schemas(self) -> list[dict[str, Any]]:
+        if not self.tools_enabled:
+            return []
+        return build_tool_schemas(self.tool_registry, set(self.session.tools_disabled))
+
+    def _check_tool_support(self) -> None:
+        if not self.tools_enabled or self._tool_support_checked:
+            return
+        self._tool_support_checked = True
+        try:
+            capabilities = self.client.capabilities(self.session.model)
+        except Exception:  # capability probing must never break a turn
+            return
+        if capabilities and "tools" not in capabilities:
+            console.print(f"[warn]{escape(self.session.model)} does not advertise tool "
+                          f"support — tool calls may not work[/warn]")
+
+    def _approve_tool_call(self, spec: Any, args: dict[str, Any], fingerprint: str,
+                           *, allow_prompt: bool = True) -> tuple[bool, str]:
+        """Decide whether a tool call runs; a denial is a normal result."""
+        if self.auto_approve:
+            return True, "auto (--yes)"
+        decision = approval_decision(spec, args, policy=self.tools_policy,
+                                     shell_allow=self.shell_allow)
+        if decision.allowed:
+            return True, "safe list"
+        if fingerprint in (self.session.tool_allow or []):
+            return True, "previously allowed"
+        if not (allow_prompt and console.is_terminal):
+            return False, f"not auto-approved ({decision.reason}) and this run is unattended"
+        console.print(f"[warn]{escape(spec.name)} needs confirmation: "
+                      f"{escape(decision.reason)}[/warn]")
+        answer = Prompt.ask("[y] run once · [a] always allow this exact call · [n] deny",
+                            choices=["y", "a", "n"], default="n")
+        if answer == "a":
+            self.session.tool_allow = list(self.session.tool_allow or []) + [fingerprint]
+            self.session.touch()
+            return True, "allowed (remembered)"
+        if answer == "y":
+            return True, "confirmed"
+        return False, "denied by the user"
+
+    def _execute_tool_calls(self, calls: list[dict[str, Any]], *, quiet: bool = False,
+                            allow_prompt: bool = True) -> bool:
+        """Run the model's tool calls; returns True when interrupted."""
+        disabled = set(self.session.tools_disabled)
+        available = sorted(set(self.tool_registry) - disabled)
+        interrupted = False
+        for call in calls:
+            function = (call.get("function") or {}) if isinstance(call, dict) else {}
+            name = str(function.get("name") or "?")
+            if interrupted:
+                self.session.add_message("tool", "interrupted by user", tool_name=name)
+                continue
+            args = normalize_arguments(function.get("arguments"))
+            if args is None:
+                text = ("invalid tool arguments (not a JSON object): "
+                        + str(function.get("arguments"))[:200])
+                self.session.add_message("tool", text, tool_name=name)
+                if not quiet:
+                    console.print(tool_result_panel(name, text=text, ok=False))
+                continue
+            spec = self.tool_registry.get(name) if name not in disabled else None
+            if spec is None:
+                text = f"unknown or disabled tool: {name}"
+                if available:
+                    text += "; available: " + ", ".join(available)
+                self.session.add_message("tool", text, tool_name=name)
+                if not quiet:
+                    console.print(tool_result_panel(name, text=text, ok=False))
+                continue
+            fingerprint = call_fingerprint(name, args)
+            detail = call_detail(name, args)
+            try:
+                run, note = self._approve_tool_call(spec, args, fingerprint,
+                                                    allow_prompt=allow_prompt)
+            except KeyboardInterrupt:
+                run, note = False, "interrupted by user"
+                interrupted = True
+            if not run:
+                text = f"tool not run: {note}"
+                self.session.add_message("tool", text, tool_name=name)
+                if not quiet:
+                    console.print(tool_result_panel(name, detail=detail, text=text,
+                                                    ok=False))
+                continue
+            if not quiet:
+                console.print(f"[dim]running {escape(name)}…[/dim]")
+            try:
+                outcome = execute_tool(spec, args, self.tool_ctx)
+            except KeyboardInterrupt:
+                text = "interrupted by user"
+                self.session.add_message("tool", text, tool_name=name)
+                if not quiet:
+                    console.print(tool_result_panel(name, detail=detail, text=text,
+                                                    ok=False))
+                interrupted = True
+                continue
+            self.session.add_message("tool", outcome.text, tool_name=name)
+            if not quiet:
+                console.print(tool_result_panel(name, detail=detail, text=outcome.text,
+                                                ok=outcome.ok, duration=outcome.duration))
+        if not self.no_save:
+            self.store.save(self.session)
+        return interrupted
 
     # ── generation ──────────────────────────────────────────────────────────
 
@@ -346,29 +510,55 @@ class Repl:
             self._preload_thread.join()
             if console.is_terminal:
                 self._maybe_show_ps()
-        renderer = self._renderer()
-        marker = f"[ai]{escape(self.session.model)} ›[/ai]"
-        if renderer.mode != "raw" and not renderer.live_render:
-            console.print(marker)
-        try:
-            result = renderer.stream(self.client.chat(self._payload(self.session.message_payloads()),
-                                                      timeout=self.timeout))
-        except OllamaError as exc:
-            result = GenerationResult(error=str(exc))
-            console.print(f"[err]{escape(str(exc))}[/err]")
-        if result.content:
-            self.session.add_message("assistant", result.content,
-                                     thinking=result.thinking or None,
-                                     cancelled=True if result.cancelled else None,
-                                     tool_calls=result.tool_calls or None)
-        elif result.cancelled:
-            self.session.add_message("assistant", "", cancelled=True)
-        if result.stats:
-            self.session.record_turn(result.stats)
-            self.session.stats["last_prompt_tokens"] = result.stats.get("prompt_tokens")
-            self.session.stats["last_completion_tokens"] = result.stats.get("completion_tokens")
-        if not self.no_save:
-            self.store.save(self.session)
+        self._check_tool_support()
+        result = GenerationResult()
+        tool_rounds = 0
+        while True:
+            renderer = self._renderer()
+            marker = f"[ai]{escape(self.session.model)} ›[/ai]"
+            if renderer.mode != "raw" and not renderer.live_render:
+                console.print(marker)
+            with_tools = self.tools_enabled and tool_rounds < self.tools_max_rounds
+            try:
+                result = renderer.stream(self.client.chat(
+                    self._payload(self.session.message_payloads(with_tools=with_tools),
+                                  with_tools=with_tools),
+                    timeout=self.timeout))
+            except OllamaError as exc:
+                result = GenerationResult(error=str(exc))
+                console.print(f"[err]{escape(str(exc))}[/err]")
+            if result.content or result.tool_calls:
+                self.session.add_message("assistant", result.content,
+                                         thinking=result.thinking or None,
+                                         cancelled=True if result.cancelled else None,
+                                         tool_calls=result.tool_calls or None)
+            elif result.cancelled:
+                self.session.add_message("assistant", "", cancelled=True)
+            if result.stats:
+                self.session.record_turn(result.stats, count_turn=(tool_rounds == 0))
+                self.session.stats["last_prompt_tokens"] = result.stats.get("prompt_tokens")
+                self.session.stats["last_completion_tokens"] = result.stats.get("completion_tokens")
+            if not self.no_save:
+                self.store.save(self.session)
+            if result.error or result.cancelled or not result.tool_calls \
+                    or not self.tools_enabled:
+                break
+            tool_rounds += 1
+            if tool_rounds > self.tools_max_rounds:
+                console.print(f"[warn]tool-call limit reached "
+                              f"({self.tools_max_rounds}) — not running more tools[/warn]")
+                for call in result.tool_calls:
+                    function = (call.get("function") or {}) if isinstance(call, dict) else {}
+                    self.session.add_message(
+                        "tool", "not executed: tool-call limit reached",
+                        tool_name=str(function.get("name") or "?"))
+                if not self.no_save:
+                    self.store.save(self.session)
+                break
+            if self._execute_tool_calls(result.tool_calls,
+                                        quiet=(self.render_mode == "raw")):
+                console.print("[warn]tool execution interrupted; stopping this turn[/warn]")
+                break
         if console.is_terminal and not result.error:
             self._maybe_show_ps()
         return result
@@ -590,6 +780,80 @@ def cmd_params(repl: Repl, argument: str) -> None:
     table.add_row("format", escape(str(repl.session.format or "")))
     table.add_row("system", shortcut(repl.session.system or "", 60))
     console.print(table)
+
+
+def cmd_tools(repl: Repl, argument: str) -> None:
+    parts = argument.split()
+    topic = parts[0].lower() if parts else ""
+    if not topic or topic in {"status", "list"}:
+        table = Table(title="tools", box=box.ROUNDED, header_style="bold magenta")
+        table.add_column("tool")
+        table.add_column("state")
+        table.add_column("approval", style="dim")
+        disabled = set(repl.session.tools_disabled)
+        for name in sorted(repl.tool_registry):
+            spec = repl.tool_registry[name]
+            if not repl.tools_enabled:
+                state = "[dim]off[/dim]"
+            elif name in disabled:
+                state = "[warn]disabled[/warn]"
+            else:
+                state = "[ok]on[/ok]"
+            if spec.always_safe or spec.read_only:
+                approval = "auto (read-only)"
+            elif name in {"run_shell", "run_python"}:
+                approval = "safe list, else asks"
+            else:
+                approval = "asks"
+            table.add_row(name, state, approval)
+        console.print(table)
+        policy = "auto (--yes)" if repl.auto_approve else repl.tools_policy
+        console.print(f"[key]policy[/key] {policy} · [key]max rounds[/key] "
+                      f"{repl.tools_max_rounds} · [key]timeout[/key] "
+                      f"{repl.tool_ctx.timeout:.0f}s · [key]output cap[/key] "
+                      f"{repl.tool_ctx.max_output} chars")
+        return
+    if topic == "on":
+        repl.tools_enabled = True
+        console.print("[ok]tools on[/ok]")
+        return
+    if topic == "off":
+        repl.tools_enabled = False
+        console.print("[ok]tools off[/ok]")
+        return
+    if topic == "policy":
+        mode = parts[1].lower() if len(parts) > 1 else ""
+        if mode not in {"auto", "allowlist", "ask"}:
+            console.print("[err]usage: /tools policy auto|allowlist|ask[/err]")
+            return
+        repl.tools_policy = mode
+        console.print(f"[ok]policy[/ok] {mode}")
+        return
+    if topic in {"enable", "disable"}:
+        names = parts[1:]
+        if not names:
+            console.print(f"[err]usage: /tools {topic} NAME…[/err]")
+            return
+        disabled = list(repl.session.tools_disabled)
+        for name in names:
+            if name not in repl.tool_registry:
+                console.print(f"[err]unknown tool {escape(name)}[/err]")
+                continue
+            if topic == "disable" and name not in disabled:
+                disabled.append(name)
+            if topic == "enable" and name in disabled:
+                disabled.remove(name)
+        repl.session.tools_disabled = disabled
+        repl.session.touch()
+        console.print(f"[ok]{topic}d[/ok] active: "
+                      + (", ".join(sorted(set(repl.tool_registry) - set(disabled)))
+                         or "[dim]none[/dim]"))
+        return
+    if topic == "allow":
+        console.print("safe shell commands: " + ", ".join(sorted(repl.shell_allow)))
+        return
+    console.print("[err]usage: /tools [on|off|policy auto|allowlist|ask|"
+                  "enable NAME…|disable NAME…|allow][/err]")
 
 
 def cmd_show(repl: Repl, argument: str) -> None:
@@ -971,7 +1235,10 @@ def cmd_undo(repl: Repl, argument: str) -> None:
     if not repl.session.messages:
         console.print("[dim]nothing to undo[/dim]")
         return
-    while repl.session.messages and repl.session.messages[-1].get("role") == "assistant":
+    # Drop everything up to and including the last user message, so a turn
+    # that used tools (assistant tool-call + tool results + answer) goes away
+    # as one unit.
+    while repl.session.messages and repl.session.messages[-1].get("role") != "user":
         repl.session.messages.pop()
     if repl.session.messages and repl.session.messages[-1].get("role") == "user":
         repl.session.messages.pop()
@@ -1024,6 +1291,8 @@ def cmd_branch(repl: Repl, argument: str) -> None:
     branch.format = repl.session.format
     branch.tags = list(repl.session.tags)
     branch.stats = dict(repl.session.stats)
+    branch.tool_allow = list(repl.session.tool_allow)
+    branch.tools_disabled = list(repl.session.tools_disabled)
     if not repl.no_save:
         repl.store.save(repl.session)
         repl.store.save(branch)
@@ -1283,6 +1552,7 @@ COMMAND_HANDLERS: dict[str, Callable[[Repl, str], Any]] = {
     "/ps": cmd_ps,
     "/num-ctx": cmd_num_ctx,
     "/params": cmd_params,
+    "/tools": cmd_tools,
     "/think": cmd_think,
     "/thinking": cmd_thinking,
     "/system": cmd_system,

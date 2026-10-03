@@ -162,7 +162,8 @@ class OllamaClient:
 def build_chat_payload(model: str, messages: list[dict[str, Any]], *, stream: bool = True,
                        fmt: Optional[Any] = None, think: Optional[Any] = None,
                        keepalive: Optional[str] = None,
-                       options: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+                       options: Optional[dict[str, Any]] = None,
+                       tools: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
     payload: dict[str, Any] = {"model": model, "messages": messages, "stream": stream}
     if fmt:
         payload["format"] = fmt
@@ -172,4 +173,6 @@ def build_chat_payload(model: str, messages: list[dict[str, Any]], *, stream: bo
         payload["keep_alive"] = keepalive
     if options:
         payload["options"] = options
+    if tools:
+        payload["tools"] = tools
     return payload

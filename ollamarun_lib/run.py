@@ -52,6 +52,45 @@ def run_embed(client: OllamaClient, model: str, prompt: str, *,
     return 0
 
 
+def _run_once_json(args: argparse.Namespace, client: OllamaClient, store: SessionStore,
+                   session: Session, repl: Repl) -> int:
+    """`--json`: one final API response, with or without tool rounds."""
+    with_tools = repl.tools_enabled and not session.format
+    rounds = 0
+    response: dict[str, Any] = {}
+    while True:
+        payload = repl._payload(session.message_payloads(with_tools=with_tools),
+                                stream=False, with_tools=with_tools)
+        try:
+            response = client.chat_once(payload)
+        except OllamaError as exc:
+            console.print(f"[err]{escape(str(exc))}[/err]")
+            return 1
+        message = response.get("message") or {}
+        tool_calls = message.get("tool_calls") or []
+        session.add_message("assistant", message.get("content", ""),
+                            thinking=message.get("thinking") or None,
+                            tool_calls=tool_calls or None)
+        json_stats = stats_from_final(response)
+        session.record_turn(json_stats, count_turn=(rounds == 0))
+        session.stats["last_prompt_tokens"] = json_stats.get("prompt_tokens")
+        session.stats["last_completion_tokens"] = json_stats.get("completion_tokens")
+        if not args.no_save:
+            store.save(session)
+        if not tool_calls or not with_tools:
+            break
+        rounds += 1
+        if rounds > repl.tools_max_rounds:
+            for call in tool_calls:
+                function = (call.get("function") or {}) if isinstance(call, dict) else {}
+                session.add_message("tool", "not executed: tool-call limit reached",
+                                    tool_name=str(function.get("name") or "?"))
+            break
+        repl._execute_tool_calls(tool_calls, quiet=True, allow_prompt=False)
+    console.print(json.dumps(response, indent=2), markup=False, highlight=False)
+    return 0
+
+
 def run_once(args: argparse.Namespace, config: dict[str, Any], client: OllamaClient,
              store: SessionStore, session: Session, prompt_text: str,
              repl: Repl) -> int:
@@ -66,48 +105,15 @@ def run_once(args: argparse.Namespace, config: dict[str, Any], client: OllamaCli
         store.save(session)
     if not session.title:
         repl._maybe_title(prompt_text)
-    payload = repl._payload(session.message_payloads(), stream=not args.json)
     quiet_unload = bool(args.raw or args.json or not console.is_terminal)
     if args.json:
-        try:
-            response = client.chat_once(payload)
-        except OllamaError as exc:
-            console.print(f"[err]{escape(str(exc))}[/err]")
-            if args.unload:
-                repl.unload_model(quiet=quiet_unload)
-            return 1
-        console.print(json.dumps(response, indent=2), markup=False, highlight=False)
-        message = response.get("message") or {}
-        session.add_message("assistant", message.get("content", ""),
-                            thinking=message.get("thinking") or None)
-        json_stats = stats_from_final(response)
-        session.record_turn(json_stats)
-        session.stats["last_prompt_tokens"] = json_stats.get("prompt_tokens")
-        session.stats["last_completion_tokens"] = json_stats.get("completion_tokens")
-        if not args.no_save:
-            store.save(session)
-        if args.unload:
-            repl.unload_model(quiet=True)
-        return 0
-    if console.is_terminal:
-        console.print(user_message_box(prompt_text, console))
-    try:
-        result = repl._renderer().stream(client.chat(payload, timeout=repl.timeout))
-    except OllamaError as exc:
-        console.print(f"[err]{escape(str(exc))}[/err]")
+        code = _run_once_json(args, client, store, session, repl)
         if args.unload:
             repl.unload_model(quiet=quiet_unload)
-        return 1
-    session.add_message("assistant", result.content,
-                        thinking=result.thinking or None,
-                        cancelled=True if result.cancelled else None,
-                        tool_calls=result.tool_calls or None)
-    if result.stats:
-        session.record_turn(result.stats)
-        session.stats["last_prompt_tokens"] = result.stats.get("prompt_tokens")
-        session.stats["last_completion_tokens"] = result.stats.get("completion_tokens")
-    if not args.no_save:
-        store.save(session)
+        return code
+    if console.is_terminal:
+        console.print(user_message_box(prompt_text, console))
+    result = repl._generate()
     if args.unload:
         repl.unload_model(quiet=quiet_unload)
     if result.error:

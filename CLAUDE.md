@@ -117,38 +117,46 @@ a module's own docstring for what lives there before editing:
    `/api/embed`, `/api/ps`, `/api/create` etc. over raw `requests`,
    streaming response bodies line-by-line. `build_chat_payload()` assembles
    the request body from CLI args + session history.
-8. **`session.py`** — `Session` (in-memory conversation model: messages,
+8. **`tools.py`** — the tool harness: `ToolSpec`/`default_registry()` (shell,
+   python, files, fetch, tts-remote speak/list_voices), the allowlist policy
+   (`shell_safety`, `python_safety`, `approval_decision`), argument
+   normalization, output truncation and `execute_tool()`. The agent loop that
+   calls into it lives in `repl.py` (approve → execute → append a `role: tool`
+   message → ask the model again); rendering of calls/results is `renderer.py`.
+9. **`session.py`** — `Session` (in-memory conversation model: messages,
    model, system prompt, options) and `SessionStore` (atomic read/write of
    the JSON files + `index.json`, list/search/export/delete).
    `export_markdown`/`export_json`/`export_html` are the three export
    formats.
-9. **`emit.py`** — `emit()` plus the `cli_list`/`cli_search`/`cli_show`/
+10. **`emit.py`** — `emit()` plus the `cli_list`/`cli_search`/`cli_show`/
    `cli_export`/`cli_delete` functions that implement the non-interactive
    inspection flags.
-10. **`interactive.py`** — `open_in_editor` (`$OLLAMA_EDITOR`),
-    `pick_model`/`pick_session` (fuzzy pickers), `model_context_length`
-    (reads context window from `/api/show`).
-11. **`repl.py`** — `SlashCompleter` (prompt_toolkit completion for
-    `/commands`, session ids, models, `@files`), the `Repl` class, then the
-    `cmd_*` functions. Each slash command (`/set`, `/show`, `/load`, `/save`,
-    `/undo`, `/retry`, `/edit`, `/branch`, `/context`, `/summarize`,
-    `/image`, `/render`, `/math`, `/pager`, `/tps`, `/ps`, `/num-ctx`,
-    `/copy`, `/export`, `/stats`, `/thinking`, ...) is a standalone
-    `cmd_NAME(repl, argument)` function dispatched by name through
-    `COMMAND_HANDLERS`; add a new slash command by adding one function here
-    and wiring it into `COMMAND_INFO`/`COMMAND_HANDLERS` (and the
-    `build_parser()` epilog in `cli.py` if it's worth advertising there).
-    `ps_table()`/`resolve_num_ctx()` also live here since `cmd_ps`/
-    `cmd_num_ctx` are their only callers (`resolve_num_ctx` is reused by
-    `main()` in `cli.py` for `--num-ctx`).
-12. **`run.py`** — `run_once()` (non-REPL path, built on an already-constructed
-    `Repl`) and `run_embed()` (routes embedding-capable models to
-    `/api/embed` instead of chat).
-13. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
-    every `ollama run` flag), `resolve_model`/`resolve_session` (figuring out
-    what model/session a given invocation means, including the `-c`/`-r`/
-    `--session` disambiguation in `normalize_argv`), and `main()` as the
-    entry point (called by the top-level `ollamarun` script).
+11. **`interactive.py`** — `open_in_editor` (`$OLLAMA_EDITOR`),
+   `pick_model`/`pick_session` (fuzzy pickers), `model_context_length`
+   (reads context window from `/api/show`).
+12. **`repl.py`** — `SlashCompleter` (prompt_toolkit completion for
+   `/commands`, session ids, models, `@files`), the `Repl` class (including
+   the multi-round tool loop `_generate` → `_execute_tool_calls` and the
+   y/a/n approval prompt), then the `cmd_*` functions. Each slash command
+   (`/set`, `/show`, `/load`, `/save`, `/undo`, `/retry`, `/edit`,
+   `/branch`, `/context`, `/summarize`, `/image`, `/render`, `/math`,
+   `/pager`, `/tps`, `/ps`, `/num-ctx`, `/copy`, `/export`, `/stats`,
+   `/thinking`, `/tools`, ...) is a standalone
+   `cmd_NAME(repl, argument)` function dispatched by name through
+   `COMMAND_HANDLERS`; add a new slash command by adding one function here
+   and wiring it into `COMMAND_INFO`/`COMMAND_HANDLERS` (and the
+   `build_parser()` epilog in `cli.py` if it's worth advertising there).
+   `ps_table()`/`resolve_num_ctx()` also live here since `cmd_ps`/
+   `cmd_num_ctx` are their only callers (`resolve_num_ctx` is reused by
+   `main()` in `cli.py` for `--num-ctx`).
+13. **`run.py`** — `run_once()` (non-REPL path, built on an already-constructed
+   `Repl`) and `run_embed()` (routes embedding-capable models to
+   `/api/embed` instead of chat).
+14. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
+   every `ollama run` flag), `resolve_model`/`resolve_session` (figuring out
+   what model/session a given invocation means, including the `-c`/`-r`/
+   `--session` disambiguation in `normalize_argv`), and `main()` as the
+   entry point (called by the top-level `ollamarun` script).
 
 Model housekeeping (unload-before-switch, unload-on-exit, embedding models
 always resident) is cross-cutting logic that lives in the REPL commands

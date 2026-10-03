@@ -39,6 +39,8 @@ class Session:
     format: Optional[Any] = None
     messages: list[dict[str, Any]] = field(default_factory=list)
     stats: dict[str, Any] = field(default_factory=dict)
+    tool_allow: list[str] = field(default_factory=list)
+    tools_disabled: list[str] = field(default_factory=list)
     schema: int = SCHEMA_VERSION
 
     @classmethod
@@ -74,16 +76,38 @@ class Session:
         self.touch()
         return message
 
-    def message_payloads(self) -> list[dict[str, Any]]:
+    def message_payloads(self, *, with_tools: bool = False) -> list[dict[str, Any]]:
+        """Messages as the API expects them.
+
+        `with_tools` passes assistant `tool_calls` and `role: tool` results
+        through; without it those messages are omitted (and an empty assistant
+        tool-call turn is dropped entirely) so a model that was never given
+        tools never sees a tool role.
+        """
         payloads: list[dict[str, Any]] = []
         for message in self.messages:
+            role = message.get("role")
+            if role == "tool":
+                if not with_tools:
+                    continue
+                payload: dict[str, Any] = {"role": "tool",
+                                           "content": message.get("content", "")}
+                if message.get("tool_name"):
+                    payload["tool_name"] = message["tool_name"]
+                payloads.append(payload)
+                continue
             if message.get("cancelled") and not message.get("content"):
                 continue
-            payload: dict[str, Any] = {"role": message["role"],
-                                       "content": message.get("content", "")}
+            content = message.get("content", "")
+            tool_calls = message.get("tool_calls")
+            if not content and tool_calls and not with_tools:
+                continue
+            payload = {"role": role, "content": content}
             images = image_payload(message.get("images"))
             if images:
                 payload["images"] = images
+            if with_tools and tool_calls:
+                payload["tool_calls"] = tool_calls
             payloads.append(payload)
         return payloads
 
@@ -93,8 +117,9 @@ class Session:
                 return index
         return None
 
-    def record_turn(self, stats: dict[str, Any]) -> None:
-        self.stats["turns"] = self.stats.get("turns", 0) + 1
+    def record_turn(self, stats: dict[str, Any], count_turn: bool = True) -> None:
+        if count_turn:
+            self.stats["turns"] = self.stats.get("turns", 0) + 1
         self.stats["prompt_tokens"] = self.stats.get("prompt_tokens", 0) + (stats.get("prompt_tokens") or 0)
         self.stats["completion_tokens"] = self.stats.get("completion_tokens", 0) + (stats.get("completion_tokens") or 0)
         self.stats["duration_s"] = self.stats.get("duration_s", 0.0) + (stats.get("total_duration") or 0.0)
@@ -290,6 +315,10 @@ def export_markdown(session: Session) -> str:
             lines += ["", "<details><summary>thinking</summary>", "",
                       message["thinking"], "", "</details>"]
         lines.append(content)
+        if message.get("tool_calls"):
+            lines += ["", "```json",
+                      json.dumps(message["tool_calls"], indent=2, ensure_ascii=False),
+                      "```"]
     stats = session.stats or {}
     if stats:
         lines += ["", "---", "",
