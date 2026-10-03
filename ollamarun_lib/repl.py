@@ -221,7 +221,13 @@ class Repl:
         self.tool_ctx = ToolContext(cwd=os.getcwd(), timeout=tool_timeout,
                                     max_output=tool_max_output,
                                     tts_remote=config.get("tts_remote") or None)
-        tts_option = None if config.get("tts_tools", True) else False
+        tts_option: Optional[bool]
+        if not config.get("tts_tools", True):
+            tts_option = False
+        elif config.get("tts_remote") and config["tts_remote"] != "tts-remote":
+            tts_option = True  # explicit path: register, the handler reports if missing
+        else:
+            tts_option = None  # auto-detect a tts-remote binary
         self.tool_registry = default_registry(tts=tts_option)
         self._tool_support_checked = False
         self._format_tools_warned = False
@@ -845,8 +851,10 @@ def cmd_tools(repl: Repl, argument: str) -> None:
                 state = "[warn]disabled[/warn]"
             else:
                 state = "[ok]on[/ok]"
-            if spec.always_safe or spec.read_only:
+            if spec.read_only:
                 approval = "auto (read-only)"
+            elif spec.always_safe:
+                approval = "auto"
             elif name in {"run_shell", "run_python"}:
                 approval = "safe list, else asks"
             else:

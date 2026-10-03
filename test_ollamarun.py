@@ -1976,7 +1976,8 @@ def test_tts_command() -> int:
         args = orun.build_parser().parse_args(["m1", "--render", "plain"])
         client = _FakeClient(models=["m1"], capabilities=["completion", "tools"])
         session = orun.Session.create("m1", client.base)
-        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store, session)
+        config = dict(orun.DEFAULT_CONFIG, tts_remote=str(fake))
+        repl = orun.Repl(args, config, client, store, session)
         repl._build_prompt_session = lambda: None
         repl.tool_ctx.tts_remote = str(fake)
 
@@ -2035,7 +2036,7 @@ def test_tts_auto_speak() -> int:
                    "done": True}]
         client = _FakeClient(models=["m1"], capabilities=["completion", "tools"],
                              chat_script=[events])
-        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store,
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG, tts_remote=str(fake)), client, store,
                          orun.Session.create("m1", client.base))
         repl._build_prompt_session = lambda: None
         repl.tool_ctx.tts_remote = str(fake)
