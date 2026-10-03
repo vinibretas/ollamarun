@@ -75,7 +75,7 @@ except ImportError:  # pragma: no cover - fallback path
     HAS_PYLATEXENC = False
     LatexNodes2Text = None
 
-VERSION = "1.14"
+VERSION = "1.15"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -131,6 +131,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tools_timeout": 120,
     "tools_max_output": 4000,
     "tools_max_rounds": 8,
+    "tts_auto": False,
+    "tts_voice": None,
+    "tts_lang": None,
+    "tts_remote": "tts-remote",
+    "tts_tools": True,
 }
 
 THINKING_MODES = {"collapsed", "expanded", "hidden"}

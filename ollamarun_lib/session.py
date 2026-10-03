@@ -41,6 +41,9 @@ class Session:
     stats: dict[str, Any] = field(default_factory=dict)
     tool_allow: list[str] = field(default_factory=list)
     tools_disabled: list[str] = field(default_factory=list)
+    tts_auto: Optional[bool] = None
+    tts_voice: Optional[str] = None
+    tts_lang: Optional[str] = None
     schema: int = SCHEMA_VERSION
 
     @classmethod

@@ -1913,6 +1913,161 @@ def test_tool_cli_flags() -> int:
     return failures
 
 
+def _fake_tts(directory: str) -> Path:
+    """A stand-in tts-remote that records argv/stdin and answers voices --json."""
+    base = Path(directory)
+    script = base / "tts-remote"
+    args_file = base / "tts-args.json"
+    stdin_file = base / "tts-stdin.txt"
+    script.write_text(
+        "#! /usr/bin/env python3\n"
+        "import json, sys\n"
+        "argv = sys.argv[1:]\n"
+        f"open({str(args_file)!r}, 'w').write(json.dumps(argv))\n"
+        "if argv and argv[0] == 'voices':\n"
+        "    print(json.dumps({'default_voice': 'nova', 'styles': ['narration'],\n"
+        "                      'voices': [{'slug': 'nova', 'style': 'friendly',\n"
+        "                                  'lang': 'en', 'name': 'Nova'}]}))\n"
+        "    sys.exit(0)\n"
+        f"open({str(stdin_file)!r}, 'w').write(sys.stdin.read())\n")
+    script.chmod(0o755)
+    return script
+
+
+def test_tts_tools() -> int:
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        fake = _fake_tts(tmp)
+        registry = orun.default_registry(tts=True)
+        ctx = orun.ToolContext(cwd=tmp, timeout=10, max_output=2000,
+                               tts_remote=str(fake))
+        outcome = orun.execute_tool(registry["speak"],
+                                    {"text": "hello world", "voice": "v1", "lang": "pt"}, ctx)
+        failures = _check(failures, "speak queues text",
+                          outcome.ok and "queued" in outcome.text, outcome.text)
+        recorded = json.loads((Path(tmp) / "tts-args.json").read_text())
+        stdin = (Path(tmp) / "tts-stdin.txt").read_text()
+        failures = _check(failures, "speak passes voice/lang and pipes text via stdin",
+                          recorded == ["say", "-q", "--voice", "v1", "--lang", "pt"]
+                          and stdin == "hello world",
+                          f"args={recorded} stdin={stdin!r}")
+        outcome = orun.execute_tool(registry["list_voices"], {}, ctx)
+        failures = _check(failures, "list_voices formats the catalog",
+                          outcome.ok and "nova" in outcome.text
+                          and "friendly" in outcome.text, outcome.text)
+        failures = _check(failures, "tts schemas are advertised",
+                          {schema["function"]["name"] for schema in
+                           orun.tool_schemas(registry)} >= {"speak", "list_voices"})
+        failures = _check(failures, "tts schemas can be disabled",
+                          all(schema["function"]["name"] not in {"speak", "list_voices"}
+                              for schema in orun.tool_schemas(registry,
+                                                              {"speak", "list_voices"})))
+        failures = _check(failures, "tts tools are skipped entirely when off",
+                          "speak" not in orun.default_registry(tts=False))
+    return failures
+
+
+def test_tts_command() -> int:
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        fake = _fake_tts(tmp)
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+        client = _FakeClient(models=["m1"], capabilities=["completion", "tools"])
+        session = orun.Session.create("m1", client.base)
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store, session)
+        repl._build_prompt_session = lambda: None
+        repl.tool_ctx.tts_remote = str(fake)
+
+        with orun.console.capture() as cap:
+            orun.cmd_tts(repl, "")
+        out = _plain(cap.get())
+        failures = _check(failures, "/tts status reports settings",
+                          "auto-speak" in out and "voice" in out
+                          and "speak" in out, out)
+
+        with orun.console.capture():
+            orun.cmd_tts(repl, "on")
+        failures = _check(failures, "/tts on enables auto-speak",
+                          repl.tts_auto is True and session.tts_auto is True)
+        with orun.console.capture():
+            orun.cmd_tts(repl, "off")
+        failures = _check(failures, "/tts off disables auto-speak",
+                          repl.tts_auto is False and session.tts_auto is False)
+
+        with orun.console.capture():
+            orun.cmd_tts(repl, "voice narrator")
+        with orun.console.capture():
+            orun.cmd_tts(repl, "lang en")
+        failures = _check(failures, "/tts voice/lang persist in the session",
+                          repl.tts_voice == "narrator" and session.tts_voice == "narrator"
+                          and session.tts_lang == "en")
+
+        with orun.console.capture():
+            orun.cmd_tts(repl, "tools off")
+        names = [schema["function"]["name"] for schema in repl.active_tool_schemas()]
+        failures = _check(failures, "/tts tools off hides speak/list_voices",
+                          "speak" not in names and "list_voices" not in names,
+                          str(names))
+        with orun.console.capture():
+            orun.cmd_tts(repl, "tools on")
+        names = [schema["function"]["name"] for schema in repl.active_tool_schemas()]
+        failures = _check(failures, "/tts tools on restores them",
+                          "speak" in names and "list_voices" in names, str(names))
+
+        with orun.console.capture() as cap:
+            orun.cmd_tts(repl, "voices")
+        failures = _check(failures, "/tts voices lists the catalog",
+                          "nova" in _plain(cap.get()))
+    return failures
+
+
+def test_tts_auto_speak() -> int:
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        fake = _fake_tts(tmp)
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain", "--no-save",
+                                               "--speak"])
+        events = [{"message": {"role": "assistant", "content": "spoken answer"},
+                   "done": True}]
+        client = _FakeClient(models=["m1"], capabilities=["completion", "tools"],
+                             chat_script=[events])
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store,
+                         orun.Session.create("m1", client.base))
+        repl._build_prompt_session = lambda: None
+        repl.tool_ctx.tts_remote = str(fake)
+        repl.session.add_message("user", "say something")
+        with orun.console.capture():
+            repl._generate()
+        recorded = json.loads((Path(tmp) / "tts-args.json").read_text())
+        stdin = (Path(tmp) / "tts-stdin.txt").read_text()
+        failures = _check(failures, "--speak reads the final answer aloud",
+                          recorded == ["say", "-q", "--markdown"]
+                          and stdin == "spoken answer", f"{recorded} {stdin!r}")
+
+        quiet = orun.build_parser().parse_args(["m1", "--render", "plain", "--no-save"])
+        client2 = _FakeClient(models=["m1"], capabilities=["completion", "tools"],
+                              chat_script=[events])
+        repl2 = orun.Repl(quiet, dict(orun.DEFAULT_CONFIG), client2, store,
+                          orun.Session.create("m1", client2.base))
+        repl2._build_prompt_session = lambda: None
+        repl2.tool_ctx.tts_remote = str(fake)
+        (Path(tmp) / "tts-args.json").unlink()
+        with orun.console.capture():
+            repl2._generate()
+        failures = _check(failures, "no auto-speak when tts is off",
+                          not (Path(tmp) / "tts-args.json").exists())
+
+        failures = _check(failures, "tts config defaults exist",
+                          orun.DEFAULT_CONFIG.get("tts_auto") is False
+                          and orun.DEFAULT_CONFIG.get("tts_remote") == "tts-remote"
+                          and orun.DEFAULT_CONFIG.get("tts_tools") is True)
+    return failures
+
+
 def test_client_http() -> int:
     failures = 0
 
@@ -2027,6 +2182,7 @@ if __name__ == "__main__":
              + test_build_parser_flags() + test_slash_completer()
              + test_tools_policy() + test_tool_execution() + test_tool_loop()
              + test_tool_commands() + test_tool_payloads() + test_tool_cli_flags()
+             + test_tts_tools() + test_tts_command() + test_tts_auto_speak()
              + test_client_http() + test_cmd_image()
              + test_live_stream_final_frame_is_complete())
     if total:
