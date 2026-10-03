@@ -22,6 +22,15 @@ streaming and all `/api/*` calls then happen on that machine while sessions,
 files, images and the tool harness stay local — there is no separate remote
 code path.
 
+A model missing from the target machine is handled by `interactive.py`'s
+`ensure_model()`: it prints the machine's free disk space (`shutil.disk_usage`
+locally, a BatchMode ssh `df` probe — reading `OLLAMA_MODELS` from the ollama
+unit — for `--remote` hosts, degrading to "unknown" when ssh fails) and offers
+to pull it. `--pull` skips the question for one-shots/scripts, declining opens
+the model picker, and `/pull` pulls or updates from the REPL. Pulls stream
+`/api/pull` through `OllamaClient.pull_model()` behind a rich per-layer
+progress display.
+
 The `ollamarun` file at the repo root is a thin, shebang-pinned entry point
 (`#! /bin/python3.10`); the implementation lives in the `ollamarun_lib/`
 package, one module per pipeline stage — see Architecture below. The entry
@@ -62,7 +71,7 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"1.16"`) and prepend a
+  constant in `ollamarun_lib/constants.py`, currently `"1.17"`) and prepend a
   new bullet list under `Summary of changes in this version:` in the
   top-level `ollamarun` entry script's module docstring — read the existing
   entries there before adding one; that block is the changelog, there is no
@@ -95,7 +104,8 @@ a module's own docstring for what lives there before editing:
 2. **`helpers.py`** — small helpers: ISO timestamps, id generation,
    bool/host/think coercion, `--remote` resolution (`resolve_remote`,
    `remote_node`, `tailscale_map`, `tailscale_peer_state`, `is_local_host`),
-   config load (`load_config`), logging setup.
+   disk-space probes (`local_free_disk`, `ssh_free_disk`), config load
+   (`load_config`), logging setup.
 3. **`mathrender.py`** — LaTeX → Unicode, combined in one module because the
    two halves call into each other: regex-level conversion for inline math
    (`convert_math`, `latex_to_unicode`) falls through to the 2D layout
@@ -127,8 +137,9 @@ a module's own docstring for what lives there before editing:
    used by `/show`/`--show`). This is the piece that talks to the terminal
    frame-by-frame; changes to streaming UX go here.
 7. **`client.py`** — `OllamaClient` wraps `/api/chat`, `/api/generate`,
-   `/api/embed`, `/api/ps`, `/api/create` etc. over raw `requests`,
-   streaming response bodies line-by-line. `build_chat_payload()` assembles
+   `/api/embed`, `/api/ps`, `/api/pull`, `/api/create` etc. over raw
+   `requests`, streaming response bodies line-by-line (including pull
+   progress events). `build_chat_payload()` assembles
    the request body from CLI args + session history.
 8. **`tools.py`** — the tool harness: `ToolSpec`/`default_registry()` (shell,
    python, files, fetch, tts-remote speak/list_voices), the allowlist policy
@@ -147,12 +158,14 @@ a module's own docstring for what lives there before editing:
    inspection flags.
 11. **`interactive.py`** — `open_in_editor` (`$OLLAMA_EDITOR`),
    `pick_model`/`pick_session` (fuzzy pickers), `model_context_length`
-   (reads context window from `/api/show`).
+   (reads context window from `/api/show`), and the missing-model flow:
+   `ensure_model()` (free-space line + y/N pull prompt, `--pull` skip,
+   picker on decline), `pull_with_progress()` and `disk_free_line()`.
 12. **`repl.py`** — `SlashCompleter` (prompt_toolkit completion for
    `/commands`, session ids, models, `@files`), the `Repl` class (including
    the multi-round tool loop `_generate` → `_execute_tool_calls` and the
    y/a/n approval prompt), then the `cmd_*` functions. Each slash command
-   (`/set`, `/show`, `/load`, `/save`, `/undo`, `/retry`, `/edit`,
+   (`/set`, `/show`, `/load`, `/save`, `/pull`, `/undo`, `/retry`, `/edit`,
    `/branch`, `/context`, `/summarize`, `/image`, `/render`, `/math`,
    `/pager`, `/tps`, `/ps`, `/num-ctx`, `/copy`, `/export`, `/stats`,
    `/thinking`, `/tools`, `/tts`, ...) is a standalone

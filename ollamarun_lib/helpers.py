@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -178,6 +179,87 @@ def is_local_host(base: str) -> bool:
     except ValueError:
         return False
     return hostname.lower() in {"127.0.0.1", "localhost", "::1"}
+
+
+SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=4",
+            "-o", "ConnectionAttempts=1"]
+
+# Read OLLAMA_MODELS from the ollama unit, then df the nearest accessible
+# ancestor (the model directory is often 750 ollama:ollama and untraversable
+# for the login user); prints "total_kb free_kb mount".
+SSH_DISK_COMMAND = (
+    "m=$(systemctl show ollama -p Environment 2>/dev/null "
+    "| tr ' ' '\\n' | sed -n 's/^OLLAMA_MODELS=//p' | tail -n 1); "
+    "[ -n \"$m\" ] || m=/usr/share/ollama/.ollama/models; "
+    "p=$m; while [ ! -e \"$p\" ] && [ \"$p\" != / ]; do p=$(dirname \"$p\"); done; "
+    "df -Pk \"$p\" | tail -n 1 | awk '{print $2, $4, $6}'"
+)
+
+
+def ssh_free_disk(target: str, *, user: Optional[str] = None, timeout: float = 8.0,
+                  runner: Any = None) -> Optional[tuple[int, int, str]]:
+    """(free_bytes, total_bytes, mount) on a remote machine over SSH, or None.
+
+    Best-effort: a missing/unreachable host, no key or a bad response all
+    return None; the caller degrades to "unknown". `runner` is injectable for
+    tests (defaults to `subprocess.run`).
+    """
+    if not target or shutil.which("ssh") is None:
+        return None
+    dest = f"{user}@{target}" if user else target
+    run = runner or subprocess.run
+    try:
+        proc = run(["ssh", *SSH_OPTS, dest, SSH_DISK_COMMAND],
+                   capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    lines = [line for line in (proc.stdout or "").splitlines() if line.strip()]
+    if not lines:
+        return None
+    parts = lines[-1].split()
+    if len(parts) < 3:
+        return None
+    try:
+        total_kb, free_kb = int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+    return free_kb * 1024, total_kb * 1024, parts[2]
+
+
+def _first_existing_path(path: str) -> str:
+    current = path or "/"
+    while current != "/" and not os.path.exists(current):
+        parent = os.path.dirname(current)
+        if not parent or parent == current:
+            break
+        current = parent
+    return current or "/"
+
+
+def local_free_disk(candidates: Optional[list[str]] = None) -> Optional[tuple[int, int, str]]:
+    """(free_bytes, total_bytes, path) for the filesystem holding the models.
+
+    Probes OLLAMA_MODELS, the systemd default store and ~/.ollama/models,
+    climbing to the nearest accessible ancestor of each (the model store
+    itself may be unreadable when ollama runs as another user), and falls
+    back to `/`. `candidates` is injectable for tests.
+    """
+    if candidates is None:
+        candidates = []
+        if os.environ.get("OLLAMA_MODELS"):
+            candidates.append(os.environ["OLLAMA_MODELS"])
+        candidates += ["/usr/share/ollama/.ollama/models",
+                       str(Path.home() / ".ollama/models"), "/"]
+    for candidate in candidates:
+        probe = _first_existing_path(candidate)
+        try:
+            usage = shutil.disk_usage(probe)
+        except OSError:
+            continue
+        return usage.free, usage.total, probe
+    return None
 
 
 def parse_think(value: Any) -> Optional[Any]:

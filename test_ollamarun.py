@@ -738,7 +738,8 @@ def test_tps_estimator() -> int:
 
 class _FakeClient:
     def __init__(self, resident=(), models=(), ps_entries=(), show_data=None,
-                 capabilities=("completion",), chat_script=None):
+                 capabilities=("completion",), chat_script=None,
+                 pull_events=None, pull_error=None):
         self.base = "http://fake:11434"
         self.resident = list(resident)
         self.models = list(models)
@@ -750,6 +751,9 @@ class _FakeClient:
         self.unloaded = []
         self.loaded = []
         self.chat_payloads = []
+        self.pull_events = list(pull_events or [])
+        self.pull_error = pull_error
+        self.pulled = []
 
     def is_resident(self, model):
         return model in self.resident
@@ -782,6 +786,14 @@ class _FakeClient:
 
     def model_exists(self, model):
         return model in self.models
+
+    def pull_model(self, model, progress=None):
+        self.pulled.append(model)
+        if self.pull_error:
+            raise orun.OllamaError(self.pull_error)
+        for event in self.pull_events:
+            if progress:
+                progress(event)
 
 
 def test_unload_housekeeping() -> int:
@@ -1604,6 +1616,186 @@ def test_remote_hosts() -> int:
     return failures
 
 
+def test_pull_and_disk_helpers() -> int:
+    failures = 0
+
+    def check(name, got, expected):
+        nonlocal failures
+        if got == expected:
+            print(f"PASS  {name}")
+        else:
+            print(f"FAIL  {name}: {got!r} != {expected!r}")
+            failures += 1
+
+    seen_requests = []
+
+    def pull_handler(method, url, json, stream):
+        seen_requests.append((method, url, json))
+        return _FakeResponse(status=200, lines=[
+            b'{"status":"pulling manifest"}',
+            b'{"status":"pulling abc","digest":"sha256:abc","total":100,"completed":40}',
+            b'{"status":"success"}',
+        ])
+
+    events = []
+    client = orun.OllamaClient("127.0.0.1:11434")
+    client.http = _FakeSession(pull_handler)
+    client.pull_model("m1", events.append)
+    check("pull_model forwards progress events",
+          [event.get("status") for event in events],
+          ["pulling manifest", "pulling abc", "success"])
+    check("pull_model posts /api/pull",
+          seen_requests[0][:2], ("POST", "http://127.0.0.1:11434/api/pull"))
+    check("pull_model asks for a stream", seen_requests[0][2],
+          {"model": "m1", "stream": True})
+
+    client.http = _FakeSession(
+        lambda method, url, json, stream: _FakeResponse(
+            status=200, lines=[b'{"error":"boom"}']))
+    try:
+        client.pull_model("m1")
+        print("FAIL  pull_model should raise on an error event")
+        failures += 1
+    except orun.OllamaError:
+        print("PASS  pull_model raises on an error event")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        usage = orun.local_free_disk([tmp])
+    check("local_free_disk reports numbers",
+          bool(usage and usage[0] > 0 and usage[1] > 0), True)
+    check("local_free_disk reports the probed path", usage[2], tmp)
+    usage = orun.local_free_disk(["/definitely-missing-dir-zz/x"])
+    check("local_free_disk climbs to an existing ancestor",
+          bool(usage and usage[2] == "/"), True)
+
+    class _Proc:
+        def __init__(self, returncode, stdout=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = ""
+
+    check("ssh_free_disk parses df output",
+          orun.ssh_free_disk("box", runner=lambda *a, **k: _Proc(
+              0, "490577010688 17122672640 /\n")),
+          (17122672640 * 1024, 490577010688 * 1024, "/"))
+    check("ssh_free_disk tolerates a failing ssh",
+          orun.ssh_free_disk("box", runner=lambda *a, **k: _Proc(1)), None)
+
+    def _no_ssh(*args, **kwargs):
+        raise OSError("no ssh")
+
+    check("ssh_free_disk tolerates no ssh binary",
+          orun.ssh_free_disk("box", runner=_no_ssh), None)
+    check("ssh_free_disk tolerates garbage output",
+          orun.ssh_free_disk("box", runner=lambda *a, **k: _Proc(0, "nope\n")), None)
+
+    line = orun.disk_free_line(_FakeClient(), dict(orun.DEFAULT_CONFIG))
+    check("disk_free_line: unknown without ssh", "unknown" in line, True)
+    line = orun.disk_free_line(orun.OllamaClient(orun.DEFAULT_HOST),
+                               dict(orun.DEFAULT_CONFIG))
+    check("disk_free_line: local disk", "free disk space on this machine" in line, True)
+    return failures
+
+
+def test_ensure_model() -> int:
+    failures = 0
+
+    def check(name, got, expected):
+        nonlocal failures
+        if got == expected:
+            print(f"PASS  {name}")
+        else:
+            print(f"FAIL  {name}: {got!r} != {expected!r}")
+            failures += 1
+
+    config = dict(orun.DEFAULT_CONFIG)
+    interactive = orun.interactive
+    saved_confirm = interactive.Confirm
+    saved_pick = interactive.pick_model
+
+    installed = _FakeClient(models=["m1"])
+    check("installed model passes through",
+          orun.ensure_model(installed, "m1", config, interactive=False), "m1")
+    check("installed model is not pulled", installed.pulled, [])
+
+    missing = _FakeClient(pull_events=[{"status": "success"}])
+    check("--pull pulls and returns the model",
+          orun.ensure_model(missing, "m9", config, assume_yes=True, quiet=True,
+                            interactive=False),
+          "m9")
+    check("--pull actually pulled", missing.pulled, ["m9"])
+
+    class _Yes:
+        @staticmethod
+        def ask(*args, **kwargs):
+            return True
+
+    class _No:
+        @staticmethod
+        def ask(*args, **kwargs):
+            return False
+
+    interactive.Confirm = _Yes
+    try:
+        yes_client = _FakeClient(pull_events=[{"status": "success"}])
+        with orun.console.capture() as cap:
+            got = orun.ensure_model(yes_client, "m9", config, interactive=True)
+        text = _plain(cap.get())
+        check("interactive yes pulls", (got, yes_client.pulled), ("m9", ["m9"]))
+        check("interactive prompt prints free space", "free disk space" in text, True)
+
+        interactive.Confirm = _No
+        no_client = _FakeClient()
+        interactive.pick_model = lambda client, current: "other-model"
+        with orun.console.capture() as cap:
+            got = orun.ensure_model(no_client, "m9", config, interactive=True,
+                                    pick_on_decline=True)
+        check("declining opens the picker", got, "other-model")
+        check("declining does not pull", no_client.pulled, [])
+
+        interactive.pick_model = saved_pick
+        with orun.console.capture() as cap:
+            got = orun.ensure_model(no_client, "m9", config, interactive=True)
+        text = _plain(cap.get())
+        check("declining without picker stops", got, None)
+        check("decline prints a hint", "nothing to run" in text, True)
+    finally:
+        interactive.Confirm = saved_confirm
+        interactive.pick_model = saved_pick
+
+    with orun.console.capture() as cap:
+        got = orun.ensure_model(_FakeClient(), "m9", config, interactive=False)
+    text = _plain(cap.get())
+    check("non-interactive missing model stops", got, None)
+    check("non-interactive warning", "not installed" in text, True)
+
+    with orun.console.capture() as cap:
+        got = orun.ensure_model(_FakeClient(pull_error="disk full"), "m9", config,
+                                assume_yes=True, quiet=True, interactive=False)
+    check("pull failure stops", got, None)
+    check("pull failure message", "pull failed: disk full" in _plain(cap.get()), True)
+
+    parser = orun.build_parser()
+    check("--pull parses", parser.parse_args(["m1", "--pull"]).pull, True)
+    check("--pull defaults off", parser.parse_args(["m1"]).pull, False)
+    check("/pull is wired into the REPL command tables",
+          orun.COMMAND_HANDLERS.get("/pull") is orun.cmd_pull
+          and "/pull" in orun.COMMAND_INFO, True)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+        client = _FakeClient(models=["m1"], pull_events=[{"status": "success"}])
+        repl = orun.Repl(args, config, client, store,
+                         orun.Session.create("m1", client.base))
+        with orun.console.capture() as cap:
+            orun.cmd_pull(repl, "m9")
+        check("cmd_pull pulls", client.pulled, ["m9"])
+        check("cmd_pull reports success", "pulled" in _plain(cap.get()), True)
+    return failures
+
+
 def test_slash_completer() -> int:
     failures = 0
     with tempfile.TemporaryDirectory() as tmp:
@@ -2287,7 +2479,9 @@ if __name__ == "__main__":
              + test_maybe_show_ps() + test_resolve_num_ctx()
              + test_context_usage()
              + test_cmd_num_ctx() + test_emit_and_cli_functions()
-             + test_build_parser_flags() + test_remote_hosts() + test_slash_completer()
+             + test_build_parser_flags() + test_remote_hosts()
+             + test_pull_and_disk_helpers() + test_ensure_model()
+             + test_slash_completer()
              + test_tools_policy() + test_tool_execution() + test_tool_loop()
              + test_tool_commands() + test_tool_payloads() + test_tool_cli_flags()
              + test_tts_tools() + test_tts_command() + test_tts_auto_speak()

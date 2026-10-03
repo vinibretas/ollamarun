@@ -42,7 +42,7 @@ from .helpers import (
     tailscale_peer_state,
 )
 from .images import encode_image
-from .interactive import pick_model, pick_session
+from .interactive import ensure_model, pick_model, pick_session
 from .repl import Repl, resolve_num_ctx
 from .run import run_embed, run_once
 from .session import Session, SessionStore
@@ -57,6 +57,7 @@ interactive commands:
   /show [topic]         model info|license|modelfile|parameters|system|template
   /load [MODEL|SESSION] switch model or resume a saved session
   /save NAME            create an Ollama model from this session
+  /pull [MODEL]         pull a model onto this host (updates if present)
   /clear /new           start fresh context or a brand new session
   /undo /retry /edit    fix or regenerate the last exchange
   /summarize /context   manage the context window
@@ -135,6 +136,9 @@ sessions live in ~/etc/data/ollamarun; config in ~/etc/config_files/ollamarun.js
                             help="run on a tailnet machine (pi, kiddo, g3, "
                                  "optiplex7070 or optiplex, guri) or any host[:port]; "
                                  "models load and unload there")
+    wrapper.add_argument("--pull", action="store_true",
+                         help="pull the model if it is not installed, without asking "
+                              "(shows free disk space and progress on a terminal)")
     wrapper.add_argument("-m", "--model", dest="model_flag", metavar="MODEL",
                          help="model name (same as the positional MODEL)")
     wrapper.add_argument("--system", metavar="TEXT", help="system prompt")
@@ -469,9 +473,26 @@ def main(argv: Optional[list[str]] = None) -> int:
     if probe_label and not remote_preflight(client, probe_label, config, quiet=quiet):
         return 1
 
+    if adopted:
+        host_label = session.remote or session.host
+        ssh_target = remote_node(session.remote, config) if session.remote else None
+    elif remote_name:
+        host_label = remote_name
+        ssh_target = remote_node(remote_name, config)
+    elif not is_local_host(client.base):
+        host_label, ssh_target = args.host or client.base, None
+    else:
+        host_label, ssh_target = None, None
+
     model = resolve_model(args, config, client, session)
     if not model:
         return 2
+    chosen = ensure_model(client, model, config, ssh_target=ssh_target,
+                          host_label=host_label, assume_yes=args.pull,
+                          pick_on_decline=True, quiet=quiet)
+    if not chosen:
+        return 2
+    model = chosen
     session.model = model
     session.host = client.base
     if remote_name and not adopted:
