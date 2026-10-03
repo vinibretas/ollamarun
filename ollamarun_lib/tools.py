@@ -184,7 +184,6 @@ def shell_safety(command: str, shell_allow: Optional[set[str]] = None) -> str:
 
 
 def _dangerous_shell_args(command: str, args: list[str]) -> str:
-    joined = " ".join(args)
     if command == "rg" and any(arg.startswith("--pre") for arg in args):
         return "rg --pre runs an arbitrary command"
     if command == "find":
@@ -225,8 +224,6 @@ def _dangerous_shell_args(command: str, args: list[str]) -> str:
     if command == "date" and any(arg in {"-s", "--set"} or arg.startswith("--set=")
                                 for arg in args):
         return "date -s sets the system clock"
-    if command in {"head", "tail"} and any(arg.startswith("-c") for arg in args):
-        pass  # -c is bytes (read-only), kept for clarity
     return ""
 
 
@@ -344,10 +341,11 @@ def _handler_shell(args: dict[str, Any], ctx: ToolContext) -> str:
     if not cwd.is_dir():
         raise ToolError(f"working directory does not exist: {cwd}")
     timeout = _clamp_timeout(args.get("timeout"), ctx.timeout)
+    environment = {**os.environ, "BASH_ENV": os.devnull}
     try:
         proc = subprocess.run(["bash", "-c", command], cwd=str(cwd),
                               capture_output=True, text=True, timeout=timeout,
-                              errors="replace")
+                              errors="replace", env=environment)
     except subprocess.TimeoutExpired:
         raise ToolError(f"command timed out after {timeout:.0f}s") from None
     except OSError as exc:
