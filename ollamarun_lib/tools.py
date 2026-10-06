@@ -472,8 +472,12 @@ def find_tts_remote(ctx: ToolContext) -> Optional[str]:
         candidate if Path(candidate).exists() else None)
     if found:
         return found
+    # tts-remote lives in its own submodule: ~/bin/tts-remote/tts-remote
     fallback = Path.home() / "bin" / "tts-remote"
-    return str(fallback) if fallback.exists() else None
+    if fallback.is_file():
+        return str(fallback)
+    entry = fallback / "tts-remote"
+    return str(entry) if entry.is_file() else None
 
 
 def _handler_speak(args: dict[str, Any], ctx: ToolContext) -> str:
@@ -611,8 +615,9 @@ def default_registry(*, tts: Optional[bool] = None) -> dict[str, ToolSpec]:
     ]
     registry = {spec.name: spec for spec in specs}
     if tts is None:
+        fallback = Path.home() / "bin" / "tts-remote"
         available = bool(shutil.which("tts-remote")) \
-            or (Path.home() / "bin" / "tts-remote").exists()
+            or fallback.is_file() or (fallback / "tts-remote").is_file()
     else:
         available = bool(tts)
     if available:

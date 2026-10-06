@@ -2,9 +2,13 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.18
+Version: 1.19
 
 Summary of changes in this version:
+  - tts-remote moved to a git submodule package (`~/bin/tts-remote/`); its
+    `find_tts_remote` fallback now understands the new layout
+    (`~/bin/tts-remote/tts-remote`), so the speak tool and auto-speak keep
+    working even when that directory is not on PATH.
   - GPU layers. `--gpu-layers SPEC` and `/gpu-layers [SPEC]` control how
     many model layers run on the GPU: `20` (absolute), `50%` (relative to
     the model's layer count from /api/show, so 100% is a full offload),
