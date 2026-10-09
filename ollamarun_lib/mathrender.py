@@ -125,9 +125,26 @@ _INLINE_MATH_RE = re.compile(
     r"|\$(?!\$)\s+([^$\n]+?)\s+\$(?!\$)")
 
 
+def _display_is_block(text: str, start: int, end: int) -> bool:
+    """True when a display-math match sits on its own line(s).
+
+    Only whitespace may precede the match on its starting line and follow it
+    on its ending line. Anything else means the math is inline -- inside a
+    table cell, a list item or a sentence -- and must stay in the text chunk
+    so it cannot break the surrounding markdown block.
+    """
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", end)
+    if line_end == -1:
+        line_end = len(text)
+    return not text[line_start:start].strip() and not text[end:line_end].strip()
+
+
 def _display_repl(match: re.Match) -> str:
-    tex = match.group(1) or match.group(2) or ""
-    return "\n\n```\n" + latex_to_unicode(tex.strip()) + "\n```\n\n"
+    tex = (match.group(1) or match.group(2) or "").strip()
+    if not _display_is_block(match.string, match.start(), match.end()):
+        return render_inline_math(tex)
+    return "\n\n```\n" + latex_to_unicode(tex) + "\n```\n\n"
 
 
 def _inline_repl(match: re.Match) -> str:
@@ -1166,34 +1183,41 @@ def render_inline_math(tex: str) -> str:
 
 # ── content rendering (markdown + centered display math) ────────────────────
 
-def _split_display_plain(text: str) -> list[tuple[str, str]]:
+def _split_display_math(text: str) -> list[tuple[str, str]]:
+    """Splits into ('text', ...) / ('math', ...) for block display math only.
+
+    Code spans/fences are masked (never split on) so a table, list or
+    paragraph containing `` `code` `` stays in one piece for the markdown
+    renderer, and ``$$`` inside them is ignored. Display math is only
+    extracted when it sits on its own line(s); mid-line math stays in the
+    text chunk, where `convert_math` renders it inline.
+    """
+    masked = list(text)
+    for code in _CODE_RE.finditer(text):
+        for index in range(code.start(), code.end()):
+            masked[index] = "\x00"
     segments: list[tuple[str, str]] = []
     pos = 0
-    for match in _DISPLAY_MATH_RE.finditer(text):
+    for match in _DISPLAY_MATH_RE.finditer("".join(masked)):
+        if not _display_is_block(text, match.start(), match.end()):
+            continue
         if match.start() > pos:
             segments.append(("text", text[pos:match.start()]))
-        segments.append(("math", match.group(1) or match.group(2) or ""))
+        segments.append(("math", text[match.start():match.end()][2:-2]))
         pos = match.end()
     if pos < len(text):
         segments.append(("text", text[pos:]))
     return segments
 
 
-def _split_display_math(text: str) -> list[tuple[str, str]]:
-    """Splits into ('text', ...) / ('math', ...) with code spans protected."""
-    segments: list[tuple[str, str]] = []
-    pos = 0
-    for code in _CODE_RE.finditer(text):
-        segments.extend(_split_display_plain(text[pos:code.start()]))
-        segments.append(("text", code.group(0)))
-        pos = code.end()
-    segments.extend(_split_display_plain(text[pos:]))
-    return segments
-
-
 def render_content(text: str, *, math: bool = True, style: Optional[str] = None,
                    width: Optional[int] = None) -> Group:
-    """Markdown with display math as centered 2D Unicode blocks."""
+    """Markdown with block display math as centered 2D Unicode blocks.
+
+    Only display math that sits on its own line(s) is centered; math written
+    mid-line (in a table cell, list item or sentence) is converted inline by
+    `convert_math` so it stays inside its surrounding markdown block.
+    """
     markdown_style = style or "none"
     parts: list[Any] = []
     if not math:

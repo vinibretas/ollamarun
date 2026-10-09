@@ -696,6 +696,46 @@ def test_render_content() -> int:
         print(f"FAIL  math=False: {disabled!r}")
         failures += 1
 
+    table = render(orun.render_content(
+        "| Option | Effect |\n| :--- | :--- |\n| `ssh -o BatchMode=yes` | no prompts |"),
+        width=80)
+    if ":---" not in table and "|" not in table and "─" in table \
+            and "ssh -o BatchMode=yes" in table:
+        print("PASS  table with inline code renders as a table")
+    else:
+        print(f"FAIL  table with inline code: {table!r}")
+        failures += 1
+
+    math_cell = render(orun.render_content(
+        "| Sym | Formula |\n|-----|---------|\n| area | $$A = \\pi r^2$$ |"), width=80)
+    if "$$" not in math_cell and "|" not in math_cell and "─" in math_cell \
+            and "A = πr²" in math_cell:
+        print("PASS  display math in a table cell stays inline")
+    else:
+        print(f"FAIL  table display math: {math_cell!r}")
+        failures += 1
+
+    sentence = render(orun.render_content("Use `a` and `b` in one sentence.", width=80))
+    if "Use a and b in one sentence." in sentence:
+        print("PASS  inline code does not split a paragraph")
+    else:
+        print(f"FAIL  inline code paragraph: {sentence!r}")
+        failures += 1
+
+    bullets = render(orun.render_content("- one `a`\n- two `b`", width=80))
+    if bullets.count("•") == 2 and "one a" in bullets and "two b" in bullets:
+        print("PASS  inline code does not split a list")
+    else:
+        print(f"FAIL  inline code list: {bullets!r}")
+        failures += 1
+
+    midline = render(orun.render_content("so $$x^2$$ wins", width=80))
+    if "so x² wins" in midline and "$$" not in midline:
+        print("PASS  mid-line display math renders inline")
+    else:
+        print(f"FAIL  mid-line display math: {midline!r}")
+        failures += 1
+
     thinking_out = render(orun.render_thinking("reasoning $\\frac{a}{b}$ done"))
     if "reasoning" in thinking_out and "a/b" in thinking_out and "done" in thinking_out:
         print("PASS  render_thinking renders inline math")
