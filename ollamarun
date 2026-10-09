@@ -2,9 +2,19 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.19
+Version: 1.20
 
 Summary of changes in this version:
+  - Table rendering. Inline code spans (and code fences) no longer split the
+    response into separate markdown blocks: any table, list or paragraph
+    that contained `code` used to be chopped apart at every span, so a
+    table whose cells held backticked commands rendered as one wrapped
+    paragraph of pipes. Text now stays whole, and a `$$...$$`/`\[...\]`
+    block is extracted only when it sits on its own line(s). Display math
+    written mid-line -- inside a table cell, a list item or a sentence --
+    now renders inline, so it cannot break the block around it.
+  - Also fixed the version drift from the previous release: `VERSION` still
+    read 1.18 while the docstring had moved to 1.19.
   - tts-remote moved to a git submodule package (`~/bin/tts-remote/`); its
     `find_tts_remote` fallback now understands the new layout
     (`~/bin/tts-remote/tts-remote`), so the speak tool and auto-speak keep
