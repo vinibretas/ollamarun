@@ -78,7 +78,7 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"1.24"`) and prepend a
+  constant in `ollamarun_lib/constants.py`, currently `"1.26"`) and prepend a
   new bullet list under `Summary of changes in this version:` in the
   top-level `ollamarun` entry script's module docstring — read the existing
   entries there before adding one; that block is the changelog, there is no
@@ -185,7 +185,18 @@ a module's own docstring for what lives there before editing:
    picker on decline), `pull_with_progress()` and `disk_free_line()`. Also
    the GPU-layer spec logic: `model_block_count()`,
    `parse_gpu_layers_spec()`, `resolve_gpu_layers()`, `gpu_layers_label()`.
-12. **`repl.py`** — `SlashCompleter` (prompt_toolkit completion for
+12. **`ctxfit.py`** — the GPU context fit behind `/num-ctx --max-gpu`:
+   `kv_bytes_per_token()` (llama.cpp's KV formula applied to `/api/show`'s
+   GGUF metadata, per-layer `head_count_kv` arrays included),
+   `machine_state_for()`/`probe_machine_gpu()` (free VRAM plus the ollama
+   unit env, locally or over one ssh probe), `estimate_max_gpu_ctx()`
+   (weights from `/api/tags`, llama.cpp's fit margin, pinned
+   `/gpu-layers`), the `/api/ps`-verified bisection `probe_max_gpu_ctx()`
+   (`FitRequest`/`GpuFit`/`ProbeResult`), the rich reports and
+   `max_gpu_context()`, which the REPL command and the CLI
+   `--num-ctx max-gpu` flag both call. The probes themselves live in
+   `helpers.py` (`local_gpu_probe`, `ssh_gpu_probe`, `host_is_self`).
+13. **`repl.py`** — `SlashCompleter` (prompt_toolkit completion for
    `/commands`, session ids, models, `@files`), `ApprovalPicker` (the
    checkbox tool-approval prompt that stores generalized `ToolRule`s in the
    session), the `Repl` class (including the multi-round tool loop
@@ -202,10 +213,10 @@ a module's own docstring for what lives there before editing:
    `ps_table()`/`resolve_num_ctx()` also live here since `cmd_ps`/
    `cmd_num_ctx` are their only callers (`resolve_num_ctx` is reused by
    `main()` in `cli.py` for `--num-ctx`).
-13. **`run.py`** — `run_once()` (non-REPL path, built on an already-constructed
+14. **`run.py`** — `run_once()` (non-REPL path, built on an already-constructed
    `Repl`) and `run_embed()` (routes embedding-capable models to
    `/api/embed` instead of chat).
-14. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
+15. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
    every `ollama run` flag), `resolve_model`/`resolve_session` (figuring out
    what model/session a given invocation means, including the `-c`/`-r`/
    `--session` disambiguation in `normalize_argv`), and `main()` as the
