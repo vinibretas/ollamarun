@@ -599,6 +599,108 @@ def test_live_stream_final_frame_is_complete() -> int:
     return failures
 
 
+def test_tool_loop_separation() -> int:
+    """The answer that ends a tool loop is separated from the processing
+    above it by a bright centered `response` rule -- and only the committed
+    final frame of a post-tools round carries it: streaming frames, interim
+    rounds and tool-less turns keep today's rendering."""
+    failures = 0
+    import ollamarun_lib.renderer as renderer_mod
+
+    def render_text(renderable) -> str:
+        out_buffer = io.StringIO()
+        Console(file=out_buffer, width=100, force_terminal=False).print(renderable)
+        return out_buffer.getvalue()
+
+    def run_stream(events, *, after_tools):
+        updates = []
+
+        class _RecordingLive(orun.Live):
+            def update(self, renderable, *, refresh=False):
+                updates.append(renderable)
+                super().update(renderable, refresh=refresh)
+
+        console = Console(file=io.StringIO(), width=100, force_terminal=True)
+        renderer = orun.Renderer(console, mode="markdown", thinking_mode="hidden",
+                                 after_tools=after_tools)
+        original_live = renderer_mod.Live
+        renderer_mod.Live = _RecordingLive
+        try:
+            result = renderer.stream(iter(events))
+        finally:
+            renderer_mod.Live = original_live
+        return result, updates
+
+    final_events = [{"message": {"content": "The answer is 42."}},
+                    {"message": {"content": ""}, "done": True}]
+    interim_events = [{"message": {"role": "assistant", "content": "checking the file",
+                                   "tool_calls": [{"function": {"name": "run_shell"}}]}},
+                      {"message": {"role": "assistant", "content": ""}, "done": True}]
+
+    result, updates = run_stream(final_events, after_tools=True)
+    committed = render_text(updates[-1])
+    streamed = "".join(render_text(frame) for frame in updates[:-1])
+    failures = _check(failures, "answer ending a tool loop gets the response rule",
+                      "response" in committed and "The answer is 42." in committed,
+                      committed)
+    failures = _check(failures, "the rule only appears in the committed frame",
+                      "response" not in streamed, streamed)
+
+    result, updates = run_stream(interim_events, after_tools=True)
+    committed = render_text(updates[-1])
+    failures = _check(failures, "interim tool round is not marked",
+                      "response" not in committed, committed)
+
+    result, updates = run_stream(final_events, after_tools=False)
+    committed = render_text(updates[-1])
+    failures = _check(failures, "tool-less turn keeps today's rendering",
+                      "response" not in committed, committed)
+
+    renderer = orun.Renderer(Console(file=io.StringIO(), width=100), mode="markdown",
+                             after_tools=True)
+    cancelled = orun.GenerationResult(content="half an answer", cancelled=True)
+    errored = orun.GenerationResult(error="connection lost")
+    failures = _check(failures, "cancelled and errored rounds are never marked",
+                      not renderer.final_rule_wanted(cancelled)
+                      and not renderer.final_rule_wanted(errored)
+                      and renderer.final_rule_wanted(orun.GenerationResult(content="done")))
+
+    # _generate() hands each round's renderer the loop state: False while the
+    # first round is still the only one, True for every round that follows a
+    # round which requested tools.
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain", "--no-save", "-y"])
+        script = [
+            [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "run_shell",
+                              "arguments": {"command": "echo from-tool"}}}]},
+              "done": False},
+             {"message": {"role": "assistant", "content": ""}, "done": True}],
+            [{"message": {"role": "assistant", "content": "all done"}, "done": True}],
+        ]
+        client = _FakeClient(models=["m1"], capabilities=["completion", "tools"],
+                             chat_script=script)
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store,
+                         orun.Session.create("m1", client.base))
+        repl._build_prompt_session = lambda: None
+        seen = []
+        original_renderer = repl._renderer
+
+        def recording_renderer(*, after_tools=False):
+            seen.append(after_tools)
+            return original_renderer(after_tools=after_tools)
+
+        repl._renderer = recording_renderer
+        repl.session.add_message("user", "run something")
+        with orun.console.capture():
+            repl._generate()
+        failures = _check(failures, "_generate marks only post-tool rounds",
+                          seen == [False, True], str(seen))
+    return failures
+
+
 MATH_LAYOUT_CASES = [
     (r"\frac{a}{b}", ["a", "─", "b"]),
     (r"\frac{a}{b} + c", ["a", "─ + c", "b"]),
@@ -2976,7 +3078,7 @@ if __name__ == "__main__":
              + test_pull_and_disk_helpers() + test_ensure_model()
              + test_gpu_layers() + test_slash_completer()
              + test_tools_policy() + test_tool_execution() + test_web_tools()
-             + test_tool_loop()
+             + test_tool_loop() + test_tool_loop_separation()
              + test_tool_commands() + test_tool_payloads() + test_tool_cli_flags()
              + test_tts_tools() + test_tts_command() + test_tts_auto_speak()
              + test_client_http() + test_cmd_image()

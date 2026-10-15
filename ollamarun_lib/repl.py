@@ -325,7 +325,7 @@ class Repl:
 
     # ── rendering ───────────────────────────────────────────────────────────
 
-    def _renderer(self) -> Renderer:
+    def _renderer(self, *, after_tools: bool = False) -> Renderer:
         mode = self.render_mode
         if mode == "auto":
             mode = "markdown" if console.is_terminal else "plain"
@@ -337,7 +337,7 @@ class Repl:
                         tps_footer=self.tps_footer,
                         show_stats=self.show_stats, verbose=self.verbose,
                         max_render_chars=self.max_render_chars, pager=self.pager,
-                        model=self.session.model)
+                        model=self.session.model, after_tools=after_tools)
 
     # ── model housekeeping ──────────────────────────────────────────────────
 
@@ -620,7 +620,7 @@ class Repl:
         result = GenerationResult()
         tool_rounds = 0
         while True:
-            renderer = self._renderer()
+            renderer = self._renderer(after_tools=bool(tool_rounds))
             marker = f"[ai]{escape(self.session.model)} ›[/ai]"
             if renderer.mode != "raw" and not renderer.live_render:
                 console.print(marker)
