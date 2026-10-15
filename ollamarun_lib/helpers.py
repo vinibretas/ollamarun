@@ -1,4 +1,6 @@
-"""Small helpers: timestamps, ids, coercion, config load, logging setup."""
+"""Small helpers: timestamps, ids, coercion, config load, logging setup, and
+the `CancelToken` the UI threads use to stop a running turn.
+"""
 from __future__ import annotations
 
 import json
@@ -8,6 +10,7 @@ import re
 import shutil
 import socket
 import subprocess
+import threading
 import urllib.parse
 import uuid
 from datetime import datetime
@@ -36,6 +39,34 @@ def short_stamp(value: Optional[str]) -> str:
 
 def new_session_id() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:4]
+
+
+class CancelToken:
+    """Thread-safe "stop this turn" flag shared between UI and worker threads.
+
+    The streaming worker checks it between chunks; the UI thread sets it (and
+    closes the in-flight HTTP response through `OllamaClient.abort_stream()`)
+    so a cancel lands even while the worker is blocked waiting for the next
+    chunk -- which can be a long time away while a model is being loaded.
+    """
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+
+    def cancel(self) -> None:
+        self._event.set()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._event.is_set()
+
+    # `is_set` is the `threading.Event` spelling, so a plain Event works
+    # anywhere a CancelToken is accepted.
+    def is_set(self) -> bool:
+        return self._event.is_set()
+
+    def reset(self) -> None:
+        self._event.clear()
 
 
 def parse_bool(value: Any, default: bool = False) -> bool:

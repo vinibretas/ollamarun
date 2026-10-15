@@ -2,6 +2,59 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.29
+
+Summary of changes in this version:
+  - New TUI front end: `--ui tui` (config key `"ui"`) replaces the scrolling
+    prompt with three panes -- the transcript, a rule, and a status bar above
+    an input box that is always available, even while the model is working.
+    The transcript streams the same markdown/2D-math rendering as before,
+    keeps thinking collapsed (Ctrl+T), shows tool calls and results in order,
+    and scrolls with the mouse/PgUp. Textual is optional: `--ui inline` (the
+    default, unchanged prompt_toolkit REPL) and `--ui auto` pick the TUI only
+    when the `textual` package (1.0+) is installed, and `--ui tui` degrades to
+    the inline REPL with a note when it is not.
+  - Status bar: spinner + state (ready, generating, running, tool, approval,
+    stopping, done, error), the model (and `--remote` machine), the
+    thinking/tools/render modes, context tokens and percentage, live tok/s,
+    the queued count and the key hints. It trims itself to the terminal width,
+    dropping the modes first.
+  - Type while the model works. Enter queues: messages are handed to the model
+    at the next sub-task boundary -- right before the following /api/chat of
+    the same turn, i.e. immediately after a tool result -- so it keeps working
+    with the new information instead of dropping what it was doing. Slash
+    commands that only read state or change display knobs (`/thinking`, /tps,
+    /render, /stats, /context, /queue, /ps, /show, /tools, /tts, /help, /params,
+    /tag) run straight away; everything else queues and runs when the turn
+    ends, in the order it was typed (`/queue [list|clear|rm N]` shows or edits
+    the list).
+  - Ctrl+B sends what is typed right now: it cuts a streaming answer short but
+    never kills a tool that is already running -- a shell/python command keeps
+    running in the background and the model gets its result, together with your
+    message, in the next round.
+  - Esc Esc stops the turn (the first Esc arms it and the status bar says
+    "press Esc again to stop"). The partial answer is kept and marked cancelled
+    -- exactly like Ctrl+C today -- and anything queued then runs as the next
+    turn, so nothing typed is lost. Ctrl+Q quits (a second press when the model
+    is busy or messages are queued), Ctrl+L clears the transcript.
+  - Cancellation plumbing underneath: a `CancelToken` is checked between stream
+    chunks and `OllamaClient.abort_stream()` closes the in-flight response from
+    the UI thread, so a stop lands even while the stream is blocked waiting for
+    the model to produce its next token (a long model load, for instance).
+  - Tool approvals ask in a modal that offers the same numbered choices as the
+    console prompt (`1/y` run once, `2/a` always allow that exact call, one
+    line per suggested generalized rule, `A` auto-allow every later call,
+    `n` deny) -- type the number or letter, or move with up/down and press
+    enter. The choice list is built in `ui.py` so the console prompt and the
+    modal share one implementation, and the command plus the reason stay in
+    front of you. The model/session pickers, the pull confirmation and the
+    `$EDITOR` handoff keep working too (the pickers ask inside the app, the
+    editor suspends it).
+  - Tests: the queue/boundary rules, cancel plumbing, status-line layout and
+    the whole TUI (Textual's own headless driver: typing, queueing, stopping,
+    Ctrl+B, the approval prompt, quitting) are covered in test_ollamarun.py;
+    they skip cleanly when Textual is missing.
+
 Version: 1.28
 
 Summary of changes in this version:

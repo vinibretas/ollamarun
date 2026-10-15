@@ -141,7 +141,10 @@ a module's own docstring for what lives there before editing:
    incremental markdown re-render while tokens stream, the collapsible
    thinking panel (`render_thinking`, Ctrl+T expand/collapse in place;
    `/thinking full` prints the stored panel directly), and
-   `TpsEstimator` for the live `~tok/s` footer. Also has the chat-bubble
+   `TpsEstimator` for the live `~tok/s` footer. `StreamSink` is the seam the
+   TUI uses: with a sink, `stream()` pushes the same frames to a widget
+   instead of a `rich.Live`, so both front ends share one streaming loop
+   (and `stream(cancel=…)` honors a `CancelToken`). Also has the chat-bubble
    helpers (`user_message_box`, small right-aligned box for a user turn;
    `model_message_panel`, full-width titled box for a model turn) and the
    tool panels -- `tool_call_panel()`/`tool_result_panel()`, both coloured
@@ -178,14 +181,24 @@ a module's own docstring for what lives there before editing:
 10. **`emit.py`** — `emit()` plus the `cli_list`/`cli_search`/`cli_show`/
    `cli_export`/`cli_delete` functions that implement the non-interactive
    inspection flags.
-11. **`interactive.py`** — `open_in_editor` (`$OLLAMA_EDITOR`),
-   `pick_model`/`pick_session` (fuzzy pickers), `model_context_length`
+11. **`ui.py`** — the front-end seam: `Ui` (the interactive hooks `repl.py`
+   and `interactive.py` call: `ask`, `confirm`, `editor`, `approval`,
+   `notify`), `ConsoleUi` (the inline implementation — the same rich prompts
+   as always, notifications are a no-op), the tool-approval choice list
+   (`approval_entries`/`approval_lines`) and the numbered typed prompt
+   `_prompt_approval` (moved here so the console prompt and the TUI modal are
+   built from one list), and the status-bar model (`StatusSnapshot`,
+   `format_status()`, `spinner_frame()`): plain data plus a pure formatter,
+   unit-testable without a terminal.
+12. **`interactive.py`** — `open_in_editor` (`$OLLAMA_EDITOR`),
+   `pick_model`/`pick_session` (fuzzy pickers; `ui=` routes the question to
+   the TUI front end), `model_context_length`
    (reads context window from `/api/show`), and the missing-model flow:
    `ensure_model()` (free-space line + y/N pull prompt, `--pull` skip,
    picker on decline), `pull_with_progress()` and `disk_free_line()`. Also
    the GPU-layer spec logic: `model_block_count()`,
    `parse_gpu_layers_spec()`, `resolve_gpu_layers()`, `gpu_layers_label()`.
-12. **`ctxfit.py`** — the GPU context fit behind `/num-ctx --max-gpu`:
+13. **`ctxfit.py`** — the GPU context fit behind `/num-ctx --max-gpu`:
    `kv_bytes_per_token()` (llama.cpp's KV formula applied to `/api/show`'s
    GGUF metadata, per-layer `head_count_kv` arrays included),
    `machine_state_for()`/`probe_machine_gpu()` (free VRAM plus the ollama
@@ -196,31 +209,47 @@ a module's own docstring for what lives there before editing:
    `max_gpu_context()`, which the REPL command and the CLI
    `--num-ctx max-gpu` flag both call. The probes themselves live in
    `helpers.py` (`local_gpu_probe`, `ssh_gpu_probe`, `host_is_self`).
-13. **`repl.py`** — `SlashCompleter` (prompt_toolkit completion for
-   `/commands`, session ids, models, `@files`), `_prompt_approval` (the
-   numbered tool-approval prompt that stores generalized `ToolRule`s in the
-   session), the `Repl` class (including the multi-round tool loop
-   `_generate` → `_execute_tool_calls` and the approval flow
-   `_approve_tool_call`), then the `cmd_*` functions. Each slash command
+14. **`repl.py`** — `SlashCompleter`/`completion_candidates` (completion for
+   `/commands`, session ids, models, `@files`, shared with the TUI input),
+   the `Repl` class (the multi-round tool loop
+   `_generate` → `_execute_tool_calls`, the approval flow
+   `_approve_tool_call`, the `MessageQueue` of what was typed while a turn was
+   running and `CancelToken`-driven stopping), then the `cmd_*` functions.
+   The numbered tool-approval prompt itself and the entry list it is built
+   from (`approval_entries`/`_prompt_approval`, storing generalized
+   `ToolRule`s in the session) now live in `ui.py`, re-exported here so
+   `_prompt_approval` keeps resolving from this module. Each slash command
    (`/set`, `/show`, `/load`, `/save`, `/pull`, `/undo`, `/retry`, `/edit`,
    `/branch`, `/context`, `/summarize`, `/image`, `/render`, `/math`,
    `/pager`, `/tps`, `/ps`, `/num-ctx`, `/gpu-layers`, `/copy`, `/export`, `/stats`,
-   `/thinking`, `/tools`, `/tts`, ...) is a standalone
+   `/thinking`, `/tools`, `/tts`, `/queue`, ...) is a standalone
    `cmd_NAME(repl, argument)` function dispatched by name through
    `COMMAND_HANDLERS`; add a new slash command by adding one function here
    and wiring it into `COMMAND_INFO`/`COMMAND_HANDLERS` (and the
    `build_parser()` epilog in `cli.py` if it's worth advertising there).
    `ps_table()`/`resolve_num_ctx()` also live here since `cmd_ps`/
    `cmd_num_ctx` are their only callers (`resolve_num_ctx` is reused by
-   `main()` in `cli.py` for `--num-ctx`).
-14. **`run.py`** — `run_once()` (non-REPL path, built on an already-constructed
+   `main()` in `cli.py` for `--num-ctx`). `ApprovalPicker` and its runners are
+   re-exported from `ui.py` for compatibility.
+15. **`tui.py`** — the optional Textual front end (`--ui tui`): the app
+   (transcript pane / rule / status bar / always-on `PromptInput`),
+   `TuiStreamSink` (the `StreamSink` that paints the streaming answer),
+   `TranscriptWriter` (a file-like sink capturing everything printed through
+   the shared `console` into the transcript), the modal screens (confirm,
+   ask, and tool approval offering the same numbered choices as the console
+   prompt) and `TuiUi` (the `Ui` implementation `repl.py` talks to). Turns and commands run in thread
+   workers that marshal widget updates back with `call_from_thread`;
+   `run_tui()` is the entry point. Textual is optional — `cli.py`'s
+   `wants_tui()` checks it and falls back to the inline REPL with a note.
+16. **`run.py`** — `run_once()` (non-REPL path, built on an already-constructed
    `Repl`) and `run_embed()` (routes embedding-capable models to
    `/api/embed` instead of chat).
-15. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
+17. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
    every `ollama run` flag), `resolve_model`/`resolve_session` (figuring out
    what model/session a given invocation means, including the `-c`/`-r`/
-   `--session` disambiguation in `normalize_argv`), and `main()` as the
-   entry point (called by the top-level `ollamarun` script).
+   `--session` disambiguation in `normalize_argv`), `ui_mode()`/`wants_tui()`
+   (which front end to start) and `main()` as the entry point (called by the
+   top-level `ollamarun` script).
 
 Model housekeeping (unload-before-switch, unload-on-exit, embedding models
 always resident) is cross-cutting logic that lives in the REPL commands
