@@ -2,7 +2,9 @@
 
 `ToolSpec` describes one tool (name, description, JSON-schema parameters and
 a handler); `default_registry()` builds the built-in set (shell, python,
-files, fetch, and -- when `tts-remote` is available -- speech).
+files, web -- `web_search` when `ddgs` is installed, plus `fetch_url`, which
+returns readable page text rather than raw markup -- and, when `tts-remote`
+is available, speech).
 `approval_decision()` classifies a call as auto-approved or needing user
 confirmation (read-only tools and provably-harmless shell/python calls are
 safe; anything else asks), and `execute_tool()` runs the handler with a
@@ -20,6 +22,7 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import io
 import json
 import os
 import re
@@ -29,7 +32,9 @@ import subprocess
 import sys
 import time
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from html.parser import HTMLParser
+from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -40,6 +45,54 @@ from .helpers import now_iso, short_stamp
 FETCH_TIMEOUT = 30.0
 MAX_LIST_ENTRIES = 200
 MAX_READ_CHARS = 200_000
+
+#: Browser-ish headers: the plain requests user-agent is a bot flag for many
+#: sites and gets served challenges or error pages instead of content.
+BROWSER_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"),
+    "Accept": ("text/html,application/xhtml+xml,application/json,"
+               "text/plain;q=0.9,*/*;q=0.8"),
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+SEARCH_TIMEOUT = 30.0
+DEFAULT_SEARCH_RESULTS = 5
+MAX_SEARCH_RESULTS = 10
+MAX_PAGE_LINKS = 25
+MAX_PDF_CHARS = 40_000
+MAX_PDF_PAGES = 50
+MAX_ERROR_DETAIL = 300
+
+#: Markers that identify a page which is only a JavaScript shell (or a bot
+#: wall served with a 200) rather than content.
+JS_SHELL_MARKERS = (
+    "enablejs", "enable javascript", "javascript is disabled",
+    "please turn javascript on", "requires javascript",
+)
+BOT_WALL_MARKERS = (
+    "just a moment", "checking your browser", "cf-browser-verification",
+    "challenge-platform", "cf-chl", "access denied", "attention required",
+    "are you a robot", "unusual traffic", "captcha",
+)
+#: The subset that also shows up on challenge pages served with a 200.
+SOFT_BLOCK_MARKERS = (
+    "just a moment", "checking your browser", "cf-browser-verification",
+    "challenge-platform", "cf-chl",
+)
+
+#: Hosts whose /search-style pages never return results to a plain HTTP
+#: client; `fetch_url` reroutes them to `web_search` instead.
+SEARCH_ENGINE_HOSTS = (
+    "google.com", "bing.com", "duckduckgo.com", "search.yahoo.com",
+    "search.brave.com", "ecosia.org", "mojeek.com", "startpage.com",
+    "search.marginalia.nu", "yandex.com",
+)
+
+try:  # the search backend for the web_search tool
+    from ddgs import DDGS  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency
+    DDGS = None
 
 #: Commands `run_shell` may execute unattended (basename of argv[0]).
 DEFAULT_SHELL_ALLOW = {
@@ -126,6 +179,11 @@ class ToolContext:
     timeout: float = 120.0
     max_output: int = 4000
     tts_remote: Optional[str] = None
+    #: URL -> formatted result, so a repeated fetch is answered from the cache
+    #: (the model is told instead of silently re-downloading the same page).
+    fetched: dict[str, str] = field(default_factory=dict)
+    #: lowercased query -> formatted web_search results, for the same reason.
+    searches: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -379,12 +437,37 @@ def call_detail(name: str, args: dict[str, Any]) -> str:
         text = str(args.get("path") or ".")
     elif name == "fetch_url":
         text = str(args.get("url") or "")
+    elif name == "web_search":
+        text = str(args.get("query") or "")
     elif name == "speak":
         text = str(args.get("text") or "")
     else:
         text = json.dumps(args, ensure_ascii=False, default=str)
     text = " ".join(text.split())
     return text if len(text) <= 160 else text[:159] + "…"
+
+
+#: Tool names models tend to invent for the web tools, mapped onto the real
+#: ones so a slightly-wrong call still does the right thing.
+TOOL_ALIASES = {
+    "search": "web_search",
+    "websearch": "web_search",
+    "web": "web_search",
+    "google": "web_search",
+    "fetch": "fetch_url",
+    "browse": "fetch_url",
+    "open_url": "fetch_url",
+    "read_url": "fetch_url",
+    "get_url": "fetch_url",
+    "http_get": "fetch_url",
+    "curl": "fetch_url",
+}
+
+
+def resolve_tool_alias(name: str) -> str:
+    """The real tool for a name a model may have invented (identity otherwise)."""
+    key = str(name or "").strip().lower().replace("-", "_")
+    return TOOL_ALIASES.get(key, name)
 
 
 def normalize_arguments(raw: Any) -> Optional[dict[str, Any]]:
@@ -757,6 +840,462 @@ def suggest_rules(name: str, args: dict[str, Any], *, cwd: str = ".",
     return rules[:limit]
 
 
+# ── web: page reading and search ────────────────────────────────────────────
+
+
+class _HTMLTextExtractor(HTMLParser):
+    """Collect readable text and links from one HTML document.
+
+    Boilerplate (scripts, styles, navigation, forms) is dropped, block tags
+    become line breaks and headings/list items keep a markdown-ish marker.
+    Content inside `<article>`/`<main>` is tracked separately so a page's
+    chrome can be left out of the result.
+    """
+
+    SKIP_TAGS = {
+        "script", "style", "noscript", "template", "svg", "iframe", "canvas",
+        "form", "button", "select", "option", "nav", "header", "footer",
+        "aside", "dialog", "map", "object", "embed",
+    }
+    BLOCK_TAGS = {
+        "address", "article", "blockquote", "dd", "div", "dl", "dt",
+        "fieldset", "figcaption", "figure", "hr", "li", "main", "ol", "p",
+        "pre", "section", "table", "tbody", "td", "tfoot", "th", "thead",
+        "tr", "ul",
+    }
+    HEADING_TAGS = {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
+    MAIN_TAGS = {"article", "main"}
+
+    def __init__(self, base_url: str = "") -> None:
+        super().__init__(convert_charrefs=True)
+        self.base_url = base_url
+        self.title_chunks: list[str] = []
+        self.chunks: list[tuple[str, bool]] = []
+        self.links: list[tuple[str, str, bool]] = []
+        self._in_title = False
+        self._in_head = False
+        self._skip_depth = 0
+        self._main_depth = 0
+        self._open_link: Optional[tuple[list[str], str, bool]] = None
+
+    def _emit(self, text: str) -> None:
+        if not text:
+            return
+        self.chunks.append((text, self._main_depth > 0))
+        if self._open_link is not None:
+            self._open_link[0].append(text)
+
+    def _break(self, count: int = 1) -> None:
+        self.chunks.append(("\n" * count, self._main_depth > 0))
+
+    @staticmethod
+    def _usable_href(href: str) -> bool:
+        href = href.strip()
+        return bool(href) and not href.startswith(
+            ("#", "javascript:", "mailto:", "tel:", "data:"))
+
+    def handle_starttag(self, tag: str,
+                        attrs: list[tuple[str, Optional[str]]]) -> None:
+        tag = tag.lower()
+        if tag in self.SKIP_TAGS:
+            self._skip_depth += 1
+            return
+        if self._skip_depth:
+            return
+        if tag in self.MAIN_TAGS:
+            self._main_depth += 1
+        if tag == "title":
+            self._in_title = True
+        elif tag == "head":
+            self._in_head = True
+        elif tag in self.HEADING_TAGS:
+            self._break(2)
+            self._emit("#" * self.HEADING_TAGS[tag] + " ")
+        elif tag == "li":
+            self._break()
+            self._emit("- ")
+        elif tag in self.BLOCK_TAGS or tag == "br":
+            self._break()
+        elif tag == "a":
+            href = dict(attrs).get("href") or ""
+            if self._usable_href(href):
+                self._open_link = ([], href, self._main_depth > 0)
+
+    def handle_startendtag(self, tag: str,
+                           attrs: list[tuple[str, Optional[str]]]) -> None:
+        tag = tag.lower()
+        if tag in self.SKIP_TAGS or self._skip_depth:
+            return
+        if tag in self.BLOCK_TAGS or tag == "br":
+            self._break()
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in self.SKIP_TAGS:
+            self._skip_depth = max(0, self._skip_depth - 1)
+            return
+        if self._skip_depth:
+            return
+        if tag == "title":
+            self._in_title = False
+        elif tag == "head":
+            self._in_head = False
+        elif tag == "a" and self._open_link is not None:
+            text, href, in_main = self._open_link
+            label = " ".join("".join(text).split())
+            self.links.append((label, href, in_main))
+            self._open_link = None
+        elif tag in self.HEADING_TAGS or tag in self.BLOCK_TAGS or tag == "li":
+            self._break()
+        if tag in self.MAIN_TAGS:
+            self._main_depth = max(0, self._main_depth - 1)
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth or not data:
+            return
+        if self._in_title:
+            self.title_chunks.append(data)
+        if self._in_head:
+            return
+        self._emit(data)
+
+
+def _normalize_text(text: str) -> str:
+    text = text.replace("\xa0", " ").replace("\u200b", "")
+    text = re.sub(r"[ \t\f\v]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def extract_html_text(html: str,
+                      base_url: str = "") -> tuple[str, str, list[tuple[str, str]]]:
+    """Return (title, readable text, links) for one HTML document.
+
+    The `<article>`/`<main>` region wins when it holds most of the text;
+    otherwise the whole body is used. Links come back as absolute, decoded,
+    de-duplicated (label, url) pairs, in page order.
+    """
+    parser = _HTMLTextExtractor(base_url)
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:  # malformed markup must never fail a fetch
+        pass
+    title = _normalize_text("".join(parser.title_chunks))
+    full = _normalize_text("".join(chunk for chunk, _ in parser.chunks))
+    main = _normalize_text("".join(chunk for chunk, in_main in parser.chunks
+                                   if in_main))
+    if main and len(main) >= max(200, int(0.2 * len(full))):
+        text = main
+        entries = [entry for entry in parser.links if entry[2]]
+    else:
+        text = full
+        entries = parser.links
+    seen: set[str] = set()
+    links: list[tuple[str, str]] = []
+    for label, href, _ in entries:
+        url = urllib.parse.urljoin(base_url, href)
+        if urllib.parse.urlsplit(url).scheme not in {"http", "https"}:
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        links.append((label, url))
+        if len(links) >= MAX_PAGE_LINKS:
+            break
+    return title, text, links
+
+
+def extract_pdf_text(data: bytes, max_chars: int = MAX_PDF_CHARS) -> Optional[str]:
+    """Text of a PDF from its bytes, or None when nothing can extract it.
+
+    An empty string means the PDF was read but carries no extractable text
+    (typically a scan).
+    """
+    if not data:
+        return None
+    text = _pdf_text_reader(data, max_chars)
+    if text is None:
+        text = _pdf_text_tool(data, max_chars)
+    return text
+
+
+def _pdf_text_reader(data: bytes, max_chars: int) -> Optional[str]:
+    """pypdf-based extraction (in-process); None when pypdf is missing/broken."""
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        return None
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        chunks: list[str] = []
+        total = 0
+        for page in list(reader.pages)[:MAX_PDF_PAGES]:
+            page_text = page.extract_text() or ""
+            chunks.append(page_text)
+            total += len(page_text)
+            if total >= max_chars:
+                break
+    except Exception:
+        return None
+    return _normalize_text("\n\n".join(chunks))[:max_chars]
+
+
+def _pdf_text_tool(data: bytes, max_chars: int) -> Optional[str]:
+    """pdftotext fallback; None when the binary is missing or fails."""
+    binary = shutil.which("pdftotext")
+    if not binary:
+        return None
+    try:
+        proc = subprocess.run([binary, "-layout", "-", "-"], input=data,
+                              capture_output=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    text = proc.stdout.decode("utf-8", errors="replace")
+    return _normalize_text(text)[:max_chars]
+
+
+def _http_phrase(status: int) -> str:
+    try:
+        return HTTPStatus(status).phrase
+    except ValueError:
+        return ""
+
+
+def _status_url_line(url: str, final_url: str, status: int) -> str:
+    phrase = _http_phrase(status)
+    line = f"HTTP {status}" + (f" {phrase}" if phrase else "")
+    line += f" — {final_url or url}"
+    if final_url and final_url != url:
+        line += f" (asked for {url})"
+    return line
+
+
+def _looks_like_js_shell(body: str, text: str) -> bool:
+    lower = (body or "").lower()
+    if any(marker in lower
+           for marker in JS_SHELL_MARKERS + SOFT_BLOCK_MARKERS):
+        return True
+    # A large document that yields almost no text is a scripted page (or a
+    # wall) no matter what it says.
+    return len(text) < 120 and len(body) > 4000
+
+
+def _failure_note(status: int, content_type: str, body: str) -> str:
+    """What went wrong and what to do next -- never the site's error page."""
+    lower = (body or "").lower()
+    blocked = any(marker in lower for marker in BOT_WALL_MARKERS)
+    if status in (404, 410):
+        return ("the page does not exist at this URL. Do not guess more URLs on "
+                "this site; call web_search to find the right page.")
+    if status in (401, 407):
+        return ("the page needs a login. If it should be public, call web_search "
+                "for another source; otherwise ask the user for access.")
+    if status == 429:
+        return ("the site is rate-limiting requests. Wait a moment, or call "
+                "web_search for another source.")
+    if blocked:
+        return ("blocked by a bot-protection challenge (Cloudflare/Akamai-style), "
+                "not the real page. Do not retry this URL or guess others here; "
+                "call web_search for another source.")
+    if status == 403:
+        return ("the site refused the request, so nothing readable came back. "
+                "Do not retry this URL; call web_search for another source.")
+    if status >= 500:
+        return ("the server had a temporary error. The URL may work later; "
+                "meanwhile call web_search for a cached or alternative source.")
+    if status >= 400:
+        return "the server rejected the request. Check the URL or call web_search."
+    return "the request did not return usable content."
+
+
+def _error_detail(content_type: str, body: str) -> str:
+    """Short excerpt of a failed response's own message (JSON/plain text)."""
+    body = (body or "").strip()
+    if not body or "html" in content_type:
+        return ""
+    text = " ".join(body.split())
+    return text[:MAX_ERROR_DETAIL] + ("…" if len(text) > MAX_ERROR_DETAIL else "")
+
+
+def _is_json(content_type: str) -> bool:
+    return content_type == "application/json" or content_type.endswith("+json")
+
+
+def _is_textual(content_type: str) -> bool:
+    if content_type.startswith("text/"):
+        return True
+    return content_type.endswith("+xml") or content_type in {
+        "application/json", "application/xml", "application/javascript",
+        "application/x-javascript", "application/xhtml+xml",
+        "application/rss+xml", "application/atom+xml",
+    }
+
+
+def _decode_response(response: Any) -> str:
+    """Decoded body text, preferring UTF-8 when the site omits its charset.
+
+    `requests` follows the RFC and assumes latin-1 for `text/html` without a
+    charset, which mangles UTF-8 pages (docs sites, news, ...).
+    """
+    data = response.content or b""
+    encoding = (getattr(response, "encoding", None) or "").lower()
+    if encoding in {"", "iso-8859-1", "latin-1", "ascii"}:
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            pass
+    try:
+        return response.text
+    except (AttributeError, UnicodeDecodeError):
+        return data.decode("utf-8", errors="replace")
+
+
+def format_fetch_response(*, url: str, final_url: str, status: int,
+                          content_type: str, body: str, size: int = 0) -> str:
+    """The model-readable text for one HTTP response.
+
+    HTML becomes extracted text plus the page's links, JSON is pretty-printed,
+    error pages are replaced by an explanation of what happened and what to do
+    next, and JavaScript-only shells say so instead of looking empty.
+    """
+    head = _status_url_line(url, final_url or url, status)
+    if status >= 400:
+        lines = [head, f"fetch failed: {_failure_note(status, content_type, body)}"]
+        detail = _error_detail(content_type, body)
+        if detail:
+            lines.append(f"server said: {detail}")
+        return "\n".join(lines)
+    if not body.strip() and not size:
+        return head + "\n(empty response body)"
+    if "html" in content_type or (not content_type and "<html" in body[:2000].lower()):
+        title, text, links = extract_html_text(body, base_url=final_url or url)
+        if len(text) < 120 and _looks_like_js_shell(body, text):
+            lines = [head]
+            if title:
+                lines.append(f"Title: {title}")
+            lines.append(
+                "no readable text: this page is rendered by JavaScript (only "
+                "the app shell came back). Fetching it again will not help — "
+                "call web_search and pick a result that serves static text, an "
+                "API endpoint or a docs page.")
+            return "\n".join(lines)
+        parts = [head]
+        if title:
+            parts.append(f"Title: {title}")
+        parts.append("")
+        parts.append(text or "(no readable text)")
+        if links:
+            parts.append("")
+            parts.append("Links on this page:")
+            parts.extend(f"- {label or link} — {link}" for label, link in links)
+        return "\n".join(parts)
+    if _is_json(content_type):
+        try:
+            pretty = json.dumps(json.loads(body), indent=2, ensure_ascii=False)
+        except ValueError:
+            pretty = body
+        return f"{head}\n{pretty}"
+    if _is_textual(content_type):
+        return f"{head}\n{body}"
+    shown = size or len(body)
+    return (f"{head}\n(binary content: {content_type or 'unknown type'}, "
+            f"{shown} bytes — not shown as text)")
+
+
+def search_engine_query(url: str) -> str:
+    """The query inside a search-engine URL, or '' when it is not one."""
+    parsed = urllib.parse.urlsplit(url)
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return ""
+    known = any(host == candidate or host.endswith("." + candidate)
+                for candidate in SEARCH_ENGINE_HOSTS)
+    googleish = host.startswith("google.") or ".google." in host
+    if not (known or googleish):
+        return ""
+    params = urllib.parse.parse_qs(parsed.query)
+    for key in ("q", "query", "p", "text", "search_query"):
+        values = params.get(key)
+        if values and values[0].strip():
+            return values[0].strip()
+    return ""
+
+
+def search_available() -> bool:
+    """True when the web_search backend (ddgs) can be imported."""
+    return DDGS is not None
+
+
+def format_search_results(query: str, results: list[tuple[str, str, str]]) -> str:
+    if not results:
+        return (f"web_search: no results for {query!r}. Try fewer or different "
+                f"words (and do not guess URLs).")
+    lines = [f"web_search: {query!r} — {len(results)} result(s)"]
+    for index, (title, url, snippet) in enumerate(results, 1):
+        lines.append(f"{index}. {title or '(untitled)'}")
+        lines.append(f"   {url}")
+        if snippet:
+            lines.append(f"   {' '.join(snippet.split())[:300]}")
+    lines.append("")
+    lines.append("Next: call fetch_url on the most promising result(s) to read them.")
+    return "\n".join(lines)
+
+
+def run_web_search(query: str, max_results: int = DEFAULT_SEARCH_RESULTS,
+                   timeout: float = SEARCH_TIMEOUT) -> Optional[str]:
+    """Search through ddgs; None when the backend is not installed."""
+    client_class = DDGS
+    if client_class is None:
+        return None
+    try:
+        with client_class(timeout=timeout) as client:
+            raw = client.text(query, max_results=max_results)
+    except TypeError:  # a backend whose constructor signature differs
+        try:
+            with client_class() as client:
+                raw = client.text(query, max_results=max_results)
+        except Exception as exc:
+            raise ToolError(f"web search failed: {_short_error(exc)}") from exc
+    except Exception as exc:
+        raise ToolError(f"web search failed: {_short_error(exc)}") from exc
+    results: list[tuple[str, str, str]] = []
+    for entry in raw or []:
+        if not isinstance(entry, dict):
+            continue
+        title = str(entry.get("title") or "")
+        link = str(entry.get("href") or entry.get("url")
+                   or entry.get("link") or "")
+        snippet = str(entry.get("body") or entry.get("snippet")
+                      or entry.get("description") or "")
+        if title or link:
+            results.append((title, link, snippet))
+    return format_search_results(query, results)
+
+
+def _short_error(exc: BaseException) -> str:
+    text = " ".join(str(exc).split())
+    return text[:200] or exc.__class__.__name__
+
+
+def _request_error(exc: requests.RequestException) -> str:
+    """A short, actionable reason for a failed request."""
+    if isinstance(exc, requests.Timeout):
+        return "the request timed out (the site may be slow or blocking this machine)"
+    text = str(exc)
+    if ("Name or service not known" in text or "Failed to resolve" in text
+            or "No address associated with hostname" in text):
+        return ("the host name could not be resolved — the domain is probably "
+                "misspelled or wrong; call web_search to find the real URL")
+    match = re.search(r"Caused by ([^\n]+)", text)
+    if match:
+        text = match.group(1)
+    return _short_error(text)
+
+
 # ── handlers ────────────────────────────────────────────────────────────────
 
 
@@ -877,17 +1416,82 @@ def _handler_fetch_url(args: dict[str, Any], ctx: ToolContext) -> str:
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ToolError("url must be an absolute http:// or https:// URL")
+
+    query = search_engine_query(url)
+    if query:
+        timeout = _clamp_timeout(args.get("timeout"),
+                                 min(ctx.timeout, SEARCH_TIMEOUT))
+        results = run_web_search(query, DEFAULT_SEARCH_RESULTS, timeout)
+        if results is None:
+            raise ToolError(
+                "this is a search-engine results URL, which only returns a "
+                "JavaScript shell when fetched; the web_search tool searches "
+                "from here instead, but its ddgs backend is not installed")
+        return (f"(search-engine URL: ran web_search for {query!r} instead of "
+                f"fetching the page)\n{results}")
+
+    previous = ctx.fetched.get(url)
+    if previous:
+        preview = previous[:400] + ("…" if len(previous) > 400 else "")
+        return (f"(already fetched {url} earlier in this session — not fetching "
+                f"it again)\nstart of the earlier result:\n{preview}")
+
     timeout = _clamp_timeout(args.get("timeout"), min(ctx.timeout, FETCH_TIMEOUT))
     try:
         response = requests.get(url, timeout=timeout,
-                                headers={"User-Agent": "ollamarun-tool/1.0"})
+                                headers=dict(BROWSER_HEADERS),
+                                allow_redirects=True)
     except requests.RequestException as exc:
-        raise ToolError(f"request failed: {exc}") from exc
+        raise ToolError(f"could not fetch {url}: {_request_error(exc)}") from exc
     try:
-        body = response.text
+        status = response.status_code
+        content_type = (response.headers.get("Content-Type") or "")
+        content_type = content_type.split(";")[0].strip().lower()
+        size = len(response.content or b"")
+        if status < 400 and ("pdf" in content_type
+                             or parsed.path.lower().endswith(".pdf")):
+            result = _pdf_result(url, response, size)
+        else:
+            body = _decode_response(response) if _is_textual(content_type) else ""
+            result = format_fetch_response(url=url, final_url=response.url,
+                                           status=status,
+                                           content_type=content_type,
+                                           body=body, size=size)
     finally:
         response.close()
-    return f"HTTP {response.status_code}\n{body}"
+    ctx.fetched[url] = result
+    return result
+
+
+def _pdf_result(url: str, response: Any, size: int) -> str:
+    head = _status_url_line(url, response.url or url, response.status_code)
+    text = extract_pdf_text(response.content or b"")
+    if text is None:
+        return (f"{head}\n(a PDF, {size} bytes; no PDF text extractor is "
+                f"available on this machine — pypdf or pdftotext would read it)")
+    if not text.strip():
+        return f"{head}\n(a PDF, {size} bytes; no extractable text — likely a scan)"
+    return f"{head}\n(PDF turned into text, {size} bytes)\n{text}"
+
+
+def _handler_web_search(args: dict[str, Any], ctx: ToolContext) -> str:
+    query = str(args.get("query") or args.get("q") or "").strip()
+    if not query:
+        raise ToolError("missing 'query'")
+    cached = ctx.searches.get(query.lower())
+    if cached:
+        return f"(cached result from earlier in this session)\n{cached}"
+    try:
+        max_results = int(args.get("max_results") or DEFAULT_SEARCH_RESULTS)
+    except (TypeError, ValueError):
+        max_results = DEFAULT_SEARCH_RESULTS
+    max_results = max(1, min(max_results, MAX_SEARCH_RESULTS))
+    timeout = _clamp_timeout(args.get("timeout"), min(ctx.timeout, SEARCH_TIMEOUT))
+    text = run_web_search(query, max_results, timeout)
+    if text is None:
+        raise ToolError("web search is unavailable (the ddgs package is not installed)")
+    ctx.searches[query.lower()] = text
+    return text
 
 
 # ── tts-remote (optional) ───────────────────────────────────────────────────
@@ -977,11 +1581,13 @@ def _object_schema(properties: dict[str, Any], required: list[str]) -> dict[str,
     return {"type": "object", "properties": properties, "required": required}
 
 
-def default_registry(*, tts: Optional[bool] = None) -> dict[str, ToolSpec]:
+def default_registry(*, tts: Optional[bool] = None,
+                     search: Optional[bool] = None) -> dict[str, ToolSpec]:
     """The built-in tool set, keyed by name.
 
     `tts` forces the speech tools on/off; None auto-detects a `tts-remote`
-    binary (the tools are simply absent when there is none).
+    binary (the tools are simply absent when there is none). `search` does
+    the same for `web_search` against the `ddgs` package.
     """
     specs = [
         ToolSpec(
@@ -1031,15 +1637,35 @@ def default_registry(*, tts: Optional[bool] = None) -> dict[str, ToolSpec]:
                 "path": {"type": "string", "description": "directory (default: cwd)"},
             }, []),
             _handler_list_dir, read_only=True),
-        ToolSpec(
-            "fetch_url",
-            "HTTP GET a URL and return the response body as text.",
-            _object_schema({
-                "url": {"type": "string", "description": "absolute http(s) URL"},
-                "timeout": {"type": "number", "description": "seconds (optional)"},
-            }, ["url"]),
-            _handler_fetch_url, read_only=True),
     ]
+    if search is None:
+        search = search_available()
+    if search:
+        specs.append(ToolSpec(
+            "web_search",
+            "Search the web and return the best results (title, URL, snippet). "
+            "Use it for anything current or factual you are not sure about, and "
+            "whenever you need a URL — never invent or guess URLs. Then read "
+            "the one or two most promising results with fetch_url.",
+            _object_schema({
+                "query": {"type": "string", "description": "what to search for"},
+                "max_results": {"type": "integer",
+                                "description": "how many results (default 5, max 10)"},
+                "timeout": {"type": "number", "description": "seconds (optional)"},
+            }, ["query"]),
+            _handler_web_search, read_only=True))
+    specs.append(ToolSpec(
+        "fetch_url",
+        "Fetch one exact http(s) URL and return its readable content: HTML is "
+        "converted to text (plus the page's links), JSON is pretty-printed and "
+        "PDFs are turned into text. Call web_search first when you do not "
+        "already have a real URL — never guess URLs — and do not fetch the "
+        "same URL twice.",
+        _object_schema({
+            "url": {"type": "string", "description": "absolute http(s) URL"},
+            "timeout": {"type": "number", "description": "seconds (optional)"},
+        }, ["url"]),
+        _handler_fetch_url, read_only=True))
     registry = {spec.name: spec for spec in specs}
     if tts is None:
         fallback = Path.home() / "bin" / "tts-remote"

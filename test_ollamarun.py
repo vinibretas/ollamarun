@@ -599,6 +599,108 @@ def test_live_stream_final_frame_is_complete() -> int:
     return failures
 
 
+def test_tool_loop_separation() -> int:
+    """The answer that ends a tool loop is separated from the processing
+    above it by a bright centered `response` rule -- and only the committed
+    final frame of a post-tools round carries it: streaming frames, interim
+    rounds and tool-less turns keep today's rendering."""
+    failures = 0
+    import ollamarun_lib.renderer as renderer_mod
+
+    def render_text(renderable) -> str:
+        out_buffer = io.StringIO()
+        Console(file=out_buffer, width=100, force_terminal=False).print(renderable)
+        return out_buffer.getvalue()
+
+    def run_stream(events, *, after_tools):
+        updates = []
+
+        class _RecordingLive(orun.Live):
+            def update(self, renderable, *, refresh=False):
+                updates.append(renderable)
+                super().update(renderable, refresh=refresh)
+
+        console = Console(file=io.StringIO(), width=100, force_terminal=True)
+        renderer = orun.Renderer(console, mode="markdown", thinking_mode="hidden",
+                                 after_tools=after_tools)
+        original_live = renderer_mod.Live
+        renderer_mod.Live = _RecordingLive
+        try:
+            result = renderer.stream(iter(events))
+        finally:
+            renderer_mod.Live = original_live
+        return result, updates
+
+    final_events = [{"message": {"content": "The answer is 42."}},
+                    {"message": {"content": ""}, "done": True}]
+    interim_events = [{"message": {"role": "assistant", "content": "checking the file",
+                                   "tool_calls": [{"function": {"name": "run_shell"}}]}},
+                      {"message": {"role": "assistant", "content": ""}, "done": True}]
+
+    result, updates = run_stream(final_events, after_tools=True)
+    committed = render_text(updates[-1])
+    streamed = "".join(render_text(frame) for frame in updates[:-1])
+    failures = _check(failures, "answer ending a tool loop gets the response rule",
+                      "response" in committed and "The answer is 42." in committed,
+                      committed)
+    failures = _check(failures, "the rule only appears in the committed frame",
+                      "response" not in streamed, streamed)
+
+    result, updates = run_stream(interim_events, after_tools=True)
+    committed = render_text(updates[-1])
+    failures = _check(failures, "interim tool round is not marked",
+                      "response" not in committed, committed)
+
+    result, updates = run_stream(final_events, after_tools=False)
+    committed = render_text(updates[-1])
+    failures = _check(failures, "tool-less turn keeps today's rendering",
+                      "response" not in committed, committed)
+
+    renderer = orun.Renderer(Console(file=io.StringIO(), width=100), mode="markdown",
+                             after_tools=True)
+    cancelled = orun.GenerationResult(content="half an answer", cancelled=True)
+    errored = orun.GenerationResult(error="connection lost")
+    failures = _check(failures, "cancelled and errored rounds are never marked",
+                      not renderer.final_rule_wanted(cancelled)
+                      and not renderer.final_rule_wanted(errored)
+                      and renderer.final_rule_wanted(orun.GenerationResult(content="done")))
+
+    # _generate() hands each round's renderer the loop state: False while the
+    # first round is still the only one, True for every round that follows a
+    # round which requested tools.
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain", "--no-save", "-y"])
+        script = [
+            [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "run_shell",
+                              "arguments": {"command": "echo from-tool"}}}]},
+              "done": False},
+             {"message": {"role": "assistant", "content": ""}, "done": True}],
+            [{"message": {"role": "assistant", "content": "all done"}, "done": True}],
+        ]
+        client = _FakeClient(models=["m1"], capabilities=["completion", "tools"],
+                             chat_script=script)
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store,
+                         orun.Session.create("m1", client.base))
+        repl._build_prompt_session = lambda: None
+        seen = []
+        original_renderer = repl._renderer
+
+        def recording_renderer(*, after_tools=False):
+            seen.append(after_tools)
+            return original_renderer(after_tools=after_tools)
+
+        repl._renderer = recording_renderer
+        repl.session.add_message("user", "run something")
+        with orun.console.capture():
+            repl._generate()
+        failures = _check(failures, "_generate marks only post-tool rounds",
+                          seen == [False, True], str(seen))
+    return failures
+
+
 MATH_LAYOUT_CASES = [
     (r"\frac{a}{b}", ["a", "─", "b"]),
     (r"\frac{a}{b} + c", ["a", "─ + c", "b"]),
@@ -2187,6 +2289,332 @@ def test_tool_execution() -> int:
     return failures
 
 
+_MINIMAL_PDF = b"""%PDF-1.4
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj
+4 0 obj << /Length 52 >> stream
+BT /F1 12 Tf 10 100 Td (Hello PDF world) Tj ET
+endstream
+endobj
+5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj
+trailer << /Root 1 0 R >>
+%%EOF
+"""
+
+_BLANK_PDF = b"""%PDF-1.4
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >> endobj
+trailer << /Root 1 0 R >>
+%%EOF
+"""
+
+
+def test_web_tools() -> int:
+    failures = 0
+    from ollamarun_lib import tools as web_tools
+
+    # ── HTML turned into readable text
+    html = ("<html><head><title>Widget &amp; Co</title>"
+            "<style>body{color:red}</style><script>var x=1;</script></head>"
+            "<body><nav><a href='/nav'>Nav link</a></nav>"
+            "<main><h1>Widgets</h1><p>Hello&nbsp;world.</p>"
+            "<ul><li>One</li><li>Two</li></ul>"
+            "<a href='/docs/one'>Docs</a></main>"
+            "<footer>Junk footer</footer></body></html>")
+    title, text, links = orun.extract_html_text(html, "https://example.com/base/page")
+    failures = _check(failures, "HTML title is decoded",
+                      title == "Widget & Co", title)
+    failures = _check(failures, "HTML keeps headings, lists and text",
+                      "# Widgets" in text and "- One" in text
+                      and "Hello world." in text, text)
+    failures = _check(failures, "HTML drops scripts, styles and chrome",
+                      "color:red" not in text and "var x=1" not in text
+                      and "Nav link" not in text and "Junk footer" not in text
+                      and "Widget & Co" not in text, text)
+    failures = _check(failures, "HTML links are absolute and deduplicated",
+                      links == [("Docs", "https://example.com/docs/one")], str(links))
+
+    _, _, sketchy = orun.extract_html_text(
+        "<div><a href='javascript:x'>js</a><a href='#frag'>frag</a>"
+        "<a href='mailto:a@b.test'>mail</a><a href='https://other.test/a'>A</a>"
+        "<a href='https://other.test/a'>A again</a></div>", "https://example.com/")
+    failures = _check(failures, "link schemes/fragments/duplicates are filtered",
+                      sketchy == [("A", "https://other.test/a")], str(sketchy))
+
+    page = ("<body><div>nav " * 10 + "</div>" +
+            "<article>" + "body text " * 50 + "</article></body>")
+    _, article_text, _ = orun.extract_html_text(page, "https://x.test/")
+    failures = _check(failures, "the article region wins over page chrome",
+                      "body text" in article_text and "nav nav" not in article_text,
+                      article_text[:80])
+
+    # ── fetch responses (pure formatter)
+    not_found = orun.format_fetch_response(
+        url="https://x.test/missing", final_url="https://x.test/missing", status=404,
+        content_type="text/html", body="<html><h1>Not Found</h1></html>", size=34)
+    failures = _check(failures, "404 explains itself and points at web_search",
+                      "HTTP 404" in not_found and "does not exist" in not_found
+                      and "web_search" in not_found and "<h1>" not in not_found,
+                      not_found)
+    blocked = orun.format_fetch_response(
+        url="https://x.test/", final_url="https://x.test/", status=403,
+        content_type="text/html", body="<title>Just a moment...</title>", size=31)
+    failures = _check(failures, "Cloudflare 403 is named as a bot wall",
+                      "bot-protection" in blocked and "Do not retry" in blocked
+                      and "Just a moment" not in blocked, blocked)
+    wiki_404 = orun.format_fetch_response(
+        url="https://x.test/nope", final_url="https://x.test/nope", status=404,
+        content_type="text/html", size=120,
+        body='<html><script>{"captcha":"hcaptcha"}</script></html>')
+    failures = _check(failures, "a 404 that merely mentions captcha stays a 404",
+                      "does not exist" in wiki_404 and "bot-protection" not in wiki_404,
+                      wiki_404)
+    payload = orun.format_fetch_response(
+        url="https://api.test/x", final_url="https://api.test/x", status=200,
+        content_type="application/json", body='{"z": 1, "a": [1, 2]}', size=22)
+    failures = _check(failures, "JSON is pretty-printed",
+                      '"a": [' in payload and "\n" in payload, payload)
+    shell = orun.format_fetch_response(
+        url="https://x.test/app", final_url="https://x.test/app", status=200,
+        content_type="text/html", size=5000,
+        body="<html><body><noscript>enablejs please</noscript></body></html>")
+    failures = _check(failures, "JavaScript shells are called out",
+                      "JavaScript" in shell and "web_search" in shell, shell)
+    empty = orun.format_fetch_response(
+        url="https://x.test/empty", final_url="https://x.test/empty", status=200,
+        content_type="text/html", body="", size=0)
+    failures = _check(failures, "empty bodies say so",
+                      "(empty response body)" in empty, empty)
+    binary = orun.format_fetch_response(
+        url="https://x.test/blob", final_url="https://x.test/blob", status=200,
+        content_type="application/octet-stream", body="", size=1024)
+    failures = _check(failures, "binary payloads are described, not dumped",
+                      "binary content" in binary and "1024 bytes" in binary, binary)
+    with_links = orun.format_fetch_response(
+        url="https://example.com/page", final_url="https://example.com/final",
+        status=200, content_type="text/html", body=html, size=len(html))
+    failures = _check(failures, "HTML pages come back with their links",
+                      "Links on this page:" in with_links
+                      and "https://example.com/docs/one" in with_links
+                      and "(asked for https://example.com/page)" in with_links,
+                      with_links)
+
+    failures = _check(failures, "DNS failures get a short explanation",
+                      "could not be resolved" in web_tools._request_error(
+                          requests.exceptions.ConnectionError(
+                              "HTTPSConnectionPool: Failed to resolve 'nope.invalid'")))
+
+    # ── the handlers, against a fake network
+    registry = orun.default_registry(tts=False, search=True)
+    ctx = orun.ToolContext(cwd=os.getcwd(), timeout=10, max_output=4000)
+    real_get = requests.get
+    calls: list[str] = []
+    sent_headers: list[dict] = []
+
+    class _FakeResponse:
+        def __init__(self, url="https://example.com/page", status=200,
+                     content_type="text/html; charset=utf-8",
+                     body=b"<html><body><h1>Hi there</h1></body></html>"):
+            self.status_code = status
+            self.url = url
+            self.headers = {"Content-Type": content_type}
+            self.content = body
+            self.encoding = None
+            self.text = body.decode("utf-8", "replace")
+
+        def close(self):
+            pass
+
+    def fake_get(url, **kwargs):
+        calls.append(url)
+        sent_headers.append(kwargs.get("headers") or {})
+        if url.endswith(".pdf"):
+            return _FakeResponse(url=url, content_type="application/pdf",
+                                 body=_MINIMAL_PDF)
+        if url.endswith("/utf8"):
+            return _FakeResponse(url=url, content_type="text/html",
+                                 body=("<html><body><p>café — ok</p></body>"
+                                       "</html>").encode("utf-8"))
+        return _FakeResponse(url="https://example.com/final")
+
+    requests.get = fake_get
+    try:
+        outcome = orun.execute_tool(registry["fetch_url"],
+                                    {"url": "https://example.com/page"}, ctx)
+        failures = _check(failures, "fetch_url returns extracted text",
+                          outcome.ok and "Hi there" in outcome.text
+                          and "HTTP 200" in outcome.text, outcome.text)
+        failures = _check(failures, "fetch_url sends browser-like headers",
+                          "Mozilla" in sent_headers[0].get("User-Agent", ""),
+                          str(sent_headers[:1]))
+        utf8 = orun.execute_tool(registry["fetch_url"],
+                                 {"url": "https://example.com/utf8"}, ctx)
+        failures = _check(failures, "UTF-8 pages without a charset decode right",
+                          outcome.ok and "café — ok" in utf8.text, utf8.text)
+        before = len(calls)
+        again = orun.execute_tool(registry["fetch_url"],
+                                  {"url": "https://example.com/page"}, ctx)
+        failures = _check(failures, "a repeated fetch is answered from the cache",
+                          "already fetched" in again.text and len(calls) == before,
+                          f"{again.text[:80]!r} calls={calls}")
+
+        pdf_out = orun.execute_tool(registry["fetch_url"],
+                                    {"url": "https://example.com/doc.pdf"},
+                                    orun.ToolContext(cwd=os.getcwd(), timeout=10,
+                                                     max_output=4000))
+        failures = _check(failures, "PDFs are turned into text",
+                          pdf_out.ok and "Hello PDF world" in pdf_out.text,
+                          pdf_out.text[:120])
+
+        real_extract = web_tools.extract_pdf_text
+        web_tools.extract_pdf_text = lambda data, max_chars=1: None
+        try:
+            no_pdf = orun.execute_tool(registry["fetch_url"],
+                                       {"url": "https://example.com/nopdf.pdf"},
+                                       ctx)
+        finally:
+            web_tools.extract_pdf_text = real_extract
+        failures = _check(failures, "a missing PDF extractor is reported",
+                          "no PDF text extractor" in no_pdf.text, no_pdf.text[:120])
+
+        class _FakeDDGS:
+            queries: list[tuple] = []
+
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def text(self, query, **kwargs):
+                _FakeDDGS.queries.append((query, kwargs.get("max_results")))
+                if query == "boom":
+                    raise RuntimeError("backend down")
+                if query == "nothing":
+                    return []
+                return [{"title": "Raspberry Pi AI Kit",
+                         "href": "https://www.raspberrypi.com/products/ai-kit/",
+                         "body": "The AI Kit pairs the Pi 5 with a Hailo chip."},
+                        {"title": "Second",
+                         "url": "https://docs.test/ai-hat",
+                         "snippet": "More detail"}]
+
+        original_ddgs = web_tools.DDGS
+        web_tools.DDGS = _FakeDDGS
+        try:
+            search = orun.execute_tool(registry["web_search"],
+                                       {"query": "raspberry pi ai hat"}, ctx)
+            failures = _check(failures, "web_search formats results",
+                              search.ok and "1. Raspberry Pi AI Kit" in search.text
+                              and "https://www.raspberrypi.com/products/ai-kit/" in search.text
+                              and "2. Second" in search.text
+                              and "docs.test/ai-hat" in search.text, search.text)
+            failures = _check(failures, "web_search nudges the model to fetch",
+                              "fetch_url" in search.text, search.text)
+            count = len(_FakeDDGS.queries)
+            cached = orun.execute_tool(registry["web_search"],
+                                       {"query": "Raspberry Pi AI Hat"}, ctx)
+            failures = _check(failures, "a repeated search is answered from the cache",
+                              "cached result" in cached.text
+                              and len(_FakeDDGS.queries) == count, cached.text[:120])
+            orun.execute_tool(registry["web_search"],
+                              {"query": "clamp", "max_results": 99}, ctx)
+            failures = _check(failures, "max_results is clamped",
+                              _FakeDDGS.queries[-1] == ("clamp", 10),
+                              str(_FakeDDGS.queries[-1:]))
+            none = orun.execute_tool(registry["web_search"], {"query": "nothing"}, ctx)
+            failures = _check(failures, "no results tells the model what to do",
+                              none.ok and "no results" in none.text
+                              and "do not guess URLs" in none.text, none.text)
+            broken = orun.execute_tool(registry["web_search"], {"query": "boom"}, ctx)
+            failures = _check(failures, "backend failures surface as errors",
+                              not broken.ok and "web search failed" in broken.text,
+                              broken.text)
+
+            routed = orun.execute_tool(
+                registry["fetch_url"],
+                {"url": "https://www.google.com/search?q=pi+ai+hat"}, ctx)
+            failures = _check(failures, "search-engine URLs are rerouted to web_search",
+                              routed.ok and "ran web_search for 'pi ai hat'" in routed.text
+                              and "Raspberry Pi AI Kit" in routed.text, routed.text)
+
+            failures = _check(failures, "web_search is read-only (auto-approved)",
+                              orun.approval_decision(registry["web_search"],
+                                                     {"query": "x"},
+                                                     policy="ask").allowed)
+            failures = _check(failures, "web_search is absent without a backend",
+                              "web_search" not in orun.default_registry(tts=False,
+                                                                        search=False))
+            failures = _check(failures, "fetch_url survives without a backend",
+                              "fetch_url" in orun.default_registry(tts=False,
+                                                                   search=False))
+            failures = _check(failures, "search_available follows the backend",
+                              orun.search_available() is True)
+        finally:
+            web_tools.DDGS = original_ddgs
+    finally:
+        requests.get = real_get
+
+    failures = _check(failures, "invented tool names are resolved",
+                      orun.resolve_tool_alias("search") == "web_search"
+                      and orun.resolve_tool_alias("Google") == "web_search"
+                      and orun.resolve_tool_alias("curl") == "fetch_url"
+                      and orun.resolve_tool_alias("run_shell") == "run_shell")
+    failures = _check(failures, "search-engine URLs are recognised",
+                      orun.search_engine_query(
+                          "https://www.google.com/search?q=pi+ai+hat") == "pi ai hat"
+                      and orun.search_engine_query(
+                          "https://lite.duckduckgo.com/lite/?q=test") == "test"
+                      and orun.search_engine_query(
+                          "https://www.raspberrypi.com/products/") == "")
+    failures = _check(failures, "PDFs are text-extracted",
+                      "Hello PDF world" in (orun.extract_pdf_text(_MINIMAL_PDF) or ""),
+                      "needs pypdf or pdftotext")
+    failures = _check(failures, "scan-like PDFs extract to nothing",
+                      orun.extract_pdf_text(_BLANK_PDF) == "",
+                      repr(orun.extract_pdf_text(_BLANK_PDF)))
+
+    # ── the REPL dispatcher resolves aliases too
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain",
+                                               "--no-save", "-y"])
+        client = _FakeClient(models=["m1"], capabilities=["completion", "tools"])
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store,
+                         orun.Session.create("m1", client.base))
+        repl._build_prompt_session = lambda: None
+        repl.tool_registry["web_search"] = orun.ToolSpec(
+            "web_search", "test double",
+            {"type": "object", "properties": {}, "required": []},
+            lambda a, c: f"searched {a.get('query')}", read_only=True)
+        with orun.console.capture():
+            repl._execute_tool_calls([{"function": {"name": "search",
+                                                    "arguments": {"query": "pi"}}}],
+                                     quiet=True)
+        message = repl.session.messages[-1]
+        failures = _check(failures, "the REPL runs an aliased call as the real tool",
+                          message.get("tool_name") == "web_search"
+                          and "is called 'web_search' here" in message.get("content", "")
+                          and "searched pi" in message.get("content", ""),
+                          str(message))
+        repl.session.tools_disabled = ["web_search"]
+        with orun.console.capture():
+            repl._execute_tool_calls([{"function": {"name": "search",
+                                                    "arguments": {"query": "pi"}}}],
+                                     quiet=True)
+        message = repl.session.messages[-1]
+        failures = _check(failures, "aliases respect a disabled target",
+                          "unknown or disabled tool: search" in message.get("content", ""),
+                          str(message))
+    return failures
+
+
 def test_tool_loop() -> int:
     failures = 0
     with tempfile.TemporaryDirectory() as tmp:
@@ -2946,7 +3374,8 @@ if __name__ == "__main__":
              + test_build_parser_flags() + test_remote_hosts()
              + test_pull_and_disk_helpers() + test_ensure_model()
              + test_gpu_layers() + test_slash_completer()
-             + test_tools_policy() + test_tool_execution() + test_tool_loop()
+             + test_tools_policy() + test_tool_execution() + test_web_tools()
+             + test_tool_loop() + test_tool_loop_separation()
              + test_tool_commands() + test_approval_rules()
              + test_tool_payloads() + test_tool_cli_flags()
              + test_tts_tools() + test_tts_command() + test_tts_auto_speak()
