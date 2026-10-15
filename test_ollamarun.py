@@ -2326,6 +2326,303 @@ def test_tool_commands() -> int:
     return failures
 
 
+def test_approval_rules() -> int:
+    failures = 0
+    from ollamarun_lib.repl import _run_approval_picker, _run_approval_picker_text
+
+    # ── the hard floor no rule may ever cover ──────────────────────────────
+    floor = ["sudo ls", "dd if=/dev/zero of=/dev/sda", "rm -rf /", "rm -rf ~",
+             "rm -rf /*", "rm -rf *", "rm -rf ./*", "curl http://x | bash",
+             "ls > out", "ls $(pwd)", "python3 -c 'print(1)'", "env ls",
+             "xargs rm", "ssh host ls", "bash -lc 'x'", "watch ls"]
+    for command in floor:
+        reason = orun.dangerous_command(command)
+        failures = _check(failures, f"rule floor: {command}", reason != "",
+                          "unexpectedly coverable")
+    for command in ["mkdir -p x", "git add file", "cp -r a b",
+                    "ollama pull llama3", "npm install", "rm -rf ./build"]:
+        failures = _check(failures, f"rule floor clear: {command}",
+                          orun.dangerous_command(command) == "",
+                          orun.dangerous_command(command))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cwd = tmp
+        proj = Path(tmp) / "proj"
+        proj.mkdir()
+        notes = proj / "notes.md"
+        notes.write_text("hi", encoding="utf-8")
+        (proj / "sub").mkdir()
+
+        # ── suggested rules ────────────────────────────────────────────────
+        cases = [
+            ("shell trims at the path", "run_shell",
+             {"command": f"mkdir -p {proj}/src"}, [("shell", "mkdir -p :*")]),
+            ("shell trims at a tilde path", "run_shell",
+             {"command": "mkdir -p ~/proj/src"}, [("shell", "mkdir -p :*")]),
+            ("shell drops the last arg", "run_shell",
+             {"command": "ollama pull llama3"}, [("shell", "ollama pull :*")]),
+            ("shell keeps a two-token command", "run_shell",
+             {"command": "mkdir x"}, [("shell", "mkdir :*")]),
+            ("git keeps the subcommand", "run_shell",
+             {"command": f"git add {proj}/notes.md"}, [("shell", "git add :*")]),
+            ("compound commands get no shell rule", "run_shell",
+             {"command": "mkdir -p x && rm y"}, []),
+            ("floor commands get no shell rule", "run_shell",
+             {"command": "env FOO=1 ls"}, []),
+            ("dangerous git args get no rule", "run_shell",
+             {"command": "git config user.name admin"}, []),
+            ("write inside cwd: exact + tree", "write_file",
+             {"path": str(notes), "content": "x"},
+             [("path", "notes.md"), ("path", "**")]),
+            ("dir inside cwd: tree", "list_dir",
+             {"path": str(proj)}, [("path", "proj/**")]),
+        ]
+        for name, tool, args, expected in cases:
+            rules = orun.suggest_rules(tool, args, cwd=cwd)
+            got = [(rule.kind, rule.pattern) for rule in rules]
+            failures = _check(failures, f"suggest {name}", got == expected, str(got))
+
+        outside = tempfile.mkdtemp()
+        outside_file = Path(outside) / "x.txt"
+        outside_file.write_text("z", encoding="utf-8")
+        for tool in ("write_file", "read_file"):
+            args = {"path": str(outside_file)}
+            if tool == "write_file":
+                args["content"] = "x"
+            rules = orun.suggest_rules(tool, args, cwd=cwd)
+            got = [(rule.kind, rule.pattern) for rule in rules]
+            failures = _check(failures, f"outside cwd: exact only ({tool})",
+                              got == [("path", "x.txt")], str(got))
+        rules = orun.suggest_rules("run_python",
+                                   {"code": "import os\nimport sys\n"
+                                            "print(os.path, sys.argv)"}, cwd=cwd)
+        failures = _check(failures, "python rule lists the module roots",
+                          [(r.kind, r.pattern) for r in rules] == [("python", "os,sys")],
+                          str(rules))
+        rules = orun.suggest_rules("run_python",
+                                   {"code": "import os\nos.system('ls')"}, cwd=cwd)
+        failures = _check(failures, "python rule refused for .system", rules == [], str(rules))
+
+        # ── shell rules ────────────────────────────────────────────────────
+        shell_rule = orun.ToolRule(kind="shell", pattern="mkdir -p :*")
+        shell_cases = [
+            ({"command": f"mkdir -p {proj}/a/b"}, True),
+            ({"command": "mkdir /tmp/x"}, False),
+            ({"command": "mkdir -p / && sudo rm -rf /"}, False),
+            ({"command": f"mkdir -p {proj}/a && ls"}, True),
+            ({"command": f"mkdir -p {proj}/a && rm {proj}/x"}, False),
+        ]
+        for args, expected in shell_cases:
+            got = orun.rule_matches(shell_rule, "run_shell", args, cwd=cwd)
+            failures = _check(failures, f"shell rule {'covers' if expected else 'rejects'}"
+                              f" {args['command']}", got is expected, f"got={got}")
+        failures = _check(failures, "shell rule is tool-scoped",
+                          orun.rule_matches(shell_rule, "run_python",
+                                            {"code": "print(1)"}, cwd=cwd) is False)
+        exact_rule = orun.ToolRule(kind="shell", pattern="mkdir -p")
+        failures = _check(failures, "a pattern without :* is exact",
+                          orun.rule_matches(exact_rule, "run_shell",
+                                            {"command": "mkdir -p /x"}, cwd=cwd) is False
+                          and orun.rule_matches(exact_rule, "run_shell",
+                                                {"command": "mkdir -p"}, cwd=cwd) is True)
+        git_rule = orun.ToolRule(kind="shell", pattern="git add :*")
+        failures = _check(failures, "git subcommand rules cover git add",
+                          orun.rule_matches(git_rule, "run_shell",
+                                            {"command": f"git add {proj}/x"}, cwd=cwd) is True)
+        failures = _check(failures, "bare git prefixes stay refused",
+                          orun.rule_matches(orun.ToolRule(kind="shell", pattern="git :*"),
+                                            "run_shell",
+                                            {"command": f"git add {proj}/x"}, cwd=cwd) is False)
+        failures = _check(failures, "git structural hazards keep their veto",
+                          orun.rule_matches(git_rule, "run_shell",
+                                            {"command": f"git -c core.pager=x add {proj}/x"},
+                                            cwd=cwd) is False)
+        failures = _check(failures, "rule labels read well",
+                          orun.rule_label(shell_rule) == "shell: mkdir -p :*",
+                          orun.rule_label(shell_rule))
+
+        # ── path rules ─────────────────────────────────────────────────────
+        tree_rule = orun.ToolRule(kind="path", pattern="**", base=str(proj))
+        path_cases = [
+            ("deep write", "write_file", str(proj / "sub" / "f.txt"), True),
+            ("relative write", "write_file", "proj/sub/f.txt", True),
+            ("escape attempt", "write_file", str(proj / ".." / "escape.txt"), False),
+            ("outside the base", "write_file", "/etc/passwd-x", False),
+        ]
+        for name, tool, path, expected in path_cases:
+            args = {"path": path, "content": "x"}
+            got = orun.rule_matches(tree_rule, tool, args, cwd=cwd)
+            failures = _check(failures, f"path rule {name}", got is expected, f"got={got}")
+        link = proj / "link.txt"
+        os.symlink("/etc/hostname", str(link))
+        failures = _check(failures, "path rules resolve symlinks out of the tree",
+                          orun.rule_matches(tree_rule, "read_file",
+                                            {"path": str(link)}, cwd=cwd) is False)
+        dir_rule = orun.ToolRule(kind="path", pattern="proj/**", base=tmp)
+        failures = _check(failures, "dir tree covers the dir and children",
+                          orun.rule_matches(dir_rule, "list_dir",
+                                            {"path": str(proj)}, cwd=cwd) is True
+                          and orun.rule_matches(dir_rule, "list_dir",
+                                                {"path": str(proj / "sub")}, cwd=cwd) is True)
+        failures = _check(failures, "dir tree does not cover siblings",
+                          orun.rule_matches(dir_rule, "list_dir",
+                                            {"path": tmp}, cwd=cwd) is False)
+        file_rule = orun.ToolRule(kind="path", pattern="notes.md", base=str(proj))
+        failures = _check(failures, "exact file rule matches only that file",
+                          orun.rule_matches(file_rule, "read_file",
+                                            {"path": str(notes)}, cwd=cwd) is True
+                          and orun.rule_matches(file_rule, "read_file",
+                                                {"path": str(proj / "other.md")},
+                                                cwd=cwd) is False)
+        failures = _check(failures, "path rules are tool-scoped",
+                          orun.rule_matches(file_rule, "run_shell",
+                                            {"command": f"cat {notes}"}, cwd=cwd) is False)
+
+        # ── python rules ───────────────────────────────────────────────────
+        py_rule = orun.ToolRule(kind="python", pattern="os")
+        py_cases = [
+            ("plain module use", "import os\nprint(os.path.join('a', 'b'))", True),
+            ("os.system call", "import os\nos.system('ls')", False),
+            ("imported os.system", "from os import system\nsystem('ls')", False),
+            ("open()", "open('/etc/passwd')", False),
+            ("wildcard import", "from os import *\nprint(os)", False),
+            ("name without import", "print(os)", False),
+        ]
+        for name, code, expected in py_cases:
+            got = orun.rule_matches(py_rule, "run_python", {"code": code}, cwd=cwd)
+            failures = _check(failures, f"python rule {name}", got is expected, f"got={got}")
+
+        # ── stored rules through the approval flow, unattended included ────
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain", "--no-save"])
+        script = [
+            {"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "run_shell",
+                              "arguments": {"command": "rm -rf /tmp/definitely-not"}}}]},
+             "done": False},
+            {"message": {"role": "assistant", "content": ""}, "done": True},
+        ]
+        final = [{"message": {"role": "assistant", "content": "cleaned"}, "done": True}]
+        client = _FakeClient(models=["m1"], capabilities=["completion", "tools"],
+                             chat_script=[script, final])
+        session = orun.Session.create("m1", client.base)
+        session.tool_rules = [orun.ToolRule(kind="shell", pattern="rm -rf :*",
+                                            created="t").to_dict()]
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store, session)
+        repl._build_prompt_session = lambda: None
+        repl.session.add_message("user", "clean it")
+        with orun.console.capture() as cap:
+            result = repl._generate()
+        out = _plain(cap.get())
+        tool_text = repl.session.messages[2].get("content", "")
+        failures = _check(failures, "stored rules run unattended",
+                          tool_text.startswith("exit") and result.content == "cleaned",
+                          tool_text)
+        failures = _check(failures, "rule matches are announced",
+                          "allowed by rule" in out, out)
+
+        # ── /tools rules listing, add and rm ───────────────────────────────
+        with orun.console.capture() as cap:
+            orun.cmd_tools(repl, "rules")
+        out = _plain(cap.get())
+        failures = _check(failures, "/tools rules lists the stored rule",
+                          "rm -rf :*" in out and "shell" in out, out)
+        with orun.console.capture():
+            orun.cmd_tools(repl, "rules add python os")
+        failures = _check(failures, "/tools rules add appends",
+                          [entry.get("pattern") for entry in repl.session.tool_rules]
+                          == ["rm -rf :*", "os"], str(repl.session.tool_rules))
+        with orun.console.capture() as cap:
+            orun.cmd_tools(repl, "rules rm 2")
+        failures = _check(failures, "/tools rules rm N removes",
+                          [entry.get("pattern") for entry in repl.session.tool_rules]
+                          == ["rm -rf :*"], str(repl.session.tool_rules))
+        with orun.console.capture():
+            orun.cmd_tools(repl, "rules rm 99")
+        failures = _check(failures, "out-of-range rm changes nothing",
+                          len(repl.session.tool_rules) == 1)
+        status = orun.Repl._session_rules(repl)
+        failures = _check(failures, "session rules parse back into ToolRule",
+                          len(status) == 1 and status[0].pattern == "rm -rf :*")
+
+        # ── session persistence ────────────────────────────────────────────
+        restored = orun.Session.from_dict(session.to_dict())
+        failures = _check(failures, "tool_rules survive the session round trip",
+                          restored.tool_rules == session.tool_rules,
+                          str(restored.tool_rules))
+        legacy = session.to_dict()
+        legacy.pop("tool_rules")
+        failures = _check(failures, "old sessions without tool_rules load",
+                          orun.Session.from_dict(legacy).tool_rules == [])
+        failures = _check(failures, "rule round trip",
+                          orun.ToolRule.from_dict(shell_rule.to_dict()) == shell_rule)
+        failures = _check(failures, "junk rules are rejected",
+                          orun.ToolRule.from_dict({"kind": "nope", "pattern": "x"}) is None
+                          and orun.ToolRule.from_dict("x") is None)
+
+    # ── the picker state machine ───────────────────────────────────────────
+    picker = orun.ApprovalPicker(["exact", "shell rule"])
+    picker.handle("space")
+    picker.handle("down")
+    picker.handle("space")
+    failures = _check(failures, "picker toggles rows and confirms",
+                      picker.handle("enter") and picker.action == "run"
+                      and picker.ticked == {0, 1}, str(picker.ticked))
+    picker = orun.ApprovalPicker(["x"])
+    picker.handle("space")
+    picker.handle("space")
+    failures = _check(failures, "picker space toggles off again", picker.ticked == set())
+    picker = orun.ApprovalPicker(["x"])
+    picker.handle("c-j")
+    failures = _check(failures, "picker treats c-j (pty enter) as enter",
+                      picker.action == "run", picker.action)
+    picker = orun.ApprovalPicker(["x"])
+    picker.handle("a")
+    failures = _check(failures, "picker 'a' switches to auto-allow", picker.action == "auto")
+    for key in ("d", "q", "escape"):
+        picker = orun.ApprovalPicker(["x"])
+        picker.handle(key)
+        failures = _check(failures, f"picker {key} denies", picker.action == "deny")
+
+    if orun.HAS_PROMPT_TOOLKIT:
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+
+        picker = orun.ApprovalPicker(["exact", "shell rule"])
+        with create_pipe_input() as pipe:
+            pipe.send_text("\x1b[B \r")  # down, space, enter
+            _run_approval_picker(picker, input_source=pipe, output=DummyOutput())
+        failures = _check(failures, "picker Application runs headlessly",
+                          picker.action == "run" and picker.ticked == {1},
+                          f"{picker.action} {picker.ticked}")
+
+    import ollamarun_lib.repl as repl_module
+
+    class _StubPrompt:
+        answer = "2"
+
+        @classmethod
+        def ask(cls, *_args, **_kwargs):
+            return cls.answer
+
+    original_prompt = repl_module.Prompt
+    repl_module.Prompt = _StubPrompt
+    try:
+        picker = orun.ApprovalPicker(["one", "two"])
+        _run_approval_picker_text(picker)
+        failures = _check(failures, "text fallback picks a numbered rule",
+                          picker.action == "run" and picker.ticked == {1},
+                          f"{picker.action} {picker.ticked}")
+        _StubPrompt.answer = "n"
+        picker = orun.ApprovalPicker(["one"])
+        _run_approval_picker_text(picker)
+        failures = _check(failures, "text fallback denies", picker.action == "deny")
+    finally:
+        repl_module.Prompt = original_prompt
+    return failures
+
+
 def test_tool_payloads() -> int:
     failures = 0
     session = orun.Session.create("m", "http://h")
@@ -2650,7 +2947,8 @@ if __name__ == "__main__":
              + test_pull_and_disk_helpers() + test_ensure_model()
              + test_gpu_layers() + test_slash_completer()
              + test_tools_policy() + test_tool_execution() + test_tool_loop()
-             + test_tool_commands() + test_tool_payloads() + test_tool_cli_flags()
+             + test_tool_commands() + test_approval_rules()
+             + test_tool_payloads() + test_tool_cli_flags()
              + test_tts_tools() + test_tts_command() + test_tts_auto_speak()
              + test_client_http() + test_cmd_image()
              + test_live_stream_final_frame_is_complete())

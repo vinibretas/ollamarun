@@ -151,11 +151,12 @@ a module's own docstring for what lives there before editing:
    the request body from CLI args + session history.
 8. **`tools.py`** — the tool harness: `ToolSpec`/`default_registry()` (shell,
    python, files, fetch, tts-remote speak/list_voices), the allowlist policy
-   (`shell_safety`, `python_safety`, `approval_decision`), argument
-   normalization, output truncation and `execute_tool()`. The agent loop that
-   calls into it lives in `repl.py` (approve → execute → append a `role: tool`
-   message → ask the model again), auto-speak lives in `Repl.speak_text`, and
-   rendering of calls/results is `renderer.py`.
+   (`shell_safety`, `python_safety`, `approval_decision`), the approval-rule
+   engine (`ToolRule`, `suggest_rules`, `rule_matches`, `dangerous_command`),
+   argument normalization, output truncation and `execute_tool()`. The agent
+   loop that calls into it lives in `repl.py` (approve → execute → append a
+   `role: tool` message → ask the model again), auto-speak lives in
+   `Repl.speak_text`, and rendering of calls/results is `renderer.py`.
 9. **`session.py`** — `Session` (in-memory conversation model: messages,
    model, system prompt, options) and `SessionStore` (atomic read/write of
    the JSON files + `index.json`, list/search/export/delete).
@@ -172,9 +173,11 @@ a module's own docstring for what lives there before editing:
    the GPU-layer spec logic: `model_block_count()`,
    `parse_gpu_layers_spec()`, `resolve_gpu_layers()`, `gpu_layers_label()`.
 12. **`repl.py`** — `SlashCompleter` (prompt_toolkit completion for
-   `/commands`, session ids, models, `@files`), the `Repl` class (including
-   the multi-round tool loop `_generate` → `_execute_tool_calls` and the
-   y/a/n approval prompt), then the `cmd_*` functions. Each slash command
+   `/commands`, session ids, models, `@files`), `ApprovalPicker` (the
+   checkbox tool-approval prompt that stores generalized `ToolRule`s in the
+   session), the `Repl` class (including the multi-round tool loop
+   `_generate` → `_execute_tool_calls` and the approval flow
+   `_approve_tool_call`), then the `cmd_*` functions. Each slash command
    (`/set`, `/show`, `/load`, `/save`, `/pull`, `/undo`, `/retry`, `/edit`,
    `/branch`, `/context`, `/summarize`, `/image`, `/render`, `/math`,
    `/pager`, `/tps`, `/ps`, `/num-ctx`, `/gpu-layers`, `/copy`, `/export`, `/stats`,
