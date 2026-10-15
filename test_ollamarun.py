@@ -890,6 +890,7 @@ class _FakeClient:
         self.chat_calls = 0
         self.unloaded = []
         self.loaded = []
+        self.load_options = []
         self.chat_payloads = []
         self.pull_events = list(pull_events or [])
         self.pull_error = pull_error
@@ -901,8 +902,9 @@ class _FakeClient:
     def unload(self, model):
         self.unloaded.append(model)
 
-    def load(self, model, *, keepalive=None):
+    def load(self, model, *, keepalive=None, options=None):
         self.loaded.append(model)
+        self.load_options.append(dict(options or {}))
 
     def capabilities(self, model):
         return list(self.capability_list)
@@ -1108,9 +1110,9 @@ def test_preload_loading_rprompt() -> int:
         config = dict(orun.DEFAULT_CONFIG)
 
         class _SlowLoadClient(_FakeClient):
-            def load(self, model, *, keepalive=None):
+            def load(self, model, *, keepalive=None, options=None):
                 time.sleep(0.2)
-                super().load(model, keepalive=keepalive)
+                super().load(model, keepalive=keepalive, options=options)
 
         client = _SlowLoadClient(models=["m1"])
         repl = orun.Repl(args, config, client, store, orun.Session.create("m1", client.base))
@@ -1164,10 +1166,10 @@ def test_generate_waits_for_pending_preload_before_showing_ps() -> int:
     orun.console.file = buffer
 
     class _SlowLoadClient(_FakeClient):
-        def load(self, model, *, keepalive=None):
+        def load(self, model, *, keepalive=None, options=None):
             time.sleep(0.15)
             self.resident.append(model)
-            super().load(model, keepalive=keepalive)
+            super().load(model, keepalive=keepalive, options=options)
 
     try:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1651,6 +1653,358 @@ def test_cmd_num_ctx() -> int:
     return failures
 
 
+def _fit_check(name: str, ok: bool, detail: str = "") -> int:
+    if ok:
+        print(f"PASS  {name}")
+        return 0
+    print(f"FAIL  {name}: {detail}")
+    return 1
+
+
+CTX_SHOW = {"model_info": {
+    "qwen35.block_count": 24,
+    "qwen35.attention.head_count": 8,
+    "qwen35.attention.head_count_kv": [0, 0, 0, 2] * 6,
+    "qwen35.attention.key_length": 256,
+    "qwen35.attention.value_length": 256,
+    "qwen35.context_length": 262144,
+}}
+
+
+class _CtxFitClient(_FakeClient):
+    """Fake Ollama whose loaded footprint scales with num_ctx (for --probe).
+
+    The simulated GPU capacity is what the real fit would fill up: a load
+    whose total (weights + KV) exceeds it reports a partial size_vram, and
+    `fail_above` makes loads beyond a context raise like a CUDA OOM.
+    """
+
+    def __init__(self, *, weights=2_000_000_000, kv=12288,
+                 capacity=int((3500 - 1024) * 2 ** 20), model_max=262144,
+                 base="http://127.0.0.1:11434", fail_above=None):
+        super().__init__(models=["m1"])
+        self.base = base
+        self.weights = weights
+        self.kv = kv
+        self.capacity = capacity
+        self.model_max = model_max
+        self.fail_above = fail_above
+        self.current = None
+        self.load_ctxs = []
+        self.show_data = {"model_info": dict(CTX_SHOW["model_info"],
+                                             **{"qwen35.context_length": model_max})}
+
+    def tags(self):
+        return [{"name": "m1", "size": self.weights}]
+
+    def ps(self):
+        if self.current is None:
+            return []
+        ctx, total, vram = self.current
+        return [{"name": "m1", "model": "m1", "size": total,
+                 "size_vram": vram, "context_length": ctx}]
+
+    def unload(self, model):
+        self.unloaded.append(model)
+        self.current = None
+
+    def load(self, model, *, keepalive=None, options=None):
+        self.loaded.append(model)
+        self.load_options.append(dict(options or {}))
+        ctx = int((options or {}).get("num_ctx") or 0)
+        if self.fail_above is not None and ctx > self.fail_above:
+            raise orun.OllamaError("CUDA error: out of memory")
+        total = self.weights + self.kv * ctx
+        self.current = (ctx, total, min(total, self.capacity))
+        self.load_ctxs.append(ctx)
+
+    def truth(self) -> int:
+        """Largest 256-aligned context the simulated GPU really fits."""
+        return ((self.capacity - self.weights) // self.kv // 256) * 256
+
+
+def test_ctxfit() -> int:
+    failures = 0
+
+    devices = orun.parse_gpu_memory("4096, 3100\n24576, 12000\nnot-a-device\n")
+    failures += _fit_check("parse_gpu_memory reads nvidia-smi CSV", devices == [(4096, 3100), (24576, 12000)],
+                       repr(devices))
+    env = orun.parse_service_env(
+        'Environment=OLLAMA_NUM_PARALLEL=2 LLAMA_ARG_FIT_TARGET=512 '
+        'OLLAMA_KV_CACHE_TYPE="q8_0" OLLAMA_HOST=100.1.2.3:11434')
+    failures += _fit_check("parse_service_env reads the ollama unit environment",
+                       env.get("LLAMA_ARG_FIT_TARGET") == "512"
+                       and env.get("OLLAMA_NUM_PARALLEL") == "2"
+                       and env.get("OLLAMA_KV_CACHE_TYPE") == "q8_0",
+                       repr(env))
+
+    if shutil.which("ssh"):
+        class _Proc:
+            returncode = 0
+            stdout = ("4096, 3100\n" + orun.GPU_ENV_MARKER
+                      + "Environment=LLAMA_ARG_FIT_TARGET=2048")
+            stderr = ""
+
+        calls = []
+
+        def runner(cmd, **kwargs):
+            calls.append(cmd)
+            return _Proc()
+
+        got = orun.ssh_gpu_probe("somehost", user="u", runner=runner)
+        failures += _fit_check("ssh_gpu_probe parses the combined GPU/env output",
+                           got == ([(4096, 3100)], {"LLAMA_ARG_FIT_TARGET": "2048"})
+                           and calls and calls[0][:2] == ["ssh", "-o"],
+                           repr(got))
+        class _Down(_Proc):
+            returncode = 255
+        failures += _fit_check("ssh_gpu_probe returns None when ssh fails",
+                           orun.ssh_gpu_probe("somehost", runner=lambda *a, **k: _Down()) is None)
+    else:
+        print("SKIP  ssh_gpu_probe (ssh not installed)")
+
+    # ── KV cache math ───────────────────────────────────────────────────────
+    failures += _fit_check("kv_bytes_per_token handles per-layer kv-head lists",
+                       orun.kv_bytes_per_token(CTX_SHOW) == 12288,
+                       str(orun.kv_bytes_per_token(CTX_SHOW)))
+    failures += _fit_check("kv_bytes_per_token scales with sequences",
+                       orun.kv_bytes_per_token(CTX_SHOW, parallel=4) == 49152)
+    failures += _fit_check("kv_bytes_per_token honours the cache element size",
+                       orun.kv_bytes_per_token(CTX_SHOW,
+                                               element_bytes=orun.kv_element_bytes("q8_0")) == 6528)
+    llama_show = {"model_info": {"llama.block_count": 30, "llama.attention.head_count": 9,
+                                 "llama.attention.head_count_kv": 3,
+                                 "llama.embedding_length": 576, "llama.context_length": 8192}}
+    failures += _fit_check("kv_bytes_per_token falls back to embedding/head_count",
+                       orun.kv_bytes_per_token(llama_show) == 23040,
+                       str(orun.kv_bytes_per_token(llama_show)))
+    failures += _fit_check("kv_bytes_per_token without kv heads is None",
+                       orun.kv_bytes_per_token({"model_info": {"x.block_count": 4}}) is None)
+    failures += _fit_check("trained_context_length/model_total_layers read the metadata",
+                       orun.trained_context_length(CTX_SHOW) == 262144
+                       and orun.model_total_layers(CTX_SHOW) == 25)
+    failures += _fit_check("_kv_fraction_on_gpu follows the attention blocks in the tail",
+                       orun.ctxfit._kv_fraction_on_gpu(CTX_SHOW, 13) == 0.5
+                       and orun.ctxfit._kv_fraction_on_gpu(CTX_SHOW, 25) == 1.0,
+                       f"{orun.ctxfit._kv_fraction_on_gpu(CTX_SHOW, 13)}")
+
+    # ── estimate ────────────────────────────────────────────────────────────
+    machine = orun.MachineGpu(devices=[(16384, 12000)], env={}, source="local")
+    weights = 10_000_000_000
+    fit = orun.estimate_max_gpu_ctx(CTX_SHOW, weights, machine)
+    usable = (12000 - 1024) * 2 ** 20
+    budget = usable - weights - 256 * 2 ** 20
+    expected = ((budget // 12288) // 1024) * 1024
+    failures += _fit_check("estimate_max_gpu_ctx computes the full-offload context",
+                       fit.feasible and fit.ctx == expected and fit.kv_gpu_per_token == 12288,
+                       f"ctx={fit.ctx} expected={expected}")
+    failures += _fit_check("estimate reserves the fit margin per device",
+                       fit.margin_bytes == 1024 * 2 ** 20
+                       and fit.usable_bytes == (12000 - 1024) * 2 ** 20)
+
+    fit_env = orun.estimate_max_gpu_ctx(
+        CTX_SHOW, weights, orun.MachineGpu(
+            devices=[(16384, 12000)],
+            env={"LLAMA_ARG_FIT_TARGET": "512", "OLLAMA_NUM_PARALLEL": "2",
+                 "OLLAMA_KV_CACHE_TYPE": "q8_0"}))
+    env_usable = (12000 - 512) * 2 ** 20
+    env_budget = env_usable - weights - 256 * 2 ** 20
+    env_kv = orun.kv_bytes_per_token(CTX_SHOW, parallel=2,
+                                     element_bytes=orun.kv_element_bytes("q8_0"))
+    env_expected = ((env_budget // env_kv) // 1024) * 1024
+    failures += _fit_check("estimate honours the server env (fit target, parallel, kv type)",
+                       fit_env.ctx == env_expected and fit_env.parallel == 2
+                       and fit_env.margin_bytes == 512 * 2 ** 20,
+                       f"ctx={fit_env.ctx} expected={env_expected}")
+
+    pinned = orun.estimate_max_gpu_ctx(CTX_SHOW, 20_000_000_000, machine, pinned_layers=13)
+    pinned_budget = usable - int(20_000_000_000 * 13 / 25) - 256 * 2 ** 20
+    pinned_expected = ((pinned_budget // 6144) // 1024) * 1024
+    failures += _fit_check("estimate scales weights and KV for pinned gpu-layers",
+                       pinned.ctx == pinned_expected and pinned.kv_gpu_per_token == 6144
+                       and pinned.weights_bytes == int(20_000_000_000 * 13 / 25),
+                       f"ctx={pinned.ctx} expected={pinned_expected}")
+
+    capped = orun.estimate_max_gpu_ctx(CTX_SHOW, 6_000_000_000,
+                                       orun.MachineGpu(devices=[(16384, 12000)]))
+    failures += _fit_check("estimate caps at the model's max context",
+                           capped.capped_by_model and capped.ctx == 262144,
+                           f"ctx={capped.ctx} capped={capped.capped_by_model}")
+
+    infeasible = orun.estimate_max_gpu_ctx(CTX_SHOW, 3_000_000_000,
+                                           orun.MachineGpu(devices=[(4096, 1000)]))
+    failures += _fit_check("estimate reports an impossible placement",
+                           not infeasible.feasible and "does not fit" in infeasible.error
+                           and "0 B usable" in infeasible.error
+                           and "?" not in infeasible.error,
+                           infeasible.error)
+    no_gpu = orun.estimate_max_gpu_ctx(CTX_SHOW, weights,
+                                       orun.MachineGpu(error="no nvidia-smi GPU data"))
+    failures += _fit_check("estimate needs GPU data",
+                       not no_gpu.feasible and "nvidia-smi" in no_gpu.error)
+    no_kv = orun.estimate_max_gpu_ctx({"model_info": {"x.block_count": 4}}, weights, machine)
+    failures += _fit_check("estimate needs KV metadata",
+                       not no_kv.feasible and "KV cache" in no_kv.error)
+
+    # ── probe loop ──────────────────────────────────────────────────────────
+    def run_probe(client, free_mb=3500, **request_kwargs):
+        req_machine = orun.MachineGpu(devices=[(4096, free_mb)], env={}, source="local")
+        request = orun.FitRequest(client=client, model="m1",
+                                  config={"max_gpu_probes": 8}, machine=req_machine,
+                                  **request_kwargs)
+        with orun.console.capture() as cap:
+            chosen = orun.max_gpu_context(request, probe=True)
+        return chosen, _plain(cap.get())
+
+    client = _CtxFitClient()
+    chosen, out = run_probe(client)
+    failures += _fit_check("--probe finds the true boundary exactly",
+                       chosen == client.truth() == 48384 and len(client.load_ctxs) == 2
+                       and "100% GPU" in out,
+                       f"chosen={chosen} truth={client.truth()} probes={client.load_ctxs}")
+
+    hidden = _CtxFitClient(capacity=int((3500 - 1024) * 2 ** 20) - 300 * 2 ** 20)
+    chosen, _ = run_probe(hidden)
+    failures += _fit_check("--probe corrects an optimistic estimate downward",
+                           chosen == hidden.truth() and len(hidden.load_ctxs) <= 8,
+                           f"chosen={chosen} truth={hidden.truth()} probes={hidden.load_ctxs}")
+
+    tight = _CtxFitClient(capacity=int((3500 - 1024) * 2 ** 20) - 300 * 2 ** 20, kv=12288,
+                          model_max=4096)
+    chosen, out = run_probe(tight)
+    failures += _fit_check("--probe stops at the model's max context",
+                       chosen == 4096 and "capped by the model's max" in out)
+
+    oom = _CtxFitClient(fail_above=40000)
+    chosen, out = run_probe(oom)
+    failures += _fit_check("--probe backs off from load failures",
+                       chosen == 39936 and "load failed" in out,
+                       f"chosen={chosen} probes={oom.load_ctxs}")
+
+    class _BlindClient(_CtxFitClient):
+        def ps(self):
+            raise orun.OllamaError("no ps")
+
+    chosen, out = run_probe(_BlindClient())
+    failures += _fit_check("--probe reports when the model can't be measured",
+                       chosen is None and "/api/ps" in out, out[-200:])
+
+    stuck = _CtxFitClient(capacity=1000 * 2 ** 20)
+    chosen, out = run_probe(stuck)
+    failures += _fit_check("--probe reports when nothing fits",
+                       chosen is None and "fully on the GPU" in out, out[-200:])
+
+    # ── orchestration ───────────────────────────────────────────────────────
+    request = orun.FitRequest(client=_CtxFitClient(weights=10_000_000_000), model="m1",
+                              config={"max_gpu_probes": 4},
+                              machine=orun.MachineGpu(devices=[(16384, 12000)], env={}))
+    with orun.console.capture() as cap:
+        chosen = orun.max_gpu_context(request)
+    out = _plain(cap.get())
+    failures += _fit_check("max_gpu_context estimates without loading",
+                           chosen == expected and "estimate only" in out
+                           and request.client.load_ctxs == [],
+                           f"chosen={chosen}")
+
+    request = orun.FitRequest(client=_CtxFitClient(), model="m1",
+                              config={"max_gpu_probes": 4},
+                              machine=orun.MachineGpu(devices=[(4096, 1000)], env={}))
+    with orun.console.capture() as cap:
+        chosen = orun.max_gpu_context(request, probe=True)
+    failures += _fit_check("max_gpu_context probes even when the estimate says no",
+                           chosen is not None and chosen >= 4096
+                           and request.client.load_ctxs[:1] == [4096],
+                           f"chosen={chosen} probes={request.client.load_ctxs}")
+
+    class _NoModel(_CtxFitClient):
+        def tags(self):
+            return []
+
+    with orun.console.capture() as cap:
+        chosen = orun.max_gpu_context(orun.FitRequest(
+            client=_NoModel(), model="m1",
+            machine=orun.MachineGpu(devices=[(4096, 3500)])))
+    failures += _fit_check("max_gpu_context needs the model in /api/tags",
+                       chosen is None and "/api/tags" in cap.get(), cap.get())
+
+    with orun.console.capture() as cap:
+        chosen = orun.max_gpu_context(orun.FitRequest(
+            client=_CtxFitClient(), model="m1",
+            machine=orun.MachineGpu(error="no nvidia-smi GPU data")))
+    failures += _fit_check("max_gpu_context reports unreadable VRAM",
+                       chosen is None and "nvidia-smi" in cap.get(), cap.get())
+
+    with orun.console.capture() as cap:
+        chosen = orun.max_gpu_context(orun.FitRequest(
+            client=_CtxFitClient(), model="m1", pinned_spec="cpu",
+            machine=orun.MachineGpu(devices=[(4096, 3500)])))
+    failures += _fit_check("max_gpu_context refuses a cpu-only placement",
+                       chosen is None and "cpu" in cap.get(), cap.get())
+
+    remote_like = _CtxFitClient(base="http://10.9.9.9:11434")
+    with orun.console.capture() as cap:
+        chosen = orun.max_gpu_context(orun.FitRequest(client=remote_like, model="m1"))
+    failures += _fit_check("max_gpu_context needs --remote for non-local hosts",
+                       chosen is None and "--remote" in cap.get(), cap.get())
+
+    failures += _fit_check("parse_num_ctx_arg covers the CLI forms",
+                       orun.parse_num_ctx_arg("max-gpu") == ("max-gpu", None)
+                       and orun.parse_num_ctx_arg("--MAX-GPU") == ("max-gpu", None)
+                       and orun.parse_num_ctx_arg("8192") == ("value", 8192)
+                       and orun.parse_num_ctx_arg("nope") == ("error", None))
+    return failures
+
+
+def test_cmd_num_ctx_max_gpu() -> int:
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+        config = dict(orun.DEFAULT_CONFIG)
+        client = _CtxFitClient()
+        repl = orun.Repl(args, config, client, store, orun.Session.create("m1", client.base))
+
+        original = orun.ctxfit.probe_machine_gpu
+        orun.ctxfit.probe_machine_gpu = lambda **kwargs: orun.MachineGpu(
+            devices=[(4096, 3500)], env={}, source="local")
+        try:
+            with orun.console.capture() as cap:
+                orun.cmd_num_ctx(repl, "--max-gpu")
+            out = _plain(cap.get())
+            failures += _fit_check("/num-ctx --max-gpu estimates and sets num_ctx",
+                               repl.session.parameters.get("num_ctx") == 26624
+                               and "estimate only" in out and client.load_ctxs == [],
+                               f"params={repl.session.parameters} out={out[-160:]}")
+
+            with orun.console.capture() as cap:
+                orun.cmd_num_ctx(repl, "--max-gpu --probe")
+            out = _plain(cap.get())
+            failures += _fit_check("/num-ctx --max-gpu --probe verifies by loading",
+                               repl.session.parameters.get("num_ctx") == client.truth()
+                               and "100% GPU" in out and "model is loaded" in out,
+                               f"params={repl.session.parameters} probes={client.load_ctxs}")
+
+            with orun.console.capture() as cap:
+                orun.cmd_num_ctx(repl, "--max-gpu --bogus")
+            failures += _fit_check("/num-ctx --max-gpu rejects unknown flags",
+                               "usage:" in cap.get())
+
+            with orun.console.capture() as cap:
+                orun.cmd_num_ctx(repl, "--help")
+            out = _plain(cap.get())
+            failures += _fit_check("/num-ctx --help documents max-gpu and probe",
+                               "--max-gpu" in out and "--probe" in out
+                               and "max_gpu_margin_mb" in out)
+
+            with orun.console.capture() as cap:
+                orun.cmd_num_ctx(repl, "")
+            failures += _fit_check("/num-ctx status hints at --max-gpu",
+                               "--max-gpu" in cap.get())
+        finally:
+            orun.ctxfit.probe_machine_gpu = original
+    return failures
+
+
 def test_emit_and_cli_functions() -> int:
     failures = 0
     with tempfile.TemporaryDirectory() as tmp:
@@ -1727,10 +2081,18 @@ def test_build_parser_flags() -> int:
     parser = orun.build_parser()
 
     args = parser.parse_args(["m1", "--num-ctx", "4096"])
-    if args.num_ctx == 4096:
-        print("PASS  --num-ctx parses to an int")
+    if args.num_ctx == "4096" and orun.parse_num_ctx_arg(args.num_ctx) == ("value", 4096):
+        print("PASS  --num-ctx parses an integer")
     else:
         print(f"FAIL  --num-ctx: {args.num_ctx!r}")
+        failures += 1
+
+    probe_args = parser.parse_args(["m1", "--num-ctx", "max-gpu", "--max-gpu-probe"])
+    if orun.parse_num_ctx_arg(probe_args.num_ctx) == ("max-gpu", None) \
+            and probe_args.max_gpu_probe:
+        print("PASS  --num-ctx max-gpu and --max-gpu-probe parse")
+    else:
+        print(f"FAIL  --num-ctx max-gpu: {probe_args.num_ctx!r} {probe_args.max_gpu_probe!r}")
         failures += 1
 
     if parser.parse_args(["m1"]).num_ctx is None:
@@ -3480,7 +3842,8 @@ if __name__ == "__main__":
              + test_ps_table_and_cmd_ps()
              + test_maybe_show_ps() + test_resolve_num_ctx()
              + test_context_usage()
-             + test_cmd_num_ctx() + test_emit_and_cli_functions()
+             + test_cmd_num_ctx() + test_ctxfit() + test_cmd_num_ctx_max_gpu()
+             + test_emit_and_cli_functions()
              + test_build_parser_flags() + test_remote_hosts()
              + test_pull_and_disk_helpers() + test_ensure_model()
              + test_gpu_layers() + test_slash_completer()

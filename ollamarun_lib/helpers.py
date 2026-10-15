@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import shutil
+import socket
 import subprocess
 import urllib.parse
 import uuid
@@ -66,6 +67,7 @@ def normalize_host(value: Optional[str]) -> str:
 
 
 _TAILSCALE_CACHE: Optional[dict[str, dict[str, Any]]] = None
+_TAILSCALE_SELF_IPS: set[str] = set()
 
 
 def _tailscale_records() -> dict[str, dict[str, Any]]:
@@ -87,6 +89,8 @@ def _tailscale_records() -> dict[str, dict[str, Any]]:
             self_peer = data.get("Self") or {}
             if self_peer:
                 peers.append(self_peer)
+                for ip in self_peer.get("TailscaleIPs") or []:
+                    _TAILSCALE_SELF_IPS.add(str(ip).lower())
             for peer in peers:
                 name = (peer.get("HostName") or "").lower()
                 if name:
@@ -181,6 +185,52 @@ def is_local_host(base: str) -> bool:
     return hostname.lower() in {"127.0.0.1", "localhost", "::1"}
 
 
+_SELF_ADDRESSES: Optional[set[str]] = None
+
+
+def _self_addresses() -> set[str]:
+    """Hostnames and addresses that mean 'this machine' (cached)."""
+    global _SELF_ADDRESSES
+    if _SELF_ADDRESSES is not None:
+        return _SELF_ADDRESSES
+    addresses = {"localhost", "127.0.0.1", "::1"}
+    try:
+        name = socket.gethostname().lower()
+        addresses.add(name)
+        addresses.add(name.split(".")[0])
+        for info in socket.getaddrinfo(name, None):
+            addresses.add(str(info[4][0]).lower())
+    except OSError:
+        pass
+    _tailscale_records()
+    addresses.update(_TAILSCALE_SELF_IPS)
+    _SELF_ADDRESSES = addresses
+    return addresses
+
+
+def host_is_self(value: str) -> bool:
+    """True when a host/base URL points at an address or name of this machine.
+
+    Broader than `is_local_host`: also matches the machine's hostname, its
+    resolved addresses and its own tailnet IP (ollama may be bound to the
+    tailscale address instead of localhost, as on this fleet).
+    """
+    try:
+        host = (urllib.parse.urlsplit(normalize_host(value)).hostname or "").lower()
+    except ValueError:
+        return False
+    if not host:
+        return False
+    known = _self_addresses()
+    if host in known:
+        return True
+    try:
+        resolved = {str(info[4][0]).lower() for info in socket.getaddrinfo(host, None)}
+    except OSError:
+        return False
+    return bool(resolved & known)
+
+
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=4",
             "-o", "ConnectionAttempts=1"]
 
@@ -226,6 +276,94 @@ def ssh_free_disk(target: str, *, user: Optional[str] = None, timeout: float = 8
     except ValueError:
         return None
     return free_kb * 1024, total_kb * 1024, parts[2]
+
+
+GPU_ENV_MARKER = "---ENV---"
+
+# One ssh round trip for the context-fit probe: per-GPU total/free VRAM (MiB)
+# first, then the ollama unit's environment (LLAMA_ARG_FIT_TARGET and
+# OLLAMA_NUM_PARALLEL/OLLAMA_KV_CACHE_TYPE feed the estimate).
+SSH_GPU_ENV_COMMAND = (
+    "nvidia-smi --query-gpu=memory.total,memory.free --format=csv,noheader,nounits "
+    f"2>/dev/null; echo {GPU_ENV_MARKER}; "
+    "systemctl show ollama -p Environment 2>/dev/null"
+)
+
+
+def parse_gpu_memory(text: str) -> list[tuple[int, int]]:
+    """[(total_mb, free_mb)] from nvidia-smi CSV lines; junk lines are skipped."""
+    devices: list[tuple[int, int]] = []
+    for line in (text or "").splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 2:
+            continue
+        try:
+            devices.append((int(parts[0]), int(parts[1])))
+        except ValueError:
+            continue
+    return devices
+
+
+def parse_service_env(text: str) -> dict[str, str]:
+    """KEY=VALUE pairs from `systemctl show ollama -p Environment` output."""
+    env: dict[str, str] = {}
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line.startswith("Environment="):
+            line = line[len("Environment="):]
+        for match in re.finditer(r'([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|\S+)', line):
+            env[match.group(1)] = match.group(2).strip('"')
+    return env
+
+
+def local_gpu_probe(runner: Any = None) -> tuple[list[tuple[int, int]], dict[str, str]]:
+    """(devices, ollama service env) on this machine; both empty when unavailable."""
+    run = runner or subprocess.run
+    devices: list[tuple[int, int]] = []
+    env: dict[str, str] = {}
+    if shutil.which("nvidia-smi"):
+        try:
+            proc = run(["nvidia-smi", "--query-gpu=memory.total,memory.free",
+                        "--format=csv,noheader,nounits"],
+                       capture_output=True, text=True, timeout=8)
+            if proc.returncode == 0:
+                devices = parse_gpu_memory(proc.stdout)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    try:
+        proc = run(["systemctl", "show", "ollama", "-p", "Environment"],
+                   capture_output=True, text=True, timeout=8)
+        if proc.returncode == 0:
+            env = parse_service_env(proc.stdout)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return devices, env
+
+
+def ssh_gpu_probe(target: str, *, user: Optional[str] = None, timeout: float = 8.0,
+                  runner: Any = None) -> Optional[tuple[list[tuple[int, int]], dict[str, str]]]:
+    """(devices, ollama service env) on a remote machine over SSH, or None on failure.
+
+    Best-effort exactly like `ssh_free_disk`: a missing/unreachable host, no
+    key, a machine without nvidia-smi or a bad response all return None.
+    """
+    if not target or shutil.which("ssh") is None:
+        return None
+    dest = f"{user}@{target}" if user else target
+    run = runner or subprocess.run
+    try:
+        proc = run(["ssh", *SSH_OPTS, dest, SSH_GPU_ENV_COMMAND],
+                   capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    text = proc.stdout or ""
+    gpu_text, _, env_text = text.partition(GPU_ENV_MARKER)
+    devices = parse_gpu_memory(gpu_text)
+    if not devices:
+        return None
+    return devices, parse_service_env(env_text)
 
 
 def _first_existing_path(path: str) -> str:

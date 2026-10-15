@@ -20,6 +20,7 @@ from .tools import *  # noqa: F401,F403
 from .session import *  # noqa: F401,F403
 from .emit import *  # noqa: F401,F403
 from .interactive import *  # noqa: F401,F403
+from .ctxfit import *  # noqa: F401,F403
 from .repl import *  # noqa: F401,F403
 from .run import *  # noqa: F401,F403
 from .cli import *  # noqa: F401,F403
