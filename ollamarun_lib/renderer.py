@@ -28,7 +28,7 @@ from rich.rule import Rule
 from rich.spinner import Spinner
 from rich.text import Text
 
-from .constants import CTRL_T, THINKING_MODES
+from .constants import CTRL_T, THINKING_MODES, tool_color
 from .helpers import human_chars, human_duration, short_stamp
 from .mathrender import render_content, render_thinking
 
@@ -132,10 +132,23 @@ def thinking_panel(text: str, title: str = "thinking",
                  border_style="dim", title_align="left", padding=(0, 1))
 
 
+def tool_call_panel(name: str, args: Any) -> Panel:
+    """The arguments panel for one tool call, bordered in the tool's colour."""
+    if not isinstance(args, str):
+        args = json.dumps(args, indent=2)
+    color = tool_color(name)
+    return Panel(escape(args), border_style=color, title_align="left",
+                 title=Text(f"tool · {name}", style=color))
+
+
 def tool_result_panel(name: str, detail: str = "", text: str = "", *,
                       ok: bool = True, duration: Optional[float] = None,
                       head: int = 12, max_chars: int = 1400) -> Panel:
-    """Compact view of what a tool returned; the model gets the full text."""
+    """Compact view of what a tool returned; the model gets the full text.
+
+    The border keeps the green/red ok/failed signal while the title carries
+    the tool's colour, tying the result to its call panel.
+    """
     lines = (text or "").splitlines()
     shown = lines[:head]
     if len(lines) > head:
@@ -147,11 +160,12 @@ def tool_result_panel(name: str, detail: str = "", text: str = "", *,
     if detail:
         rendered.append("$ " + detail + "\n", style="dim")
     rendered.append(body)
-    bits = [f"tool · {name}", "ok" if ok else "failed"]
+    title = Text.assemble("tool · ", (str(name), tool_color(name)),
+                          " · " + ("ok" if ok else "failed"))
     if duration is not None:
-        bits.append(f"{duration:.2f}s")
-    return Panel(rendered, title=" · ".join(bits),
-                 border_style="green" if ok else "red", title_align="left")
+        title.append(f" · {duration:.2f}s")
+    return Panel(rendered, title=title, border_style="green" if ok else "red",
+                 title_align="left")
 
 
 def user_message_box(text: str, console: Console) -> Align:
@@ -451,12 +465,8 @@ class Renderer:
     def _render_tool_calls(self, calls: list[dict[str, Any]]) -> None:
         for call in calls:
             function = call.get("function", {}) if isinstance(call, dict) else {}
-            name = function.get("name", "tool")
-            args = function.get("arguments", {})
-            if not isinstance(args, str):
-                args = json.dumps(args, indent=2)
-            self.console.print(Panel(escape(args), title=f"tool · {name}",
-                                     border_style="magenta", title_align="left"))
+            self.console.print(tool_call_panel(function.get("name", "tool"),
+                                               function.get("arguments", {})))
 
 
 def render_transcript(session: "Session", console: Console, *, show_stats: bool = True,
@@ -489,9 +499,8 @@ def render_transcript(session: "Session", console: Console, *, show_stats: bool 
                 console.print(render_content(content, math=True, width=max(20, console.width - 4)))
                 for call in message.get("tool_calls") or []:
                     function = call.get("function", {}) if isinstance(call, dict) else {}
-                    console.print(Panel(escape(str(function.get("arguments", ""))),
-                                        title=f"tool · {function.get('name', 'tool')}",
-                                        border_style="magenta", title_align="left"))
+                    console.print(tool_call_panel(function.get("name", "tool"),
+                                                  function.get("arguments", "")))
             elif role == "tool":
                 content = message.get("content") or ""
                 if content:

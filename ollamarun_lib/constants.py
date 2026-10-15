@@ -14,6 +14,7 @@ import io
 import json
 import logging
 import os
+import random
 import re
 import select
 import shlex
@@ -38,6 +39,7 @@ import rich.traceback
 from rich import box
 from rich.align import Align
 from rich.console import Console, Group
+from rich.errors import StyleSyntaxError
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.markup import escape
@@ -53,6 +55,7 @@ from rich.progress import (
 from rich.prompt import Confirm, Prompt
 from rich.rule import Rule
 from rich.spinner import Spinner
+from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
@@ -89,7 +92,7 @@ except ImportError:  # pragma: no cover - fallback path
     HAS_PYLATEXENC = False
     LatexNodes2Text = None
 
-VERSION = "1.24"
+VERSION = "1.25"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -133,6 +136,78 @@ THEME = Theme({
 console = Console(theme=THEME)
 rich.traceback.install()
 
+#: One colour per built-in tool: the arguments panel of a call, the
+#: "running NAME…" line and the "tool · NAME" result title all share it, so
+#: a mixed run of calls (shell, files, speech, ...) stays readable at a
+#: glance. A tool with no entry here gets a random pick from
+#: TOOL_COLOR_PALETTE through `tool_color()`; config `tool_colors` overrides
+#: entries by tool name.
+TOOL_COLORS: dict[str, str] = {
+    "run_shell": "cyan",
+    "run_python": "yellow",
+    "read_file": "deep_sky_blue1",
+    "write_file": "orange1",
+    "list_dir": "magenta",
+    "fetch_url": "spring_green2",
+    "web_search": "hot_pink2",
+    "speak": "salmon1",
+    "list_voices": "turquoise2",
+}
+
+#: Fallback pool for tools without a fixed colour -- disjoint from
+#: TOOL_COLORS so a random pick can never shadow a mapped tool.
+TOOL_COLOR_PALETTE: tuple[str, ...] = (
+    "gold1", "medium_purple1", "chartreuse2", "deep_pink2",
+    "dodger_blue1", "dark_orange", "orchid", "khaki1",
+)
+
+_TOOL_COLOR_OVERRIDES: dict[str, str] = {}
+_TOOL_COLOR_FALLBACKS: dict[str, str] = {}
+
+
+def tool_color(name: str) -> str:
+    """Panel colour for one tool: fixed when mapped, random (per run) otherwise.
+
+    Unknown tools (invented names, future tools) pick a random colour from
+    TOOL_COLOR_PALETTE -- memoised, so every panel of the same tool matches
+    for the rest of the run, and drawn from colours not already in use so a
+    random pick never collides with another tool while the palette lasts.
+    """
+    key = str(name or "tool")
+    fixed = _TOOL_COLOR_OVERRIDES.get(key) or TOOL_COLORS.get(key)
+    if fixed:
+        return fixed
+    if key not in _TOOL_COLOR_FALLBACKS:
+        used = (set(TOOL_COLORS.values()) | set(_TOOL_COLOR_OVERRIDES.values())
+                | set(_TOOL_COLOR_FALLBACKS.values()))
+        free = [color for color in TOOL_COLOR_PALETTE if color not in used]
+        _TOOL_COLOR_FALLBACKS[key] = random.choice(free or list(TOOL_COLOR_PALETTE))
+    return _TOOL_COLOR_FALLBACKS[key]
+
+
+def set_tool_colors(overrides: Optional[dict[str, Any]] = None) -> None:
+    """Apply config `tool_colors` (tool name -> rich colour) over the built-ins.
+
+    A named colour wins over TOOL_COLORS for that tool; a value rich cannot
+    parse as a style is ignored with a warning (a typo must not crash panel
+    rendering). Also re-rolls the random fallbacks, so calling it again gives
+    unknown tools new colours (the CLI calls it once at startup, which is
+    what makes the picks stable for a whole run).
+    """
+    _TOOL_COLOR_OVERRIDES.clear()
+    for name, color in (overrides or {}).items():
+        if not isinstance(color, str) or not color.strip():
+            continue
+        value = color.strip()
+        try:
+            Style.parse(value)
+        except StyleSyntaxError:
+            console.print(f"[warn]ignoring invalid tool colour for "
+                          f"{str(name)!r}: {value!r}[/warn]")
+            continue
+        _TOOL_COLOR_OVERRIDES[str(name)] = value
+    _TOOL_COLOR_FALLBACKS.clear()
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "host": None,
     "remote": None,
@@ -163,6 +238,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tools_timeout": 120,
     "tools_max_output": 4000,
     "tools_max_rounds": 8,
+    "tool_colors": {},
     "tts_auto": False,
     "tts_voice": None,
     "tts_lang": None,
