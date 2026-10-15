@@ -52,6 +52,7 @@ from .helpers import (
     human_bytes,
     human_chars,
     human_duration,
+    is_local_host,
     naive_title,
     new_session_id,
     now_iso,
@@ -62,6 +63,13 @@ from .helpers import (
     shortcut,
 )
 from .images import encode_image
+from .ctxfit import (
+    FitRequest,
+    NUM_CTX_HELP,
+    machine_state_for,
+    max_gpu_context,
+    parse_num_ctx_arg,
+)
 from .interactive import (
     GPU_LAYERS_USAGE,
     _CODE_BLOCK_RE,
@@ -113,7 +121,8 @@ COMMAND_INFO: dict[str, tuple[str, str]] = {
     "/tag": ("[list|add TAG…|rm TAG]", "session tags"),
     "/model": ("[NAME|--list]", "switch model"),
     "/ps": ("", "show resident models (ollama ps)"),
-    "/num-ctx": ("[N]", "context window size, capped to the model's max"),
+    "/num-ctx": ("[N | --max-gpu [--probe]]",
+                 "context window: N, or the largest that keeps the GPU placement"),
     "/gpu-layers": ("[N|N%|+N|-N|all|cpu|auto]", "GPU layers for this model"),
     "/params": ("", "show session parameters"),
     "/tools": ("[on|off|policy MODE|enable|disable NAME…|allow|rules]", "tool harness, approval rules and per-tool control"),
@@ -1396,12 +1405,54 @@ def cmd_num_ctx(repl: Repl, argument: str) -> None:
         if max_ctx:
             bits.append(f"model max {max_ctx}")
         console.print(f"[key]context size[/key] " + " · ".join(bits))
+        console.print("[dim]--max-gpu picks the largest context that still fits 100% "
+                      "on the GPU (--probe verifies by loading)[/dim]")
         return
-    try:
-        requested = int(argument)
-    except ValueError:
-        console.print("[err]usage: /num-ctx N[/err]")
+    tokens = argument.split()
+    if tokens[0] in {"--help", "-h", "help"}:
+        console.print(NUM_CTX_HELP)
         return
+    kind, value = parse_num_ctx_arg(tokens[0])
+    if kind == "max-gpu":
+        probe = False
+        for token in tokens[1:]:
+            flag = token.lower()
+            if flag in {"--probe", "probe", "-p"}:
+                probe = True
+            elif flag in {"--help", "-h", "help"}:
+                console.print(NUM_CTX_HELP)
+                return
+            else:
+                console.print("[err]usage: /num-ctx N | --max-gpu [--probe][/err]")
+                return
+        ssh_target = remote_node(repl.session.remote, repl.config) \
+            if repl.session.remote else None
+        ssh_user = repl.config.get("remote_ssh_user")
+        base = getattr(repl.client, "base", "") or ""
+        host_label = repl.session.remote or (None if is_local_host(base) else base)
+        request = FitRequest(
+            client=repl.client, model=repl.session.model, config=repl.config,
+            host_label=host_label, ssh_target=ssh_target, ssh_user=ssh_user,
+            pinned_spec=repl.session.gpu_layers,
+            num_gpu=repl.session.parameters.get("num_gpu"),
+            base_options={key: val for key, val in (repl.session.parameters or {}).items()
+                          if key != "num_ctx"},
+            keepalive=repl.session.keepalive or getattr(repl.args, "keepalive", None),
+            refresh_gpu=lambda: machine_state_for(base, ssh_target=ssh_target,
+                                                  ssh_user=ssh_user),
+        )
+        ctx = max_gpu_context(request, probe=probe)
+        if ctx is None:
+            return
+        repl.session.parameters["num_ctx"] = ctx
+        repl.session.touch()
+        note = " [dim]· model is loaded at that context[/dim]" if probe else ""
+        console.print(f"[ok]num_ctx set to {ctx}[/ok]{note}")
+        return
+    if kind == "error":
+        console.print("[err]usage: /num-ctx N | --max-gpu [--probe][/err]")
+        return
+    requested = int(value or 0)
     if requested <= 0:
         console.print("[err]--num-ctx must be a positive integer[/err]")
         return

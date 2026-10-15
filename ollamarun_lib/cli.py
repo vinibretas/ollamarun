@@ -43,6 +43,12 @@ from .helpers import (
     tailscale_peer_state,
 )
 from .images import encode_image
+from .ctxfit import (
+    FitRequest,
+    machine_state_for,
+    max_gpu_context,
+    parse_num_ctx_arg,
+)
 from .interactive import (
     ensure_model,
     gpu_layers_label,
@@ -77,7 +83,9 @@ interactive commands:
   /thinking [MODE]      thinking display: show|collapse|hide|toggle|full
   /tps [on|off]         live tokens/s footer
   /ps                   resident models (ollama ps)
-  /num-ctx [N]          context window size, capped to the model's max
+  /num-ctx [N | --max-gpu [--probe]]
+                        context window: N, or the largest that keeps the GPU
+                        placement (--probe verifies by loading the model)
   /gpu-layers [SPEC]    GPU layers: N, P%, +N/-N, all, cpu or auto
   /image PATH           attach an image to the next message
   /export [FILE]        export mid-session as md/json/html
@@ -155,9 +163,14 @@ sessions live in ~/etc/data/ollamarun; config in ~/etc/config_files/ollamarun.js
                          help="read the system prompt from a file")
     wrapper.add_argument("--option", action="append", metavar="KEY=VALUE",
                          help="model option, repeatable (e.g. -o temperature=0.7)")
-    wrapper.add_argument("--num-ctx", type=int, metavar="N",
+    wrapper.add_argument("--num-ctx", metavar="N|max-gpu",
                          help="context window size; capped to the model's max "
-                              "(from /api/show) with a warning")
+                              "(from /api/show) with a warning. 'max-gpu' picks "
+                              "the largest context that still keeps the model "
+                              "on the GPU (see /num-ctx --help)")
+    wrapper.add_argument("--max-gpu-probe", action="store_true",
+                         help="verify --num-ctx max-gpu by loading the model at "
+                              "candidate contexts and reading /api/ps back")
     wrapper.add_argument("--gpu-layers", metavar="SPEC",
                          help="GPU layers for the model: N (absolute), P%% of its "
                               "layers, +N/-N (adjust the current value), all, cpu "
@@ -538,15 +551,43 @@ def main(argv: Optional[list[str]] = None) -> int:
         except (ValueError, RuntimeError):
             gpu_layers_value = None
 
+    if args.max_gpu_probe and (args.num_ctx or "").strip().lower() not in {"max-gpu", "--max-gpu"}:
+        console.print("[err]--max-gpu-probe requires --num-ctx max-gpu[/err]")
+        return 2
     if args.num_ctx is not None:
-        if args.num_ctx <= 0:
-            console.print("[err]--num-ctx must be a positive integer[/err]")
+        kind, value = parse_num_ctx_arg(args.num_ctx)
+        if kind == "error":
+            console.print("[err]--num-ctx must be a positive integer or max-gpu[/err]")
             return 2
-        applied, max_ctx = resolve_num_ctx(client, model, args.num_ctx)
-        if max_ctx and args.num_ctx > max_ctx:
-            console.print(f"[warn]--num-ctx {args.num_ctx} exceeds {escape(model)}'s max "
-                          f"context ({max_ctx}) — capped to {max_ctx}[/warn]")
-        session.parameters["num_ctx"] = applied
+        if kind == "max-gpu":
+            request = FitRequest(
+                client=client, model=model, config=config,
+                host_label=host_label, ssh_target=ssh_target,
+                ssh_user=config.get("remote_ssh_user"),
+                pinned_spec=session.gpu_layers,
+                num_gpu=(session.parameters or {}).get("num_gpu"),
+                base_options={key: val
+                              for key, val in (session.parameters or {}).items()
+                              if key != "num_ctx"},
+                keepalive=session.keepalive or args.keepalive,
+                refresh_gpu=lambda: machine_state_for(client.base, ssh_target=ssh_target,
+                                                      ssh_user=config.get("remote_ssh_user")),
+            )
+            ctx = max_gpu_context(request, probe=args.max_gpu_probe)
+            if ctx is None:
+                return 2
+            session.parameters["num_ctx"] = ctx
+            note = " [dim]· model is loaded at that context[/dim]" if args.max_gpu_probe else ""
+            console.print(f"[ok]num_ctx set to {ctx}[/ok]{note}")
+        else:
+            if int(value or 0) <= 0:
+                console.print("[err]--num-ctx must be a positive integer[/err]")
+                return 2
+            applied, max_ctx = resolve_num_ctx(client, model, int(value or 0))
+            if max_ctx and int(value or 0) > max_ctx:
+                console.print(f"[warn]--num-ctx {value} exceeds {escape(model)}'s max "
+                              f"context ({max_ctx}) — capped to {max_ctx}[/warn]")
+            session.parameters["num_ctx"] = applied
 
     try:
         prompt_text = " ".join(args.prompt).strip()
