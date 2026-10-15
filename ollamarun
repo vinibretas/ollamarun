@@ -2,9 +2,29 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.24
+Version: 1.25
 
 Summary of changes in this version:
+  - Approval rules. The tool-confirmation prompt is a checkbox picker now:
+    space ticks rows, enter runs the call and stores what is ticked, `a`
+    auto-allows every later call (the old "A") and `d`/escape denies. Next to
+    "allow exactly this call" (the old "a") the picker suggests generalized,
+    session-scoped rules derived from the call itself -- `shell: mkdir -p :*`
+    (a literal command prefix), `path: ~/proj/**` (a directory tree,
+    writes included) and `python: imports os,sys` (module roots a snippet
+    may import and use).
+  - Stored rules are re-checked on every later call, unattended runs
+    included, and each row names exactly what it would allow. Shell rules
+    match a literal prefix plus a `:*` tail and never cover compound
+    commands; path rules resolve symlinks and cannot escape the directory
+    they were created in; python rules never waive `open`/`.system`-style
+    calls, wildcard imports or anything outside their module set.
+  - A hard floor overrules every rule: substitutions, redirections, pipes
+    into an interpreter, wrappers (sudo/ssh/env/xargs/...), interpreters,
+    disk/power tools and `rm -rf /`, `~` or `*` always ask again.
+  - `/tools rules` lists every stored grant (exact fingerprints included),
+    `rm N…` removes one and `add shell|path|python|call …` adds one by hand;
+    the `/tools` status line shows the count.
   - Tool calls are colour-coded. Every tool has its own colour for the call
     panel (the arguments box after the model asks for a tool), the
     "running NAME…" line and the "tool · NAME" title of its result panel --
@@ -115,8 +135,9 @@ Summary of changes in this version:
     always run; run_shell runs unattended only when every command segment is on
     the safe list (ls, cat, grep, rg, find without -exec/-delete, read-only git,
     ...) and run_python only when an AST scan proves the snippet cannot touch
-    files or the OS; everything else asks y/a/n, where `a` remembers that exact
-    call in the session. Unattended runs deny non-approved calls with a note the
+    files or the OS; everything else asks through the picker, which can
+    remember that exact call or store a broader rule. Unattended runs deny
+    non-approved calls with a note the
     model can explain, unless -y/--yes or `/tools policy auto`; write_file
     always asks by default.
   - Tool calls and results are stored in the session (assistant tool_calls plus
@@ -126,8 +147,8 @@ Summary of changes in this version:
     warning while the schemas are still sent.
   - New flags and commands: --tools/--no-tools, -y/--yes now also skips tool
     confirmations, and /tools [on|off|policy auto|allowlist|ask|enable NAME|
-    disable NAME|allow]. Config keys: tools, tools_policy, tools_shell_allow,
-    tools_timeout, tools_max_output, tools_max_rounds.
+    disable NAME|allow|rules]. Config keys: tools, tools_policy,
+    tools_shell_allow, tools_timeout, tools_max_output, tools_max_rounds.
   - Fixed --raw: it now actually switches the renderer to raw mode (it was
     accepted but ignored; use --render raw as before too).
   - Fixed context-window accounting: `/context`, the "context nearly full"

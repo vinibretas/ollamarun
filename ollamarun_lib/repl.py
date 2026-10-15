@@ -31,11 +31,16 @@ from .constants import (
     HAS_PYPERCLIP,
     HISTORY_PATH,
     THINKING_MODES,
+    Application,
     Completer,
     Completion,
     FileHistory,
+    FormattedTextControl,
     KeyBindings,
+    Layout,
     PromptSession,
+    PromptStyle,
+    Window,
     console,
     patch_stdout,
     pyperclip,
@@ -78,14 +83,18 @@ from .session import Session, SessionStore, export_html, export_json, export_mar
 from .tools import (
     DEFAULT_SHELL_ALLOW,
     ToolContext,
+    ToolRule,
     approval_decision,
     call_detail,
     call_fingerprint,
     default_registry,
     execute_tool,
     find_tts_remote,
+    matching_rule,
     normalize_arguments,
     resolve_tool_alias,
+    rule_label,
+    suggest_rules,
     tool_schemas as build_tool_schemas,
 )
 
@@ -107,7 +116,7 @@ COMMAND_INFO: dict[str, tuple[str, str]] = {
     "/num-ctx": ("[N]", "context window size, capped to the model's max"),
     "/gpu-layers": ("[N|N%|+N|-N|all|cpu|auto]", "GPU layers for this model"),
     "/params": ("", "show session parameters"),
-    "/tools": ("[on|off|policy MODE|enable|disable NAME…|allow]", "tool harness and approvals"),
+    "/tools": ("[on|off|policy MODE|enable|disable NAME…|allow|rules]", "tool harness, approval rules and per-tool control"),
     "/tts": ("[on|off|voice NAME|lang CODE|tools on|off|voices]", "auto-speak via tts-remote"),
     "/think": ("[on|off|low|medium|high]", "thinking mode"),
     "/thinking": ("[show|collapse|hide|toggle|full]", "thinking display (Ctrl+T while streaming)"),
@@ -168,6 +177,99 @@ class SlashCompleter(Completer):  # type: ignore[misc]
             for entry in self.repl.store.entries()[:25]:
                 if entry["id"].startswith(argument):
                     yield Completion(entry["id"], start_position=-len(argument))
+
+
+class ApprovalPicker:
+    """Checkbox state machine behind the tool-approval prompt.
+
+    Rows are the suggested approval rules (plus the exact-call grant). Space
+    toggles the row under the cursor, enter runs the call storing what is
+    ticked, `a` switches to auto-allowing every later call and `d`/`q`/escape
+    deny. Pure key handling, so tests can drive it without a terminal.
+    """
+
+    def __init__(self, labels: list[str]):
+        self.labels = labels
+        self.cursor = 0
+        self.ticked: set[int] = set()
+        self.action: Optional[str] = None
+
+    def handle(self, key: str) -> bool:
+        """Process one key press; True once the picker is resolved."""
+        if key in {"up", "k", "c-p"}:
+            self.cursor = (self.cursor - 1) % max(1, len(self.labels))
+        elif key in {"down", "j", "c-n"}:
+            self.cursor = (self.cursor + 1) % max(1, len(self.labels))
+        elif key == "space":
+            self.ticked ^= {self.cursor}
+        elif key in {"enter", "c-j"}:
+            self.action = "run"
+            return True
+        elif key == "a":
+            self.action = "auto"
+            return True
+        elif key in {"d", "q", "escape"}:
+            self.action = "deny"
+            return True
+        return False
+
+    def render(self) -> list[tuple[str, str]]:
+        lines: list[tuple[str, str]] = []
+        for index, label in enumerate(self.labels):
+            pointer = "❯ " if index == self.cursor else "  "
+            marker = "[x]" if index in self.ticked else "[ ]"
+            style = "class:pick-cursor" if index == self.cursor else ""
+            lines.append((style, f"{pointer}{marker} {label}\n"))
+        lines.append(("class:pick-hint",
+                      " space toggle · enter run · a auto-allow all · d deny"))
+        return lines
+
+
+def _run_approval_picker_text(picker: ApprovalPicker) -> None:
+    """Plain prompt fallback when prompt_toolkit is unavailable."""
+    choices = " · ".join(f"[{index + 1}] {label}"
+                         for index, label in enumerate(picker.labels))
+    answer = Prompt.ask(
+        f"[y] run once only · {choices} · [a] auto-allow all · [n] deny",
+        default="y").strip().lower()
+    if answer in {"a", "auto"}:
+        picker.action = "auto"
+    elif answer.isdigit() and 1 <= int(answer) <= len(picker.labels):
+        picker.action = "run"
+        picker.ticked = {int(answer) - 1}
+    elif answer in {"y", "yes", ""}:
+        picker.action = "run"
+    else:
+        picker.action = "deny"
+
+
+def _run_approval_picker(picker: ApprovalPicker, *, input_source: Any = None,
+                         output: Any = None) -> None:
+    """Run the checkbox picker on the terminal, filling in `picker.action`.
+
+    `input_source`/`output` are the prompt_toolkit test seam: pass a pipe
+    input and a DummyOutput to drive the picker headlessly.
+    """
+    if not HAS_PROMPT_TOOLKIT or Application is None:
+        _run_approval_picker_text(picker)
+        return
+    control = FormattedTextControl(text=picker.render, focusable=True)
+    key_bindings = KeyBindings()
+
+    def bind(key: str) -> None:
+        @key_bindings.add(key)
+        def _handler(event: Any) -> None:
+            if picker.handle(key):
+                event.app.exit()
+
+    for key in ("up", "k", "c-p", "down", "j", "c-n", "space", "enter",
+                "c-j", "a", "d", "q", "escape"):
+        bind(key)
+    app = Application(layout=Layout(Window(control)), key_bindings=key_bindings,
+                      style=PromptStyle.from_dict({"pick-cursor": "reverse",
+                                                   "pick-hint": "fg:ansibrightblack"}),
+                      full_screen=False, input=input_source, output=output)
+    app.run()
 
 
 class Repl:
@@ -469,6 +571,14 @@ class Repl:
             console.print(f"[warn]{escape(self.session.model)} does not advertise tool "
                           f"support — tool calls may not work[/warn]")
 
+    def _session_rules(self) -> list[ToolRule]:
+        rules: list[ToolRule] = []
+        for entry in self.session.tool_rules or []:
+            rule = ToolRule.from_dict(entry)
+            if rule is not None:
+                rules.append(rule)
+        return rules
+
     def _approve_tool_call(self, spec: Any, args: dict[str, Any], fingerprint: str,
                            *, allow_prompt: bool = True) -> tuple[bool, str]:
         """Decide whether a tool call runs; a denial is a normal result."""
@@ -480,25 +590,49 @@ class Repl:
             return True, "safe list"
         if fingerprint in (self.session.tool_allow or []):
             return True, "previously allowed"
+        rule = matching_rule(self._session_rules(), spec.name, args,
+                             cwd=self.tool_ctx.cwd, shell_allow=self.shell_allow)
+        if rule is not None:
+            label = rule_label(rule)
+            console.print(f"[dim]allowed by rule[/dim] [key]{escape(label)}[/key]")
+            return True, f"rule: {label}"
         if not (allow_prompt and console.is_terminal):
             return False, f"not auto-approved ({decision.reason}) and this run is unattended"
         console.print(f"[warn]{escape(spec.name)} needs confirmation: "
                       f"{escape(decision.reason)}[/warn]")
-        answer = Prompt.ask("[y] run once · [a] [bold bright_green]ALWAYS[/] allow this exact call · [n] deny · [A] auto allow all calls [warn]CAREFUL[/warn]",
-                            choices=["y", "a", "n", "A"], default="y")
-        if answer == "A":
+        rows: list[tuple[str, Optional[ToolRule], str]] = [
+            ("call", None, "allow exactly this call")]
+        for suggestion in suggest_rules(spec.name, args, cwd=self.tool_ctx.cwd):
+            rows.append(("rule", suggestion, rule_label(suggestion)))
+        picker = ApprovalPicker([label for _kind, _rule, label in rows])
+        _run_approval_picker(picker)
+        if picker.action == "auto":
             self.auto_approve = True
-            self.session.tool_allow = list(self.session.tool_allow or []) + [fingerprint]
             self.session.touch()
-            return True, "allowed (set to auto approve)"
-            pass
-        if answer == "a":
+            return True, "auto-allow everything (careful)"
+        if picker.action != "run":
+            return False, "denied by the user"
+        remembered_call = False
+        stored_rules: list[dict[str, Any]] = []
+        stored: list[str] = []
+        for index in sorted(picker.ticked):
+            kind, rule, _label = rows[index]
+            if kind == "call":
+                remembered_call = True
+            elif rule is not None:
+                stored_rules.append(rule.to_dict())
+                stored.append(rule_label(rule))
+        if remembered_call:
             self.session.tool_allow = list(self.session.tool_allow or []) + [fingerprint]
+            stored.insert(0, "exactly this call")
+        if stored_rules:
+            self.session.tool_rules = list(self.session.tool_rules or []) + stored_rules
+        if stored:
             self.session.touch()
+            console.print("[dim]stored rule(s):[/dim] "
+                          + escape(" · ".join(stored)))
             return True, "allowed (remembered)"
-        if answer == "y":
-            return True, "confirmed"
-        return False, "denied by the user"
+        return True, "confirmed"
 
     def _execute_tool_calls(self, calls: list[dict[str, Any]], *, quiet: bool = False,
                             allow_prompt: bool = True) -> bool:
@@ -896,6 +1030,119 @@ def cmd_params(repl: Repl, argument: str) -> None:
     console.print(table)
 
 
+def _rule_rows(repl: Repl) -> list[tuple[str, str, str, str]]:
+    """(kind, pattern, base, created) for every stored approval, call-first."""
+    rows: list[tuple[str, str, str, str]] = []
+    for fingerprint in repl.session.tool_allow or []:
+        rows.append(("call", fingerprint, "", ""))
+    for entry in repl.session.tool_rules or []:
+        rule = ToolRule.from_dict(entry)
+        if rule is not None:
+            rows.append((rule.kind, rule.pattern, rule.base, rule.created))
+    return rows
+
+
+def _cmd_tools_rules_rm(repl: Repl, parts: list[str]) -> None:
+    indices = sorted({int(part) - 1 for part in parts if part.isdigit()})
+    if not indices:
+        console.print("[err]usage: /tools rules rm N…[/err]")
+        return
+    allow = list(repl.session.tool_allow or [])
+    stored = [entry for entry in (repl.session.tool_rules or [])
+              if ToolRule.from_dict(entry) is not None]
+    merged: list[tuple[str, int]] = [("call", index) for index in range(len(allow))]
+    merged += [("rule", index) for index in range(len(stored))]
+    drop = {index for index in indices if 0 <= index < len(merged)}
+    if not drop:
+        console.print("[warn]no rule with that number[/warn]")
+        return
+    repl.session.tool_allow = [allow[index] for position, (kind, index)
+                               in enumerate(merged)
+                               if position not in drop and kind == "call"]
+    repl.session.tool_rules = [stored[index] for position, (kind, index)
+                               in enumerate(merged)
+                               if position not in drop and kind == "rule"]
+    repl.session.touch()
+    console.print(f"[ok]removed[/ok] {len(drop)} rule(s)")
+
+
+def _cmd_tools_rules_add(repl: Repl, parts: list[str]) -> None:
+    kind = parts[0].lower() if parts else ""
+    spec = parts[1:]
+    if kind == "shell" and spec:
+        pattern = " ".join(spec)
+        try:
+            tokens = shlex.split(pattern)
+        except ValueError as exc:
+            console.print(f"[err]unparsable pattern: {exc}[/err]")
+            return
+        if not tokens or any(char in pattern for char in "$`><(){}&|;"):
+            console.print("[err]pattern contains shell metacharacters[/err]")
+            return
+        if any(token == ":*" for token in tokens[:-1]):
+            console.print("[err]':*' is only valid at the end[/err]")
+            return
+        rule = ToolRule(kind="shell", pattern=pattern, created=now_iso())
+    elif kind == "path" and len(spec) >= 2:
+        base = Path(spec[0]).expanduser()
+        if not base.is_dir():
+            console.print(f"[err]not a directory: {escape(str(base))}[/err]")
+            return
+        pattern = " ".join(spec[1:])
+        if pattern.startswith("/") or ".." in Path(pattern).parts:
+            console.print("[err]path patterns are relative to BASE and cannot "
+                          "escape it[/err]")
+            return
+        rule = ToolRule(kind="path", pattern=pattern,
+                        base=os.path.realpath(base), created=now_iso())
+    elif kind == "python" and len(spec) == 1:
+        roots = sorted({root.strip() for root in spec[0].split(",") if root.strip()})
+        if not roots or any(not root.isidentifier() for root in roots):
+            console.print("[err]usage: /tools rules add python mod1,mod2[/err]")
+            return
+        rule = ToolRule(kind="python", pattern=",".join(roots), created=now_iso())
+    elif kind == "call" and spec:
+        rule = ToolRule(kind="call", pattern=" ".join(spec), created=now_iso())
+    else:
+        console.print("[err]usage: /tools rules add shell 'PREFIX :*' | "
+                      "path BASE PATTERN | python mod1,mod2 | call FINGERPRINT[/err]")
+        return
+    repl.session.tool_rules = list(repl.session.tool_rules or []) + [rule.to_dict()]
+    repl.session.touch()
+    console.print(f"[ok]added[/ok] [key]{escape(rule_label(rule))}[/key]")
+
+
+def _cmd_tools_rules(repl: Repl, parts: list[str]) -> None:
+    topic = parts[0].lower() if parts else ""
+    if topic in {"rm", "remove", "delete"}:
+        _cmd_tools_rules_rm(repl, parts[1:])
+        return
+    if topic == "add":
+        _cmd_tools_rules_add(repl, parts[1:])
+        return
+    rows = _rule_rows(repl)
+    if not rows:
+        console.print("[dim]no stored approval rules — tick a pattern in the "
+                      "confirmation picker or add one with /tools rules add[/dim]")
+        return
+    table = Table(title="approval rules", box=box.ROUNDED,
+                  header_style="bold magenta", row_styles=["", "dim"])
+    table.add_column("#", justify="right")
+    table.add_column("kind")
+    table.add_column("rule")
+    table.add_column("created", style="dim")
+    for index, (kind, pattern, base, created) in enumerate(rows, 1):
+        if kind == "call":
+            label = "exact: " + shortcut(pattern, 60)
+        else:
+            label = rule_label(ToolRule(kind=kind, pattern=pattern, base=base))
+        table.add_row(str(index), kind, escape(label),
+                      shortcut(created, 16) if created else "")
+    console.print(table)
+    console.print("[dim]/tools rules rm N… removes one · changes apply to this "
+                  "session[/dim]")
+
+
 def cmd_tools(repl: Repl, argument: str) -> None:
     parts = argument.split()
     topic = parts[0].lower() if parts else ""
@@ -918,13 +1165,14 @@ def cmd_tools(repl: Repl, argument: str) -> None:
             elif spec.always_safe:
                 approval = "auto"
             elif name in {"run_shell", "run_python"}:
-                approval = "safe list, else asks"
+                approval = "safe list, rules, else asks"
             else:
-                approval = "asks"
+                approval = "rules, else asks"
             table.add_row(name, state, approval)
         console.print(table)
         policy = "auto (--yes)" if repl.auto_approve else repl.tools_policy
-        console.print(f"[key]policy[/key] {policy} · [key]max rounds[/key] "
+        console.print(f"[key]policy[/key] {policy} · [key]rules[/key] "
+                      f"{len(_rule_rows(repl))} (/tools rules) · [key]max rounds[/key] "
                       f"{repl.tools_max_rounds} · [key]timeout[/key] "
                       f"{repl.tool_ctx.timeout:.0f}s · [key]output cap[/key] "
                       f"{repl.tool_ctx.max_output} chars")
@@ -968,8 +1216,11 @@ def cmd_tools(repl: Repl, argument: str) -> None:
     if topic == "allow":
         console.print("safe shell commands: " + ", ".join(sorted(repl.shell_allow)))
         return
+    if topic == "rules":
+        _cmd_tools_rules(repl, parts[1:])
+        return
     console.print("[err]usage: /tools [on|off|policy auto|allowlist|ask|"
-                  "enable NAME…|disable NAME…|allow][/err]")
+                  "enable NAME…|disable NAME…|allow|rules][/err]")
 
 
 def cmd_tts(repl: Repl, argument: str) -> None:
@@ -1546,6 +1797,7 @@ def cmd_branch(repl: Repl, argument: str) -> None:
     branch.tags = list(repl.session.tags)
     branch.stats = dict(repl.session.stats)
     branch.tool_allow = list(repl.session.tool_allow)
+    branch.tool_rules = [dict(entry) for entry in repl.session.tool_rules]
     branch.tools_disabled = list(repl.session.tools_disabled)
     branch.tts_auto = repl.session.tts_auto
     branch.tts_voice = repl.session.tts_voice
