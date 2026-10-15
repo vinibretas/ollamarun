@@ -83,7 +83,7 @@ except ImportError:  # pragma: no cover - fallback path
     HAS_PYLATEXENC = False
     LatexNodes2Text = None
 
-VERSION = "1.22"
+VERSION = "1.23"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -119,6 +119,7 @@ THEME = Theme({
     "key": "bold magenta",
     "you": "light_pink3",
     "ai": "dark_sea_green2",
+    "answer": "bold dark_sea_green2",
     "math": "bright_cyan",
     "dim": "dim",
 })

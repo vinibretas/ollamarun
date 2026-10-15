@@ -2,9 +2,18 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.22
+Version: 1.23
 
 Summary of changes in this version:
+  - Tool-loop separation. A tool loop ends when the model finally commits to
+    an answer (a round that finishes without requesting more tools); that
+    answer is now separated from the processing above it by a bright
+    centered `response` rule, so narration that precedes further tool calls
+    is no longer mistaken for the answer. A round's fate is only known once
+    it finishes, so nothing changes while it streams -- the rule lands in
+    the frozen frame the moment the answer's round commits. Turns that never
+    call a tool render exactly as before, and cancelled/errored rounds are
+    left unmarked.
   - Smarter web tooling. New `web_search` tool (present when the `ddgs`
     package is installed): it returns titles, URLs and snippets, so the
     model stops guessing URLs, and its results are cached per session.
