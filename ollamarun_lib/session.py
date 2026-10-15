@@ -42,6 +42,7 @@ class Session:
     messages: list[dict[str, Any]] = field(default_factory=list)
     stats: dict[str, Any] = field(default_factory=dict)
     tool_allow: list[str] = field(default_factory=list)
+    tool_rules: list[dict[str, Any]] = field(default_factory=list)
     tools_disabled: list[str] = field(default_factory=list)
     tts_auto: Optional[bool] = None
     tts_voice: Optional[str] = None

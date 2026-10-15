@@ -70,8 +70,8 @@ interactive commands:
   /clear /new           start fresh context or a brand new session
   /undo /retry /edit    fix or regenerate the last exchange
   /summarize /context   manage the context window
-  /tools [on|off]       tool harness, approvals and per-tool enable/disable
-                        (`/tools policy auto|allowlist|ask`, `/tools allow`)
+  /tools [on|off]       tool harness, approval rules and per-tool enable/disable
+                        (`/tools policy auto|allowlist|ask`, `/tools rules`)
   /tts [on|off]         auto-speak answers via tts-remote; voice/lang/voices,
                         and `/tts tools on|off` for the model's tts access
   /thinking [MODE]      thinking display: show|collapse|hide|toggle|full

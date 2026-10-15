@@ -62,15 +62,21 @@ from rich.theme import Theme
 
 try:
     from prompt_toolkit import PromptSession
+    from prompt_toolkit.application import Application
     from prompt_toolkit.completion import Completer, Completion
     from prompt_toolkit.history import FileHistory
     from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout import Layout
+    from prompt_toolkit.layout.containers import Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
     from prompt_toolkit.patch_stdout import patch_stdout
+    from prompt_toolkit.styles import Style as PromptStyle
     HAS_PROMPT_TOOLKIT = True
 except ImportError:  # pragma: no cover - fallback path
     HAS_PROMPT_TOOLKIT = False
-    PromptSession = Completer = Completion = FileHistory = KeyBindings = None
-    patch_stdout = None
+    (PromptSession, Application, Completer, Completion, FileHistory,
+     KeyBindings, Layout, Window, FormattedTextControl, PromptStyle,
+     patch_stdout) = (None,) * 11
 
 try:
     import pyperclip
@@ -86,7 +92,7 @@ except ImportError:  # pragma: no cover - fallback path
     HAS_PYLATEXENC = False
     LatexNodes2Text = None
 
-VERSION = "1.24"
+VERSION = "1.25"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()

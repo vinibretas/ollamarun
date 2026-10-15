@@ -158,9 +158,10 @@ a module's own docstring for what lives there before editing:
 8. **`tools.py`** — the tool harness: `ToolSpec`/`default_registry()` (shell,
    python, files, `web_search` when `ddgs` is installed, `fetch_url`, tts-remote
    speak/list_voices), the allowlist policy
-   (`shell_safety`, `python_safety`, `approval_decision`), argument
-   normalization, output truncation and `execute_tool()`. The web half is
-   self-contained: `_HTMLTextExtractor`/`extract_html_text` turn pages into
+   (`shell_safety`, `python_safety`, `approval_decision`), the approval-rule
+   engine (`ToolRule`, `suggest_rules`, `rule_matches`, `dangerous_command`),
+   argument normalization, output truncation and `execute_tool()`. The web half
+   is self-contained: `_HTMLTextExtractor`/`extract_html_text` turn pages into
    readable text plus links, `extract_pdf_text` uses pypdf or pdftotext,
    `format_fetch_response` maps a response onto model-readable text (never the
    site's error page), `run_web_search` wraps ddgs and `TOOL_ALIASES`/
@@ -185,9 +186,11 @@ a module's own docstring for what lives there before editing:
    the GPU-layer spec logic: `model_block_count()`,
    `parse_gpu_layers_spec()`, `resolve_gpu_layers()`, `gpu_layers_label()`.
 12. **`repl.py`** — `SlashCompleter` (prompt_toolkit completion for
-   `/commands`, session ids, models, `@files`), the `Repl` class (including
-   the multi-round tool loop `_generate` → `_execute_tool_calls` and the
-   y/a/n approval prompt), then the `cmd_*` functions. Each slash command
+   `/commands`, session ids, models, `@files`), `ApprovalPicker` (the
+   checkbox tool-approval prompt that stores generalized `ToolRule`s in the
+   session), the `Repl` class (including the multi-round tool loop
+   `_generate` → `_execute_tool_calls` and the approval flow
+   `_approve_tool_call`), then the `cmd_*` functions. Each slash command
    (`/set`, `/show`, `/load`, `/save`, `/pull`, `/undo`, `/retry`, `/edit`,
    `/branch`, `/context`, `/summarize`, `/image`, `/render`, `/math`,
    `/pager`, `/tps`, `/ps`, `/num-ctx`, `/gpu-layers`, `/copy`, `/export`, `/stats`,
