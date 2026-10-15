@@ -186,8 +186,8 @@ a module's own docstring for what lives there before editing:
    the GPU-layer spec logic: `model_block_count()`,
    `parse_gpu_layers_spec()`, `resolve_gpu_layers()`, `gpu_layers_label()`.
 12. **`repl.py`** — `SlashCompleter` (prompt_toolkit completion for
-   `/commands`, session ids, models, `@files`), `ApprovalPicker` (the
-   checkbox tool-approval prompt that stores generalized `ToolRule`s in the
+   `/commands`, session ids, models, `@files`), `_prompt_approval` (the
+   numbered tool-approval prompt that stores generalized `ToolRule`s in the
    session), the `Repl` class (including the multi-round tool loop
    `_generate` → `_execute_tool_calls` and the approval flow
    `_approve_tool_call`), then the `cmd_*` functions. Each slash command
