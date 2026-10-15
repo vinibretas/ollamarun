@@ -1424,15 +1424,63 @@ def test_tool_colors() -> int:
 
     result = orun.tool_result_panel("run_shell", detail="ls", text="out",
                                     ok=False, duration=0.5)
-    name_spans = [span for span in result.title.spans
-                  if result.title.plain[span.start:span.end] == "run_shell"]
-    if (result.border_style == "red"
+    spans = {result.title.plain[span.start:span.end]: str(span.style)
+             for span in result.title.spans}
+    if (result.border_style == "cyan"
             and result.title.plain == "tool · run_shell · failed · 0.50s"
-            and name_spans and str(name_spans[0].style) == "cyan"):
-        print("PASS  tool_result_panel keeps the ok/failed border and colours the name")
+            and spans.get("run_shell") == "cyan" and spans.get("failed") == "red"):
+        print("PASS  tool_result_panel wears the tool colour; failed is red in the title")
     else:
         print(f"FAIL  tool_result_panel: {result.border_style!r} "
-              f"{result.title.plain!r}")
+              f"{result.title.plain!r} {spans!r}")
+        failures += 1
+
+    success = orun.tool_result_panel("run_shell", text="out", ok=True)
+    success_spans = {success.title.plain[span.start:span.end]: str(span.style)
+                     for span in success.title.spans}
+    if success.border_style == "cyan" and success_spans.get("ok") == "green":
+        print("PASS  tool_result_panel marks ok green in the title")
+    else:
+        print(f"FAIL  tool_result_panel ok: {success.border_style!r} "
+              f"{success_spans!r}")
+        failures += 1
+
+    # the approval prompt and the /tools table name tools in their colours too
+    def ansi(color: str) -> str:
+        return "\x1b[" + ";".join(Color.parse(color).get_ansi_codes(True)) + "m"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain", "--no-save"])
+        client = _FakeClient(models=["m1"], capabilities=["completion", "tools"])
+        session = orun.Session.create("m1", client.base)
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store, session)
+        repl._build_prompt_session = lambda: None
+        recorded = io.StringIO()
+        terminal_console = Console(file=recorded, force_terminal=True,
+                                   color_system="truecolor", width=100,
+                                   theme=orun.THEME)
+        real_console = orun.repl.console
+        real_prompt = orun.repl._prompt_approval
+        orun.repl.console = terminal_console
+        orun.repl._prompt_approval = lambda suggestions: ("deny", None)
+        try:
+            orun.cmd_tools(repl, "")
+            repl._approve_tool_call(repl.tool_registry["write_file"],
+                                    {"path": "notes.txt", "content": "x"}, "fp")
+        finally:
+            orun.repl.console = real_console
+            orun.repl._prompt_approval = real_prompt
+        styled = recorded.getvalue()
+
+    cyan, orange = ansi("cyan"), ansi("orange1")  # run_shell / write_file
+    if (f"{cyan}run_shell" in styled and f"{orange}write_file" in styled
+            and "needs confirmation" in _plain(styled)):
+        print("PASS  the confirmation line and /tools table name tools in their colours")
+    else:
+        print(f"FAIL  approval/table colours: run_shell={f'{cyan}run_shell' in styled} "
+              f"write_file={f'{orange}write_file' in styled}")
         failures += 1
 
     session = orun.Session.create("m1", "http://h", title="tools")

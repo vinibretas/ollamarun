@@ -542,8 +542,9 @@ class Repl:
             return True, f"rule: {label}"
         if not (allow_prompt and console.is_terminal):
             return False, f"not auto-approved ({decision.reason}) and this run is unattended"
-        console.print(f"[warn]{escape(spec.name)} needs confirmation: "
-                      f"{escape(decision.reason)}[/warn]")
+        color = tool_color(spec.name)
+        console.print(f"[{color}]{escape(spec.name)}[/{color}][warn] needs "
+                      f"confirmation: {escape(decision.reason)}[/warn]")
         action, rule = _prompt_approval(
             suggest_rules(spec.name, args, cwd=self.tool_ctx.cwd))
         if action == "auto":
@@ -1098,7 +1099,8 @@ def cmd_tools(repl: Repl, argument: str) -> None:
                 approval = "safe list, rules, else asks"
             else:
                 approval = "rules, else asks"
-            table.add_row(name, state, approval)
+            color = tool_color(name)
+            table.add_row(f"[{color}]{escape(name)}[/{color}]", state, approval)
         console.print(table)
         policy = "auto (--yes)" if repl.auto_approve else repl.tools_policy
         console.print(f"[key]policy[/key] {policy} · [key]rules[/key] "
