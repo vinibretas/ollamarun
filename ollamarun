@@ -2,9 +2,27 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.21
+Version: 1.22
 
 Summary of changes in this version:
+  - Smarter web tooling. New `web_search` tool (present when the `ddgs`
+    package is installed): it returns titles, URLs and snippets, so the
+    model stops guessing URLs, and its results are cached per session.
+    `fetch_url` now returns readable page text instead of raw markup that
+    was truncated to a few KB of <head>/<script>: HTML becomes plain text
+    plus the page's links (the <article>/<main> region wins), JSON is
+    pretty-printed, and PDFs are text-extracted via pypdf or pdftotext.
+  - Failed fetches now teach instead of failing silently: 404/410, 403
+    bot walls (Cloudflare/Akamai), 429, 5xx, timeouts and DNS errors come
+    back as one actionable line ("the page does not exist... call
+    web_search") instead of the site's error page, JavaScript-only shells
+    and empty bodies say so explicitly, a search-engine URL (a Google/
+    Bing/DuckDuckGo /search page) is rerouted to `web_search`, and a URL
+    already fetched in the session is answered from that cache.
+  - The tool dispatcher resolves invented tool names onto the real ones
+    (`search`/`google` -> `web_search`, `browse`/`curl`/`get_url` ->
+    `fetch_url`) and tells the model the real name; both web tools are
+    read-only, so like the other read-only tools they never prompt.
   - Ctrl+T no longer opens the thinking in the system pager (`less`): it now
     expands the boxed thinking panel directly in the live view -- the same
     panel you used to land on only after quitting the pager -- and pressing
