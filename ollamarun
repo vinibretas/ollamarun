@@ -2,9 +2,16 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.27
+Version: 1.28
 
 Summary of changes in this version:
+  - Every tool panel now wears the tool's colour. The result box joins the
+    call panel -- it used to keep a green/red ok/failed border -- so both
+    boxes are bordered in the tool's colour and the ok/failed state moved
+    into the title ("tool · run_shell · ok · 0.12s", green ok / red failed).
+    The approval prompt prints "NAME needs confirmation" with the tool name
+    in its colour, and the `/tools` status table lists each tool in its
+    colour too.
   - Approval rules. The tool-confirmation prompt lists numbered choices and
     you type one: `1/y` runs once, `2/a` always allows that exact call, the
     middle numbers always allow a suggested generalized rule, `A`

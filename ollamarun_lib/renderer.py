@@ -146,8 +146,9 @@ def tool_result_panel(name: str, detail: str = "", text: str = "", *,
                       head: int = 12, max_chars: int = 1400) -> Panel:
     """Compact view of what a tool returned; the model gets the full text.
 
-    The border keeps the green/red ok/failed signal while the title carries
-    the tool's colour, tying the result to its call panel.
+    The whole box wears the tool's colour, exactly like its call panel; the
+    ok/failed state lives in the title instead of the border (green ok, red
+    failed), so the tool identity stays unbroken across a run.
     """
     lines = (text or "").splitlines()
     shown = lines[:head]
@@ -160,12 +161,12 @@ def tool_result_panel(name: str, detail: str = "", text: str = "", *,
     if detail:
         rendered.append("$ " + detail + "\n", style="dim")
     rendered.append(body)
-    title = Text.assemble("tool · ", (str(name), tool_color(name)),
-                          " · " + ("ok" if ok else "failed"))
+    color = tool_color(name)
+    title = Text.assemble("tool · ", (str(name), color), " · ",
+                          ("ok" if ok else "failed", "green" if ok else "red"))
     if duration is not None:
         title.append(f" · {duration:.2f}s")
-    return Panel(rendered, title=title, border_style="green" if ok else "red",
-                 title_align="left")
+    return Panel(rendered, title=title, border_style=color, title_align="left")
 
 
 def user_message_box(text: str, console: Console) -> Align:
