@@ -197,8 +197,8 @@ a module's own docstring for what lives there before editing:
    `--num-ctx max-gpu` flag both call. The probes themselves live in
    `helpers.py` (`local_gpu_probe`, `ssh_gpu_probe`, `host_is_self`).
 13. **`repl.py`** — `SlashCompleter` (prompt_toolkit completion for
-   `/commands`, session ids, models, `@files`), `ApprovalPicker` (the
-   checkbox tool-approval prompt that stores generalized `ToolRule`s in the
+   `/commands`, session ids, models, `@files`), `_prompt_approval` (the
+   numbered tool-approval prompt that stores generalized `ToolRule`s in the
    session), the `Repl` class (including the multi-round tool loop
    `_generate` → `_execute_tool_calls` and the approval flow
    `_approve_tool_call`), then the `cmd_*` functions. Each slash command
