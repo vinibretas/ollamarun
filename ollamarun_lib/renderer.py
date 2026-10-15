@@ -1,8 +1,8 @@
 """Streaming renderer: drives a `rich.Live` view while chat events stream in.
 
 `Renderer` is the piece that talks to the terminal frame-by-frame -- markdown
-re-render while tokens stream, the collapsible thinking panel (Ctrl+T pager
-handoff) and `TpsEstimator` for the live `~tok/s` footer. `user_message_box`/
+re-render while tokens stream, the collapsible thinking panel (Ctrl+T expand/
+collapse) and `TpsEstimator` for the live `~tok/s` footer. `user_message_box`/
 `model_message_rule` are the chat-bubble helpers shared with transcript
 replay (`render_transcript`, used by `/show`/`--show`).
 """
@@ -196,7 +196,6 @@ class Renderer:
             self.interactive = (self.live_render and sys.stdin.isatty())
         except (ValueError, OSError):
             self.interactive = False
-        self._pager_request = False
 
     def thinking_visible(self) -> bool:
         return self.thinking_mode != "hidden"
@@ -207,9 +206,8 @@ class Renderer:
     def _poll_keys(self, fd: int) -> bool:
         """Reads pending stdin keys; True when Ctrl+T changed the view.
 
-        Ctrl+T on a collapsed view expands it and sets `_pager_request` so the
-        stream loop opens the full thinking in the pager; on an expanded view
-        it collapses back.
+        Ctrl+T expands the thinking panel inline (the boxed view the pager
+        used to show) or collapses it again -- no external pager.
         """
         changed = False
         try:
@@ -222,7 +220,6 @@ class Renderer:
                         self.thinking_mode = "collapsed"
                     else:
                         self.thinking_mode = "expanded"
-                        self._pager_request = True
                     changed = True
         except (OSError, ValueError):
             pass
@@ -255,15 +252,6 @@ class Renderer:
         width = max(20, (self.console.width or 80) - 4)
         return render_content(content, math=self.math, width=width)
 
-    def _show_thinking_pager(self, text: str) -> None:
-        """Full thinking in the system pager (scroll/search); stream pauses."""
-        try:
-            with self.console.pager(styles=True):
-                self.console.print(Rule("[dim]thinking · leave the pager to resume[/dim]"))
-                self.console.print(render_thinking(text))
-        except Exception as exc:  # pager failures must not kill the stream
-            self.console.print(f"[warn]pager failed: {escape(str(exc))}[/warn]")
-
     def stream(self, events: Iterator[dict[str, Any]]) -> GenerationResult:
         result = GenerationResult()
         use_live = self.live_render
@@ -291,18 +279,10 @@ class Renderer:
                 last_refresh = now
 
         def handle_keys() -> None:
-            nonlocal live
             if live is None or fd is None:
                 return
-            if not self._poll_keys(fd):
-                return
-            if self._pager_request:
-                self._pager_request = False
-                if result.thinking:
-                    live.stop()
-                    self._show_thinking_pager(result.thinking)
-                    live.start()
-            refresh(0.0, force=True)
+            if self._poll_keys(fd):
+                refresh(0.0, force=True)
 
         try:
             if use_live:
@@ -406,14 +386,14 @@ class Renderer:
             if has_thinking and self.thinking_visible():
                 if self.thinking_mode == "expanded":
                     parts.append(thinking_panel(result.thinking,
-                                                "thinking · Ctrl+T to re-read",
+                                                "thinking · Ctrl+T to collapse",
                                                 preview))
                 else:
                     parts.append(Text(f"thinking · {human_chars(len(result.thinking))} · "
                                       "Ctrl+T to expand", style="dim italic"))
             parts.append(self._markdown(result.content))
         elif has_thinking and self.thinking_mode == "expanded":
-            parts.append(thinking_panel(result.thinking, "thinking · Ctrl+T to re-read",
+            parts.append(thinking_panel(result.thinking, "thinking · Ctrl+T to collapse",
                                         preview))
             parts.append(Spinner("dots", text=Text(" thinking…", style="dim")))
         elif has_thinking and self.thinking_mode == "collapsed":

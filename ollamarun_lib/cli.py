@@ -82,8 +82,7 @@ interactive commands:
   /export [FILE]        export mid-session as md/json/html
 
 while a response streams:
-  Ctrl+T                expand thinking & open the full text in the pager
-                        (press again to collapse; stream resumes on quit)
+  Ctrl+T                expand the thinking panel (press again to collapse)
 
 model housekeeping:
   /model and /load unload the previous model before switching; leaving the

@@ -2,9 +2,14 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.20
+Version: 1.21
 
 Summary of changes in this version:
+  - Ctrl+T no longer opens the thinking in the system pager (`less`): it now
+    expands the boxed thinking panel directly in the live view -- the same
+    panel you used to land on only after quitting the pager -- and pressing
+    it again collapses it. The stream never pauses. `/thinking full` prints
+    the stored thinking panel straight to the terminal for the same reason.
   - Table rendering. Inline code spans (and code fences) no longer split the
     response into separate markdown blocks: any table, list or paragraph
     that contained `code` used to be chopped apart at every span, so a
