@@ -39,6 +39,7 @@ from .constants import (
     console,
     patch_stdout,
     pyperclip,
+    tool_color,
 )
 from .files import expand_file_mentions
 from .helpers import (
@@ -552,7 +553,9 @@ class Repl:
                                                     ok=False))
                 continue
             if not quiet:
-                console.print(f"[dim]running {escape(name)}…[/dim]")
+                color = tool_color(name)
+                console.print(f"[dim]running[/dim] [{color}]{escape(name)}[/{color}]"
+                              f"[dim]…[/dim]")
             try:
                 outcome = execute_tool(spec, args, self.tool_ctx)
             except KeyboardInterrupt:

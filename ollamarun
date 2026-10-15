@@ -2,9 +2,19 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.23
+Version: 1.24
 
 Summary of changes in this version:
+  - Tool calls are colour-coded. Every tool has its own colour for the call
+    panel (the arguments box after the model asks for a tool), the
+    "running NAME…" line and the "tool · NAME" title of its result panel --
+    the result border still says ok (green) / failed (red) -- so a mixed
+    run of run_shell/read_file/fetch_url/... calls is readable at a glance,
+    including in `/show`, `--show` and HTML exports. A tool without a fixed
+    colour (an invented name, a future tool) picks one at random from a
+    palette, remembered for the rest of the run so all its panels match,
+    and config `tool_colors` (tool name -> rich colour, e.g.
+    {"run_shell": "red"}) overrides any of them.
   - Tool-loop separation. A tool loop ends when the model finally commits to
     an answer (a round that finishes without requesting more tools); that
     answer is now separated from the processing above it by a bright
