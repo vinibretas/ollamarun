@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from rich import box
 from rich.markup import escape
@@ -38,6 +38,9 @@ from .helpers import (
 )
 from .session import Session, SessionStore
 
+if TYPE_CHECKING:
+    from .ui import Ui
+
 
 def open_in_editor(initial: str = "") -> Optional[str]:
     """Edit text in $OLLAMA_EDITOR / $EDITOR; None when the editor fails."""
@@ -56,7 +59,8 @@ def open_in_editor(initial: str = "") -> Optional[str]:
         path.unlink(missing_ok=True)
 
 
-def pick_model(client: OllamaClient, current: Optional[str] = None) -> Optional[str]:
+def pick_model(client: OllamaClient, current: Optional[str] = None, *,
+               ui: Optional["Ui"] = None) -> Optional[str]:
     try:
         models = client.tags()
     except OllamaError as exc:
@@ -82,7 +86,10 @@ def pick_model(client: OllamaClient, current: Optional[str] = None) -> Optional[
                       escape(details.get("family", "")))
     console.print(table)
     while True:
-        answer = Prompt.ask("model number, name or 'q' to quit", default="q").strip()
+        if ui is not None:
+            answer = (ui.ask("model number, name or 'q' to quit", default="q") or "").strip()
+        else:
+            answer = Prompt.ask("model number, name or 'q' to quit", default="q").strip()
         if answer in {"q", "", "quit"}:
             return None
         if answer.isdigit() and 1 <= int(answer) <= len(models):
@@ -99,7 +106,8 @@ def pick_model(client: OllamaClient, current: Optional[str] = None) -> Optional[
             console.print("[warn]no match[/warn]")
 
 
-def pick_session(store: SessionStore, filter_text: str = "") -> Optional[Session]:
+def pick_session(store: SessionStore, filter_text: str = "", *,
+                 ui: Optional["Ui"] = None) -> Optional[Session]:
     entries = store.entries()
     if filter_text:
         needle = filter_text.lower()
@@ -121,7 +129,12 @@ def pick_session(store: SessionStore, filter_text: str = "") -> Optional[Session
                       str(entry.get("messages", 0)))
     console.print(table)
     while True:
-        answer = Prompt.ask("session number, ID, filter or 'q' to quit", default="q").strip()
+        if ui is not None:
+            answer = (ui.ask("session number, ID, filter or 'q' to quit",
+                             default="q") or "").strip()
+        else:
+            answer = Prompt.ask("session number, ID, filter or 'q' to quit",
+                                default="q").strip()
         if answer in {"q", "", "quit"}:
             return None
         if answer.isdigit() and 1 <= int(answer) <= len(shown):
@@ -134,7 +147,7 @@ def pick_session(store: SessionStore, filter_text: str = "") -> Optional[Session
         if session is not None:
             return session
         console.print("[dim]filtering…[/dim]")
-        return pick_session(store, filter_text=answer)
+        return pick_session(store, filter_text=answer, ui=ui)
 
 
 _CODE_BLOCK_RE = re.compile(r"```[^\n]*\n(.*?)```", re.S)
@@ -195,7 +208,8 @@ def pull_with_progress(client: OllamaClient, model: str, *, quiet: bool = False)
 def ensure_model(client: OllamaClient, model: str, config: dict[str, Any], *,
                  ssh_target: Optional[str] = None, host_label: Optional[str] = None,
                  assume_yes: bool = False, pick_on_decline: bool = False,
-                 quiet: bool = False, interactive: Optional[bool] = None) -> Optional[str]:
+                 quiet: bool = False, interactive: Optional[bool] = None,
+                 ui: Optional["Ui"] = None) -> Optional[str]:
     """Return the model to run, pulling it first when it is not installed.
 
     `None` means the model is unavailable and the caller should stop. With
@@ -226,10 +240,14 @@ def ensure_model(client: OllamaClient, model: str, config: dict[str, Any], *,
         console.print(f"[dim]{escape(summary)}[/dim]")
     pull = assume_yes
     if not pull and interactive:
-        pull = Confirm.ask(f"pull [key]{escape(model)}[/key]?", default=False)
+        if ui is not None:
+            pull = ui.confirm(f"pull [key]{escape(model)}[/key]?", default=False)
+        else:
+            pull = Confirm.ask(f"pull [key]{escape(model)}[/key]?", default=False)
     if not pull:
         if interactive and pick_on_decline:
-            chosen = pick_model(client, model)
+            chosen = (pick_model(client, model, ui=ui) if ui is not None
+                      else pick_model(client, model))
             if chosen:
                 return chosen
         console.print("[dim]nothing to run — pull it with --pull[/dim]")

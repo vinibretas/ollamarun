@@ -29,7 +29,7 @@ from rich.spinner import Spinner
 from rich.text import Text
 
 from .constants import CTRL_T, THINKING_MODES, tool_color
-from .helpers import human_chars, human_duration, short_stamp
+from .helpers import CancelToken, human_chars, human_duration, short_stamp
 from .mathrender import render_content, render_thinking
 
 if TYPE_CHECKING:
@@ -197,6 +197,25 @@ def final_response_rule() -> Rule:
     return Rule("[answer]response[/answer]", style="answer", align="center")
 
 
+class StreamSink:
+    """Where a streaming response is displayed.
+
+    The default is `rich.Live` (the inline REPL); the Textual front end passes
+    its own sink and renders the same frames into a widget instead. `update`
+    is called at most ~10 times a second (once a second for very long
+    responses) with exactly the renderable the live view would have shown.
+    """
+
+    def start(self, renderer: "Renderer") -> None:
+        """A new streamed response starts."""
+
+    def update(self, renderable: Any) -> None:
+        """A fresh frame (may be skipped by the renderer when throttled)."""
+
+    def finish(self, result: "GenerationResult") -> None:
+        """The response ended; the last frame is the final one."""
+
+
 class Renderer:
     """Streams NDJSON chat events to the terminal and returns the transcript."""
 
@@ -221,11 +240,27 @@ class Renderer:
         self.pager = pager
         self.use_pager = bool(pager) and console.is_terminal and mode != "raw"
         self.live_render = mode == "markdown" and console.is_terminal and not self.use_pager
+        self.sink_render = False
         self.interactive = False
         try:
             self.interactive = (self.live_render and sys.stdin.isatty())
         except (ValueError, OSError):
             self.interactive = False
+
+    def with_sink(self, sink: Optional[StreamSink]) -> "Renderer":
+        """Render through `sink` (a widget) instead of a `rich.Live` view."""
+        if sink is not None:
+            self.live_render = False
+            self.sink_render = True
+            self.interactive = False
+        return self
+
+    @property
+    def render_frames(self) -> bool:
+        """True when something other than the console shows the live frames
+        (a `rich.Live` region or a front-end widget): they get the model rule
+        and the response divider inside the frame instead of a printed line."""
+        return self.live_render or self.sink_render
 
     def thinking_visible(self) -> bool:
         return self.thinking_mode != "hidden"
@@ -283,7 +318,7 @@ class Renderer:
             return
         if self.mode == "markdown":
             body = self._markdown(content)
-            if self.live_render:
+            if self.render_frames:
                 self.console.print(model_message_rule(self.model))
             self.console.print(body, soft_wrap=self.nowordwrap)
         else:
@@ -293,9 +328,20 @@ class Renderer:
         width = max(20, (self.console.width or 80) - 4)
         return render_content(content, math=self.math, width=width)
 
-    def stream(self, events: Iterator[dict[str, Any]]) -> GenerationResult:
+    def live_frame(self, result: GenerationResult) -> Any:
+        """The renderable the live view shows for `result`: public alias used
+        by the TUI, which updates a widget instead of a `rich.Live`."""
+        return self._live_view(result)
+
+    def stream(self, events: Iterator[dict[str, Any]],
+               cancel: Optional[CancelToken] = None,
+               sink: Optional[StreamSink] = None) -> GenerationResult:
         result = GenerationResult()
         use_live = self.live_render
+        if sink is not None and self.mode != "raw":
+            sink.start(self)
+        else:
+            sink = None
         live: Optional[Live] = None
         last_refresh = 0.0
         printed_thinking_header = False
@@ -312,11 +358,15 @@ class Renderer:
 
         def refresh(interval: float, force: bool = False) -> None:
             nonlocal last_refresh
-            if live is None:
+            if live is None and sink is None:
                 return
             now = time.monotonic()
             if force or now - last_refresh >= interval:
-                live.update(self._live_view(result), refresh=True)
+                frame = self._live_view(result)
+                if sink is not None:
+                    sink.update(frame)
+                else:
+                    live.update(frame, refresh=True)
                 last_refresh = now
 
         def handle_keys() -> None:
@@ -332,6 +382,9 @@ class Renderer:
                 live.start()
             try:
                 for event in events:
+                    if cancel is not None and cancel.cancelled:
+                        result.cancelled = True
+                        break
                     if event.get("error"):
                         result.error = str(event["error"])
                         break
@@ -341,7 +394,7 @@ class Renderer:
                     if thinking:
                         result.thinking += thinking
                         self.estimator.add()
-                        if use_live:
+                        if use_live or sink is not None:
                             refresh(0.10)
                         elif self.thinking_visible() and self.mode != "raw" \
                                 and not self.use_pager:
@@ -352,7 +405,7 @@ class Renderer:
                     if content:
                         result.content += content
                         self.estimator.add()
-                        if use_live:
+                        if use_live or sink is not None:
                             heavy = len(result.content) > self.max_render_chars
                             refresh(1.0 if heavy else 0.10)
                         elif self.mode != "raw" and not self.use_pager:
@@ -384,6 +437,18 @@ class Renderer:
                     termios.tcsetattr(fd, termios.TCSADRAIN, saved_term)
                 except (OSError, ValueError, termios.error):
                     pass
+        if cancel is not None and cancel.cancelled:
+            # The reader may have ended because the response was closed under
+            # it (see OllamaClient.abort_stream) rather than by a chunk.
+            result.cancelled = True
+        if sink is not None:
+            # Freeze the final frame (as the live view does) and hand the
+            # response back to the front end -- nothing is re-printed. The
+            # committed-final divider is decided now, so the frozen frame
+            # carries it exactly like the live one.
+            self._committed_final = self.final_rule_wanted(result)
+            refresh(0.0, force=True)
+            sink.finish(result)
         if self.mode == "raw":
             sys.stdout.write(result.content)
             if result.content and not result.content.endswith("\n"):
@@ -398,7 +463,7 @@ class Renderer:
                 self.console.print(thinking_panel(result.thinking))
         elif self.use_pager:
             self._pager_render(result)
-        else:
+        elif sink is None:
             if result.content and not result.cancelled:
                 self.console.print()
         if result.cancelled and self.mode != "raw":
@@ -410,7 +475,7 @@ class Renderer:
             self.console.print(f"[dim]⏱  {format_stats(result.stats)}[/dim]")
         if result.error:
             self.console.print(f"[err]ollama error:[/err] {escape(result.error)}",
-                               stderr=self.mode == "raw")
+                               stderr=self.mode == "raw" and sink is None)
         return result
 
     def _pager_render(self, result: GenerationResult) -> None:
@@ -455,7 +520,7 @@ class Renderer:
         if tps is not None:
             parts.append(tps)
         group = Group(*parts)
-        if self.live_render:
+        if self.render_frames:
             head: list[Any] = []
             if self._committed_final:
                 head.append(final_response_rule())

@@ -15,13 +15,13 @@ import shlex
 import subprocess
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from rich import box
 from rich.markup import escape
 from rich.panel import Panel
-from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from .client import OllamaClient, OllamaError, build_chat_payload
@@ -43,6 +43,7 @@ from .constants import (
 )
 from .files import expand_file_mentions
 from .helpers import (
+    CancelToken,
     coerce_value,
     human_bytes,
     human_chars,
@@ -80,7 +81,7 @@ from .interactive import (
     pull_with_progress,
     resolve_gpu_layers,
 )
-from .renderer import (GenerationResult, Renderer, thinking_panel,
+from .renderer import (GenerationResult, Renderer, StreamSink, thinking_panel,
                        tool_result_panel, user_message_box)
 from .session import Session, SessionStore, export_html, export_json, export_markdown
 from .tools import (
@@ -100,6 +101,7 @@ from .tools import (
     suggest_rules,
     tool_schemas as build_tool_schemas,
 )
+from .ui import (ConsoleUi, StatusSnapshot, Ui, _prompt_approval)
 
 
 COMMAND_INFO: dict[str, tuple[str, str]] = {
@@ -139,8 +141,56 @@ COMMAND_INFO: dict[str, tuple[str, str]] = {
     "/copy": ("[N]", "copy the last response (or its Nth code block)"),
     "/export": ("[--format md|json|html] [FILE]", "export this session"),
     "/stats": ("", "session and last-generation stats"),
+    "/queue": ("[list|clear|rm N]", "messages and commands typed while busy"),
     "/bye, /exit": ("", "leave"),
 }
+
+
+def completion_fragment(text: str) -> str:
+    """The part of `text` a completion replaces: the last token, or an `@file`
+    mention (including its `@`). Shared with the TUI input box."""
+    at_match = re.search(r"@([^\s@]*)$", text)
+    if at_match:
+        return at_match.group(0)
+    return text.split(" ")[-1]
+
+
+def completion_candidates(repl: "Repl", text: str) -> list[str]:
+    """Everything that completes `text`: `/commands`, their arguments, `@files`.
+
+    Shared by the prompt_toolkit completer and the TUI input box so Tab
+    suggests the same things in both front ends.
+    """
+    at_match = re.search(r"@([^\s@]*)$", text)
+    if at_match:
+        fragment = at_match.group(1)
+        parent = Path(fragment).parent if fragment else Path(".")
+        try:
+            entries = sorted(parent.iterdir())
+        except OSError:
+            return []
+        return ["@" + entry.name + ("/" if entry.is_dir() else "")
+                for entry in entries if entry.name.startswith(Path(fragment).name)]
+    if not text.startswith("/"):
+        return []
+    if " " not in text:
+        return [name for command in COMMAND_INFO for name in command.split(", ")
+                if name.startswith(text)]
+    command, _, argument = text.partition(" ")
+    if " " in argument:
+        return []
+    candidates: list[str] = []
+    if command in {"/model", "/load", "/save", "/show"}:
+        candidates += [name for name in repl.model_names if name.startswith(argument)]
+    if command in {"/load", "/sessions", "/branch"}:
+        candidates += [entry["id"] for entry in repl.store.entries()[:25]
+                       if entry["id"].startswith(argument)]
+    if command == "/queue":
+        candidates += [word for word in ("list", "clear", "rm") if word.startswith(argument)]
+    if command == "/thinking":
+        candidates += [word for word in ("show", "collapse", "hide", "toggle", "full")
+                       if word.startswith(argument)]
+    return candidates
 
 
 class SlashCompleter(Completer):  # type: ignore[misc]
@@ -149,71 +199,78 @@ class SlashCompleter(Completer):  # type: ignore[misc]
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
-        at_match = re.search(r"@([^\s@]*)$", text)
-        if at_match:
-            fragment = at_match.group(1)
-            parent = Path(fragment).parent if fragment else Path(".")
-            try:
-                entries = sorted(parent.iterdir())
-            except OSError:
-                return
-            for entry in entries:
-                name = entry.name + ("/" if entry.is_dir() else "")
-                if name.startswith(Path(fragment).name):
-                    yield Completion("@" + name, start_position=-len(at_match.group(1)) - 1)
-            return
-        if not text.startswith("/"):
-            return
-        if " " not in text:
-            for command in COMMAND_INFO:
-                for name in command.split(", "):
-                    if name.startswith(text):
-                        yield Completion(name, start_position=-len(text))
-            return
-        command, _, argument = text.partition(" ")
-        if " " in argument:
-            return
-        if command in {"/model", "/load", "/save", "/show"}:
-            for name in self.repl.model_names:
-                if name.startswith(argument):
-                    yield Completion(name, start_position=-len(argument))
-        if command in {"/load", "/sessions", "/branch"}:
-            for entry in self.repl.store.entries()[:25]:
-                if entry["id"].startswith(argument):
-                    yield Completion(entry["id"], start_position=-len(argument))
+        fragment = completion_fragment(text)
+        for candidate in completion_candidates(self.repl, text):
+            yield Completion(candidate, start_position=-len(fragment))
 
 
-def _prompt_approval(suggestions: list[ToolRule]) -> tuple[str, Optional[ToolRule]]:
-    """Numbered, typed approval prompt for one tool call.
+@dataclass
+class QueuedItem:
+    """One thing typed while a turn was running: prompt text or a `/command`."""
 
-    Lists every choice on its own line -- `1/y` run once, `2/a` always allow
-    the exact call, one line per suggested generalized rule, `A` auto-allow
-    every later call, `n` deny -- and reads a single typed number or letter.
-    Returns (action, rule) with action "run" | "remember" | "rule" | "auto"
-    | "deny"; "rule" carries the ToolRule to store.
+    kind: str  # "message" | "command"
+    text: str
+
+
+class MessageQueue:
+    """What the user typed while a turn was running, in typing order.
+
+    Messages are handed to the model at the next sub-task boundary -- the loop
+    re-sends the conversation before every `/api/chat` round, so a message
+    queued during a tool call is in context for the round that reacts to the
+    tool result, and one queued while an answer streams is delivered in a
+    follow-up round right after it. Commands only run once the turn is over
+    (`/clear`, `/undo`, `/load` … would otherwise rewrite the conversation the
+    running turn is built on). Delivery stops at the first command so the
+    order the user typed things in is never rearranged.
     """
-    entries: list[tuple[str, Optional[ToolRule], str]] = [
-        ("run", None, "run once"),
-        ("remember", None, "always allow exactly this call"),
-    ]
-    for suggestion in suggestions:
-        entries.append(("rule", suggestion,
-                        f"always allow {rule_label(suggestion)} (this session)"))
-    entries.append(("auto", None, "auto-allow every later call  [CAREFUL]"))
-    entries.append(("deny", None, "deny"))
-    letters = {0: "y", 1: "a", len(entries) - 2: "A", len(entries) - 1: "n"}
-    for index, (_action, _rule, label) in enumerate(entries):
-        tag = f"{index + 1}/{letters[index]}" if index in letters else str(index + 1)
-        console.print(f"  [key]{tag:<4}[/key] {escape(label)}")
-    choices = [str(index + 1) for index in range(len(entries))]
-    choices += list(letters.values())
-    answer = Prompt.ask("[dim]choose[/dim]", choices=choices, default="1",
-                        show_choices=False).strip()
-    for index, letter in letters.items():
-        if answer == letter:
-            return entries[index][0], entries[index][1]
-    action, rule, _label = entries[int(answer) - 1]
-    return action, rule
+
+    def __init__(self) -> None:
+        self.items: list[QueuedItem] = []
+
+    def add_message(self, text: str) -> "QueuedItem":
+        item = QueuedItem("message", text)
+        self.items.append(item)
+        return item
+
+    def add_command(self, line: str) -> "QueuedItem":
+        item = QueuedItem("command", line)
+        self.items.append(item)
+        return item
+
+    def has_messages(self) -> bool:
+        """True when the head of the queue is a message (so a boundary may take it)."""
+        return bool(self.items) and self.items[0].kind == "message"
+
+    def take_messages(self) -> list[str]:
+        taken: list[str] = []
+        while self.items and self.items[0].kind == "message":
+            taken.append(self.items.pop(0).text)
+        return taken
+
+    def pop_next(self) -> Optional["QueuedItem"]:
+        return self.items.pop(0) if self.items else None
+
+    def remove(self, index: int) -> Optional["QueuedItem"]:
+        """Drop item `index` (1-based, as `/queue rm N` counts them)."""
+        if 1 <= index <= len(self.items):
+            return self.items.pop(index - 1)
+        return None
+
+    def clear(self) -> int:
+        count = len(self.items)
+        self.items = []
+        return count
+
+    def describe(self) -> list[str]:
+        return [f"{index}. {'you' if item.kind == 'message' else 'cmd'} ▸ {item.text}"
+                for index, item in enumerate(self.items, 1)]
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def __bool__(self) -> bool:
+        return bool(self.items)
 
 
 class Repl:
@@ -304,6 +361,23 @@ class Repl:
         self._ps_shown_for: set[str] = set()
         self._preload_thread: Optional[threading.Thread] = None
         self._block_counts: dict[str, Optional[int]] = {}
+        # Front end (console prompts by default; the Textual app swaps this),
+        # the queue of things typed while a turn runs, and the status-bar state.
+        self.ui: Ui = ConsoleUi()
+        self.queue = MessageQueue()
+        self.cancel_token = CancelToken()
+        self.current_renderer: Optional[Renderer] = None
+        self.state = "ready"
+        self.state_detail = ""
+        self._state_since = time.monotonic()
+        self._turn_started: Optional[float] = None
+        self._last_tps: Optional[float] = None
+        self._turn_summary = ""
+        self._context_totals: dict[tuple[str, Any], Optional[int]] = {}
+        # The Textual front end sets `tui_mode` and `stream_sink`; the inline
+        # REPL leaves both alone (rich.Live keeps rendering the stream).
+        self.tui_mode = False
+        self.stream_sink: Optional[StreamSink] = None
 
     # ── prompt plumbing ─────────────────────────────────────────────────────
 
@@ -378,13 +452,29 @@ class Repl:
             mode = "markdown" if console.is_terminal else "plain"
         if not console.is_terminal and mode == "markdown":
             mode = "plain"
-        return Renderer(console, mode=mode, math=self.math,
-                        nowordwrap=self.args.nowordwrap,
-                        thinking_mode=self.thinking_mode,
-                        tps_footer=self.tps_footer,
-                        show_stats=self.show_stats, verbose=self.verbose,
-                        max_render_chars=self.max_render_chars, pager=self.pager,
-                        model=self.session.model, after_tools=after_tools)
+        renderer = Renderer(console, mode=mode, math=self.math,
+                            nowordwrap=self.args.nowordwrap,
+                            thinking_mode=self.thinking_mode,
+                            tps_footer=self.tps_footer,
+                            show_stats=self.show_stats, verbose=self.verbose,
+                            max_render_chars=self.max_render_chars,
+                            pager=self.pager and not self.tui_mode,
+                            model=self.session.model, after_tools=after_tools)
+        return renderer.with_sink(self.stream_sink)
+
+    def sync_live_renderer(self) -> None:
+        """Push display knobs changed mid-turn (`/thinking`, `/tps`) to the
+        renderer that is streaming right now."""
+        renderer = self.current_renderer
+        if renderer is None:
+            return
+        renderer.thinking_mode = self.thinking_mode
+        renderer.tps_footer = self.tps_footer
+
+    def toggle_thinking(self) -> str:
+        self.thinking_mode = "collapsed" if self.thinking_mode == "expanded" else "expanded"
+        self.sync_live_renderer()
+        return self.thinking_mode
 
     # ── model housekeeping ──────────────────────────────────────────────────
 
@@ -545,8 +635,11 @@ class Repl:
         color = tool_color(spec.name)
         console.print(f"[{color}]{escape(spec.name)}[/{color}][warn] needs "
                       f"confirmation: {escape(decision.reason)}[/warn]")
-        action, rule = _prompt_approval(
-            suggest_rules(spec.name, args, cwd=self.tool_ctx.cwd))
+        self.set_state("approval", spec.name)
+        action, rule = self.ui.approval(
+            suggest_rules(spec.name, args, cwd=self.tool_ctx.cwd),
+            name=spec.name, detail=call_detail(spec.name, args),
+            reason=decision.reason)
         if action == "auto":
             self.auto_approve = True
             self.session.touch()
@@ -571,10 +664,15 @@ class Repl:
         disabled = set(self.session.tools_disabled)
         available = sorted(set(self.tool_registry) - disabled)
         interrupted = False
+        cancel = self.cancel_token
         for call in calls:
             function = (call.get("function") or {}) if isinstance(call, dict) else {}
             name = str(function.get("name") or "?")
-            if interrupted:
+            if interrupted or cancel.cancelled:
+                # A tool that is already running is never killed: it keeps
+                # running in the background and its result is still recorded,
+                # the model just is not asked to react to it after a stop.
+                interrupted = True
                 self.session.add_message("tool", "interrupted by user", tool_name=name)
                 continue
             args = normalize_arguments(function.get("arguments"))
@@ -617,10 +715,13 @@ class Repl:
                     console.print(tool_result_panel(name, detail=detail, text=text,
                                                     ok=False))
                 continue
+            color = tool_color(name)
             if not quiet:
-                color = tool_color(name)
                 console.print(f"[dim]running[/dim] [{color}]{escape(name)}[/{color}]"
                               f"[dim]…[/dim]")
+            self.set_state("tool", detail or name)
+            self.ui.notify("tool_start", name=name, detail=detail)
+            started = time.monotonic()
             try:
                 outcome = execute_tool(spec, args, self.tool_ctx)
             except KeyboardInterrupt:
@@ -631,6 +732,9 @@ class Repl:
                                                     ok=False))
                 interrupted = True
                 continue
+            self.ui.notify("tool_done", name=name, ok=outcome.ok,
+                           duration=outcome.duration
+                           if outcome.duration else time.monotonic() - started)
             self.session.add_message("tool", alias_note + outcome.text,
                                      tool_name=name)
             if not quiet:
@@ -671,6 +775,88 @@ class Repl:
 
     # ── generation ──────────────────────────────────────────────────────────
 
+    # ── status ──────────────────────────────────────────────────────────────
+
+    def set_state(self, state: str, detail: str = "") -> None:
+        """Record what the front end should show (also used by the TUI)."""
+        self.state = state
+        self.state_detail = detail
+        self._state_since = time.monotonic()
+
+    def turn_elapsed(self) -> Optional[float]:
+        if self._turn_started is None:
+            return None
+        return time.monotonic() - self._turn_started
+
+    def current_tps(self) -> Optional[float]:
+        """Tokens/s while a response streams, or the speed of the last one."""
+        renderer = self.current_renderer
+        if renderer is not None:
+            rate = renderer.estimator.rate()
+            if rate:
+                return rate
+        return self._last_tps
+
+    def context_length(self, *, refresh: bool = False) -> Optional[int]:
+        """The model's context window (`num_ctx` when set), cached per model."""
+        key = (self.session.model, self.session.parameters.get("num_ctx"))
+        if refresh or key not in self._context_totals:
+            try:
+                show = self.client.show(self.session.model)
+            except OllamaError:
+                show = {}
+            self._context_totals[key] = model_context_length(show, self.session.parameters)
+        return self._context_totals[key]
+
+    def status_snapshot(self) -> StatusSnapshot:
+        tools = "off" if not self.tools_enabled else (
+            "auto" if self.auto_approve else self.tools_policy)
+        return StatusSnapshot(
+            state=self.state,
+            detail=self.state_detail,
+            model=self.session.model,
+            remote=self.session.remote,
+            thinking=self.thinking_mode,
+            tools=tools,
+            render=self.render_mode,
+            context_used=self.context_used(),
+            context_total=self._context_totals.get(
+                (self.session.model, self.session.parameters.get("num_ctx"))),
+            queued=len(self.queue),
+            tps=self.current_tps(),
+            elapsed=self.turn_elapsed(),
+        )
+
+    # ── queue ───────────────────────────────────────────────────────────────
+
+    def queue_message(self, text: str) -> None:
+        self.queue.add_message(text.strip())
+
+    def queue_command(self, line: str) -> None:
+        self.queue.add_command(line.strip())
+
+    def _deliver_queued_messages(self, texts: list[str]) -> None:
+        """Append messages queued mid-turn as user turns (the next round re-sends
+        the whole conversation, so the model sees them without losing its work)."""
+        for text in texts:
+            if console.is_terminal:
+                console.print(user_message_box(text, console))
+            console.print(f"[dim]delivered from queue[/dim]")
+            self.session.add_message("user", text)
+        if texts and not self.no_save:
+            self.store.save(self.session)
+        self.ui.notify("queued_delivered", count=len(texts))
+
+    def drain_boundary_messages(self) -> list[str]:
+        """Take the queued messages a sub-task boundary is allowed to deliver."""
+        if not self.queue.has_messages():
+            return []
+        texts = self.queue.take_messages()
+        self._deliver_queued_messages(texts)
+        return texts
+
+    # ── generation ──────────────────────────────────────────────────────────
+
     def _generate(self) -> GenerationResult:
         if self._preload_thread is not None and self._preload_thread.is_alive():
             # The user sent a message before the background preload finished;
@@ -687,62 +873,84 @@ class Repl:
         self._check_tool_support()
         result = GenerationResult()
         tool_rounds = 0
-        while True:
-            renderer = self._renderer(after_tools=bool(tool_rounds))
-            marker = f"[ai]{escape(self.session.model)} ›[/ai]"
-            if renderer.mode != "raw" and not renderer.live_render:
-                console.print(marker)
-            with_tools = self.tools_enabled and tool_rounds < self.tools_max_rounds
-            try:
-                result = renderer.stream(self.client.chat(
-                    self._payload(self.session.message_payloads(with_tools=with_tools),
-                                  with_tools=with_tools),
-                    timeout=self.timeout))
-            except OllamaError as exc:
-                result = GenerationResult(error=str(exc))
-                console.print(f"[err]{escape(str(exc))}[/err]")
-            if result.content or result.tool_calls:
-                self.session.add_message("assistant", result.content,
-                                         thinking=result.thinking or None,
-                                         cancelled=True if result.cancelled else None,
-                                         tool_calls=result.tool_calls or None)
-            elif result.cancelled:
-                self.session.add_message("assistant", "", cancelled=True)
-            if result.stats:
-                self.session.record_turn(result.stats, count_turn=(tool_rounds == 0))
-                self.session.stats["last_prompt_tokens"] = result.stats.get("prompt_tokens")
-                self.session.stats["last_completion_tokens"] = result.stats.get("completion_tokens")
-            if not self.no_save:
-                self.store.save(self.session)
-            if result.error or result.cancelled or not result.tool_calls \
-                    or not self.tools_enabled:
-                break
-            tool_rounds += 1
-            if tool_rounds > self.tools_max_rounds:
-                console.print(f"[warn]tool-call limit reached "
-                              f"({self.tools_max_rounds}) — not running more tools[/warn]")
-                for call in result.tool_calls:
-                    function = (call.get("function") or {}) if isinstance(call, dict) else {}
-                    self.session.add_message(
-                        "tool", "not executed: tool-call limit reached",
-                        tool_name=str(function.get("name") or "?"))
+        cancel = self.cancel_token
+        self._turn_started = time.monotonic()
+        self.set_state("generating")
+        self.ui.notify("turn_start")
+        try:
+            while True:
+                # Sub-task boundary: anything queued while the model worked is
+                # handed over here (before a fresh request), so it lands in the
+                # same turn instead of replacing it.
+                self.drain_boundary_messages()
+                if cancel.cancelled:
+                    break
+                renderer = self._renderer(after_tools=bool(tool_rounds))
+                self.current_renderer = renderer
+                marker = f"[ai]{escape(self.session.model)} ›[/ai]"
+                if renderer.mode != "raw" and not renderer.render_frames:
+                    console.print(marker)
+                with_tools = self.tools_enabled and tool_rounds < self.tools_max_rounds
+                try:
+                    result = renderer.stream(self.client.chat(
+                        self._payload(self.session.message_payloads(with_tools=with_tools),
+                                      with_tools=with_tools),
+                        timeout=self.timeout, cancel=cancel), cancel=cancel,
+                        sink=self.stream_sink)
+                except OllamaError as exc:
+                    result = GenerationResult(error=str(exc))
+                    console.print(f"[err]{escape(str(exc))}[/err]")
+                self._last_tps = renderer.estimator.rate() or self._last_tps
+                self.current_renderer = None
+                if result.content or result.tool_calls:
+                    self.session.add_message("assistant", result.content,
+                                             thinking=result.thinking or None,
+                                             cancelled=True if result.cancelled else None,
+                                             tool_calls=result.tool_calls or None)
+                elif result.cancelled:
+                    self.session.add_message("assistant", "", cancelled=True)
+                if result.stats:
+                    self.session.record_turn(result.stats, count_turn=(tool_rounds == 0))
+                    self.session.stats["last_prompt_tokens"] = result.stats.get("prompt_tokens")
+                    self.session.stats["last_completion_tokens"] = result.stats.get("completion_tokens")
                 if not self.no_save:
                     self.store.save(self.session)
-                break
-            if self._execute_tool_calls(result.tool_calls,
-                                        quiet=(self.render_mode == "raw")):
-                console.print("[warn]tool execution interrupted; stopping this turn[/warn]")
-                break
+                if result.error or result.cancelled or not self.tools_enabled:
+                    break
+                if not result.tool_calls:
+                    # No tools asked for: only keep going when the user typed
+                    # something while this answer streamed (delivered at the
+                    # top of the next round).
+                    if self.queue.has_messages():
+                        continue
+                    break
+                tool_rounds += 1
+                if tool_rounds > self.tools_max_rounds:
+                    console.print(f"[warn]tool-call limit reached "
+                                  f"({self.tools_max_rounds}) — not running more tools[/warn]")
+                    for call in result.tool_calls:
+                        function = (call.get("function") or {}) if isinstance(call, dict) else {}
+                        self.session.add_message(
+                            "tool", "not executed: tool-call limit reached",
+                            tool_name=str(function.get("name") or "?"))
+                    if not self.no_save:
+                        self.store.save(self.session)
+                    break
+                if self._execute_tool_calls(result.tool_calls,
+                                            quiet=(self.render_mode == "raw")):
+                    console.print("[warn]tool execution interrupted; stopping this turn[/warn]")
+                    break
+        finally:
+            self._turn_started = None
+            self.current_renderer = None
         if self.tts_auto and result.content and not result.cancelled and not result.error:
             self.speak_text(result.content)
         if console.is_terminal and not result.error:
             self._maybe_show_ps()
         return result
 
-    def send(self, text: str) -> GenerationResult:
-        text = text.strip()
-        if not text and not self.pending_images:
-            return GenerationResult()
+    def _add_user_message(self, text: str) -> None:
+        """Record a user turn: bubble, `@file` expansion, session save, title."""
         if console.is_terminal:
             console.print(user_message_box(text, console))
         augmented, included, warnings = expand_file_mentions(text, max_kb=self.max_file_kb)
@@ -756,6 +964,12 @@ class Repl:
             self.store.save(self.session)
         if not self.session.title:
             self._maybe_title(text)
+
+    def send(self, text: str) -> GenerationResult:
+        text = text.strip()
+        if not text and not self.pending_images:
+            return GenerationResult()
+        self._add_user_message(text)
         return self._generate()
 
     def _maybe_title(self, first_text: str) -> None:
@@ -799,10 +1013,12 @@ class Repl:
                         break
                     continue
                 try:
+                    self.cancel_token.reset()
                     result = self.send(line)
                 except KeyboardInterrupt:
                     console.print("[warn]cancelled[/warn]")
                     continue
+                self.set_state("ready")
                 if result.cancelled:
                     continue
                 if self.config.get("auto_compact") == "auto":
@@ -891,16 +1107,30 @@ def cmd_help(repl: Repl, argument: str) -> None:
         table = Table(title="shortcuts", box=box.ROUNDED, header_style="bold magenta")
         table.add_column("key")
         table.add_column("action")
-        for key, action in (("Ctrl+D", "exit"),
-                            ("Ctrl+C", "cancel input / generation"),
-                            ("Ctrl+T", "expand or collapse the thinking panel "
-                                       "while a response streams"),
-                            ("Ctrl+G", "$OLLAMA_EDITOR for the current prompt"),
-                            ("Ctrl+J", "insert newline"),
-                            ("Ctrl+R", "search prompt history"),
-                            ("Up/Down", "history navigation"),
-                            ("Tab", "complete commands, ids, models, @files"),
-                            ("@path", "inline a file into the prompt")):
+        entries = [
+            ("Ctrl+D", "exit"),
+            ("Ctrl+C", "cancel input / generation"),
+            ("Ctrl+T", "expand or collapse the thinking panel while a "
+                       "response streams"),
+            ("Ctrl+G", "$OLLAMA_EDITOR for the current prompt"),
+            ("Ctrl+J", "insert newline"),
+            ("Ctrl+R", "search prompt history"),
+            ("Up/Down", "history navigation"),
+            ("Tab", "complete commands, ids, models, @files"),
+            ("@path", "inline a file into the prompt"),
+        ]
+        if repl.tui_mode:
+            entries += [
+                ("Enter", "send — queues the message while a turn is running"),
+                ("Ctrl+B", "send what is typed right now (a running tool finishes "
+                           "first)"),
+                ("Esc Esc", "stop the turn (first Esc arms it)"),
+                ("Ctrl+Q", "quit (twice while busy or with a queued message)"),
+                ("Ctrl+L", "clear the transcript pane"),
+                ("PgUp/PgDn", "scroll the transcript"),
+                ("/queue", "show, remove or drop queued messages and commands"),
+            ]
+        for key, action in entries:
             table.add_row(key, action)
         console.print(table)
         return
@@ -1432,7 +1662,7 @@ def _switch_session(repl: Repl, session: Session) -> None:
         if bool(repl.session.messages):
             console.print(f"[dim]session {session.id} was last used with[/dim] "
                           f"[key]{escape(target_model)}[/key]")
-            answer = Prompt.ask(
+            answer = repl.ui.ask(
                 f"load it with [c]urrent model ({escape(current_model)}) or "
                 f"[l]ast model ({escape(target_model)})?", choices=["c", "l"],
                 default="l")
@@ -1461,7 +1691,7 @@ def _switch_session(repl: Repl, session: Session) -> None:
 
 def cmd_load(repl: Repl, argument: str) -> None:
     if not argument:
-        session = pick_session(repl.store)
+        session = pick_session(repl.store, ui=repl.ui)
         if session is not None:
             _switch_session(repl, session)
         return
@@ -1477,15 +1707,16 @@ def cmd_load(repl: Repl, argument: str) -> None:
         return
     ssh_target = remote_node(repl.session.remote, repl.config) if repl.session.remote else None
     name = ensure_model(repl.client, name, repl.config, ssh_target=ssh_target,
-                        host_label=repl.session.remote)
+                        host_label=repl.session.remote, ui=repl.ui)
     if not name:
         return
     if name == repl.session.model:
         console.print("[dim]already using that model[/dim]")
         return
     if repl.session.messages:
-        keep = Confirm.ask(f"switch to [key]{escape(name)}[/key] and keep the "
-                           f"{len(repl.session.messages)}-message context?", default=False)
+        keep = repl.ui.confirm(f"switch to [key]{escape(name)}[/key] and keep the "
+                               f"{len(repl.session.messages)}-message context?",
+                               default=False)
     else:
         keep = False
     repl.unload_model()
@@ -1504,7 +1735,7 @@ def cmd_save(repl: Repl, argument: str) -> None:
     if not name:
         console.print("[err]usage: /save NAME[/err]")
         return
-    if repl.client.model_exists(name) and not Confirm.ask(
+    if repl.client.model_exists(name) and not repl.ui.confirm(
             f"[warn]{escape(name)} already exists — overwrite?[/warn]", default=False):
         return
     console.print(f"[dim]creating {escape(name)} from {escape(repl.session.model)}…[/dim]")
@@ -1524,7 +1755,7 @@ def cmd_save(repl: Repl, argument: str) -> None:
 
 
 def cmd_pull(repl: Repl, argument: str) -> None:
-    name = argument.strip() or pick_model(repl.client, None)
+    name = argument.strip() or pick_model(repl.client, None, ui=repl.ui)
     if not name:
         return
     ssh_target = remote_node(repl.session.remote, repl.config) if repl.session.remote else None
@@ -1568,7 +1799,7 @@ def cmd_new(repl: Repl, argument: str) -> None:
 
 
 def cmd_sessions(repl: Repl, argument: str) -> None:
-    session = pick_session(repl.store, filter_text=argument)
+    session = pick_session(repl.store, filter_text=argument, ui=repl.ui)
     if session is not None:
         _switch_session(repl, session)
 
@@ -1627,19 +1858,19 @@ def cmd_model(repl: Repl, argument: str) -> None:
                           short_stamp(model.get("modified_at")))
         console.print(table)
         return
-    name = argument.strip() or pick_model(repl.client, repl.session.model)
+    name = argument.strip() or pick_model(repl.client, repl.session.model, ui=repl.ui)
     if not name:
         return
     ssh_target = remote_node(repl.session.remote, repl.config) if repl.session.remote else None
     chosen = ensure_model(repl.client, name, repl.config, ssh_target=ssh_target,
-                          host_label=repl.session.remote)
+                          host_label=repl.session.remote, ui=repl.ui)
     if not chosen:
         return
     name = chosen
     if name == repl.session.model:
         console.print("[dim]already using that model[/dim]")
         return
-    if repl.session.messages and not Confirm.ask(
+    if repl.session.messages and not repl.ui.confirm(
             f"switch to [key]{escape(name)}[/key] and keep context?", default=False):
         repl.session.messages = []
     repl.unload_model()
@@ -1745,7 +1976,7 @@ def cmd_edit(repl: Repl, argument: str) -> None:
         console.print("[dim]no message to edit[/dim]")
         return
     original = repl.session.messages[index].get("content", "")
-    edited = open_in_editor(original)
+    edited = repl.ui.editor(original)
     if edited is None or not edited.strip():
         console.print("[warn]edit cancelled[/warn]")
         return
@@ -1825,8 +2056,8 @@ def cmd_summarize(repl: Repl, argument: str) -> None:
     if not older:
         console.print("[dim]nothing to summarize[/dim]")
         return
-    if not argument and not Confirm.ask(f"summarize {len(older)} older messages?",
-                                        default=True):
+    if not argument and not repl.ui.confirm(f"summarize {len(older)} older messages?",
+                                            default=True):
         return
     transcript_lines = []
     for message in older:
@@ -2016,6 +2247,45 @@ def cmd_stats(repl: Repl, argument: str) -> None:
     console.print(table)
 
 
+def cmd_queue(repl: Repl, argument: str) -> None:
+    """Show or edit what was typed while a turn was running."""
+    parts = argument.split()
+    topic = parts[0].lower() if parts else "list"
+    if topic in {"list", ""}:
+        if not repl.queue:
+            console.print("[dim]queue is empty[/dim]")
+            return
+        table = Table(title="queued", box=box.ROUNDED, header_style="bold magenta")
+        table.add_column("#", justify="right")
+        table.add_column("kind")
+        table.add_column("text")
+        for index, item in enumerate(repl.queue.items, 1):
+            table.add_row(str(index),
+                          "you" if item.kind == "message" else "cmd",
+                          escape(shortcut(item.text, 72)))
+        console.print(table)
+        console.print("[dim]messages are delivered at the next sub-task boundary · "
+                      "commands run when the turn ends[/dim]")
+        return
+    if topic in {"clear", "flush", "drop"}:
+        count = repl.queue.clear()
+        console.print(f"[ok]dropped {count} queued item(s)[/ok]")
+        repl.ui.notify("queue_changed")
+        return
+    if topic in {"rm", "remove", "del"}:
+        if len(parts) < 2 or not parts[1].isdigit():
+            console.print("[err]usage: /queue rm N[/err]")
+            return
+        item = repl.queue.remove(int(parts[1]))
+        if item is None:
+            console.print("[err]no such queued item[/err]")
+            return
+        console.print(f"[ok]dropped[/ok] {escape(shortcut(item.text, 72))}")
+        repl.ui.notify("queue_changed")
+        return
+    console.print("[err]usage: /queue [list|clear|rm N][/err]")
+
+
 def cmd_bye(repl: Repl, argument: str) -> bool:
     return False
 
@@ -2056,6 +2326,7 @@ COMMAND_HANDLERS: dict[str, Callable[[Repl, str], Any]] = {
     "/copy": cmd_copy,
     "/export": cmd_export,
     "/stats": cmd_stats,
+    "/queue": cmd_queue,
     "/bye": cmd_bye, "/exit": cmd_bye,
 }
 

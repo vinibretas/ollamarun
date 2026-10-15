@@ -909,7 +909,7 @@ class _FakeClient:
     def capabilities(self, model):
         return list(self.capability_list)
 
-    def chat(self, payload, timeout=None):
+    def chat(self, payload, timeout=None, cancel=None):
         self.chat_payloads.append(payload)
         if self.chat_script:
             events = self.chat_script[self.chat_calls % len(self.chat_script)]
@@ -1462,16 +1462,17 @@ def test_tool_colors() -> int:
                                    color_system="truecolor", width=100,
                                    theme=orun.THEME)
         real_console = orun.repl.console
-        real_prompt = orun.repl._prompt_approval
+        # the approval prompt itself lives in ui.py now (the front-end seam)
+        real_prompt = orun.ui._prompt_approval
         orun.repl.console = terminal_console
-        orun.repl._prompt_approval = lambda suggestions: ("deny", None)
+        orun.ui._prompt_approval = lambda suggestions: ("deny", None)
         try:
             orun.cmd_tools(repl, "")
             repl._approve_tool_call(repl.tool_registry["write_file"],
                                     {"path": "notes.txt", "content": "x"}, "fp")
         finally:
             orun.repl.console = real_console
-            orun.repl._prompt_approval = real_prompt
+            orun.ui._prompt_approval = real_prompt
         styled = recorded.getvalue()
 
     cyan, orange = ansi("cyan"), ansi("orange1")  # run_shell / write_file
@@ -2149,6 +2150,43 @@ def test_build_parser_flags() -> int:
         print("FAIL  --num-ctx default")
         failures += 1
 
+    args = parser.parse_args(["m1", "--ui", "tui"])
+    if args.ui == "tui" and parser.parse_args(["m1"]).ui is None:
+        print("PASS  --ui accepts tui and defaults to None (config decides)")
+    else:
+        print(f"FAIL  --ui: {getattr(args, 'ui', None)!r}")
+        failures += 1
+
+    failures = _check(failures, "/queue is wired into the command tables",
+                      orun.COMMAND_HANDLERS.get("/queue") is orun.cmd_queue
+                      and "/queue" in orun.COMMAND_INFO)
+
+    # front-end selection (config + flag + availability)
+    class _Args:
+        ui = None
+
+    failures = _check(failures, "ui_mode defaults to the inline REPL",
+                      orun.ui_mode(_Args(), {}) == "inline")
+    failures = _check(failures, "ui_mode honours the config key",
+                      orun.ui_mode(_Args(), {"ui": "tui"}) == "tui")
+    args_auto = _Args()
+    args_auto.ui = "auto"
+    failures = _check(failures, "ui_mode auto resolves to the TUI",
+                      orun.ui_mode(args_auto, {}) == "tui")
+    failures = _check(failures, "ui_mode rejects nonsense",
+                      orun.ui_mode(_Args(), {"ui": "wat"}) == "inline")
+    failures = _check(failures, "wants_tui is False unless asked for",
+                      orun.wants_tui(_Args(), {}) is False)
+    import ollamarun_lib.tui as _tui_mod
+    _args_tui = _Args()
+    _args_tui.ui = "tui"
+    if orun.HAS_TEXTUAL:
+        failures = _check(failures, "wants_tui follows tui_available()",
+                          orun.wants_tui(_args_tui, {}) == _tui_mod.tui_available()[0])
+    else:
+        failures = _check(failures, "wants_tui degrades without textual",
+                          orun.wants_tui(_args_tui, {}) is False)
+
     try:
         with contextlib.redirect_stderr(io.StringIO()):
             parser.parse_args(["m1", "--unload", "--keep-loaded"])
@@ -2649,6 +2687,22 @@ def _check(failures, name, cond, detail=""):
         print(f"FAIL  {name} {detail}")
         return failures + 1
     return failures
+
+
+def _test_repl(resident=(), models=("m1",), args_extra=(), config_extra=None):
+    """A throwaway Repl wired to `_FakeClient` and a temp session store."""
+    tmp = tempfile.mkdtemp()
+    store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
+    args = orun.build_parser().parse_args(
+        ["m1", "--render", "plain", "--no-save", *args_extra])
+    config = dict(orun.DEFAULT_CONFIG)
+    config.update(config_extra or {})
+    client = _FakeClient(resident=resident, models=models,
+                         show_data={"model_info": {"llama.context_length": 8192}})
+    session = orun.Session.create("m1", client.base)
+    repl = orun.Repl(args, config, client, store, session)
+    repl._preload_model = lambda: None
+    return repl, client, tmp
 
 
 def test_tools_policy() -> int:
@@ -3276,7 +3330,7 @@ def test_tool_commands() -> int:
 def test_approval_rules() -> int:
     failures = 0
     import ollamarun_lib.repl as repl_module
-    from ollamarun_lib.repl import _prompt_approval
+    from ollamarun_lib.ui import _prompt_approval
 
     # ── the hard floor no rule may ever cover ──────────────────────────────
     floor = ["sudo ls", "dd if=/dev/zero of=/dev/sda", "rm -rf /", "rm -rf ~",
@@ -3510,6 +3564,8 @@ def test_approval_rules() -> int:
                           and orun.ToolRule.from_dict("x") is None)
 
     # ── the numbered approval prompt ───────────────────────────────────────
+    import ollamarun_lib.ui as ui_module  # the prompt lives here now
+
     class _StubPrompt:
         answer = "1"
         seen: list = []
@@ -3519,8 +3575,8 @@ def test_approval_rules() -> int:
             cls.seen.append({"args": args, **kwargs})
             return cls.answer
 
-    original_prompt = repl_module.Prompt
-    repl_module.Prompt = _StubPrompt
+    original_prompt = ui_module.Prompt
+    ui_module.Prompt = _StubPrompt
     try:
         suggestions = [
             orun.ToolRule(kind="shell", pattern="mkdir -p :*", created="t"),
@@ -3629,7 +3685,742 @@ def test_approval_rules() -> int:
             finally:
                 repl_module.console = original_console
     finally:
-        repl_module.Prompt = original_prompt
+        ui_module.Prompt = original_prompt
+    return failures
+
+
+def test_message_queue() -> int:
+    """The queue is what makes typing while the model works possible."""
+    failures = 0
+    queue = orun.MessageQueue()
+    failures = _check(failures, "queue starts empty", len(queue) == 0 and not queue)
+    queue.add_message("first")
+    queue.add_command("/clear")
+    queue.add_message("second")
+    failures = _check(failures, "queue keeps order", [item.text for item in queue.items]
+                      == ["first", "/clear", "second"], queue.describe())
+    failures = _check(failures, "has_messages looks at the head", queue.has_messages())
+    failures = _check(failures, "take_messages stops at a command",
+                      queue.take_messages() == ["first"], queue.describe())
+    failures = _check(failures, "a command at the head stops deliveries",
+                      not queue.has_messages() and queue.take_messages() == [])
+    failures = _check(failures, "pop_next returns the command",
+                      queue.pop_next().kind == "command")
+    failures = _check(failures, "remove counts from 1", queue.remove(1).text == "second"
+                      and len(queue) == 0)
+    failures = _check(failures, "remove out of range is a no-op", queue.remove(3) is None)
+    queue.add_command("/one")
+    queue.add_command("/two")
+    failures = _check(failures, "clear reports how much it dropped", queue.clear() == 2
+                      and not queue)
+
+    # /queue command
+    repl, client, tmp = _test_repl(resident=[])
+    with orun.console.capture() as cap:
+        orun.cmd_queue(repl, "")
+    failures = _check(failures, "/queue says when it is empty",
+                      "queue is empty" in _plain(cap.get()))
+    repl.queue.add_message("hello there")
+    repl.queue.add_command("/clear")
+    with orun.console.capture() as cap:
+        orun.cmd_queue(repl, "list")
+    out = _plain(cap.get())
+    failures = _check(failures, "/queue lists messages and commands",
+                      "hello there" in out and "/clear" in out and "cmd" in out, out)
+    with orun.console.capture():
+        orun.cmd_queue(repl, "rm 1")
+    failures = _check(failures, "/queue rm drops one item",
+                      [item.text for item in repl.queue.items] == ["/clear"])
+    with orun.console.capture():
+        orun.cmd_queue(repl, "rm 9")
+    failures = _check(failures, "/queue rm out of range is reported",
+                      [item.text for item in repl.queue.items] == ["/clear"])
+    with orun.console.capture():
+        orun.cmd_queue(repl, "clear")
+    failures = _check(failures, "/queue clear empties it", not repl.queue)
+    with orun.console.capture() as cap:
+        orun.cmd_queue(repl, "nonsense")
+    failures = _check(failures, "/queue rejects unknown arguments",
+                      "usage" in _plain(cap.get()))
+    shutil.rmtree(tmp, ignore_errors=True)
+    return failures
+
+
+def test_status_format() -> int:
+    """The status line fits itself to the terminal and shows the right bits."""
+    failures = 0
+    snapshot = orun.StatusSnapshot(state="generating", detail="", model="qwen3:8b",
+                                   remote=None, thinking="collapsed",
+                                   tools="allowlist", render="markdown",
+                                   context_used=12400, context_total=32768,
+                                   queued=2, tps=41.2, elapsed=3.2)
+    wide = orun.format_status(snapshot, frame="⠋", width=150)
+    plain = orun.strip_markup(wide)
+    failures = _check(failures, "status shows state, model, mode and context",
+                      "⠋ generating" in plain and "qwen3:8b" in plain
+                      and "think:collapsed" in plain and "tools:allowlist" in plain
+                      and "12.4k/32.8k (37%)" in plain, plain)
+    failures = _check(failures, "status shows the queue and speed",
+                      "2 queued" in plain and "41.2 tok/s" in plain, plain)
+    failures = _check(failures, "status fits the terminal width",
+                      len(plain) <= 150, str(len(plain)))
+    narrow = orun.strip_markup(orun.format_status(snapshot, frame="⠋", width=46))
+    failures = _check(failures, "narrow status keeps state, model and context",
+                      "generating" in narrow and "qwen3:8b" in narrow
+                      and "ctx" in narrow, narrow)
+    failures = _check(failures, "narrow status drops the mode summary first",
+                      "think:" not in narrow, narrow)
+    tiny = orun.strip_markup(orun.format_status(snapshot, frame="⠋", width=18))
+    failures = _check(failures, "tiny statuses are clipped, not wrapped",
+                      len(tiny) <= 18, tiny)
+
+    idle = orun.StatusSnapshot(state="ready", model="m", thinking="hidden",
+                               tools="off", render="plain", context_used=None,
+                               context_total=8192)
+    plain = orun.strip_markup(orun.format_status(idle, frame="●", width=100))
+    failures = _check(failures, "idle status shows an empty context as 0",
+                      "ctx 0/8.2k" in plain and "tools:off" in plain, plain)
+    done = orun.StatusSnapshot(state="done", detail="done in 3.2s", model="m",
+                               render="markdown")
+    plain = orun.strip_markup(orun.format_status(done, frame="✔", width=80))
+    failures = _check(failures, "done status keeps its summary",
+                      "✔ done" in plain and "done in 3.2s" in plain, plain)
+
+    failures = _check(failures, "spinner animates while busy",
+                      orun.spinner_frame("generating", 0.0) != orun.spinner_frame(
+                          "generating", 0.15))
+    failures = _check(failures, "spinner is a fixed icon when idle",
+                      orun.spinner_frame("ready", 0.0) == orun.STATE_GLYPH["ready"]
+                      and orun.spinner_frame("done", 0.5) == "✔")
+    failures = _check(failures, "loading counts as busy",
+                      orun.spinner_frame("loading", 0.05) in orun.SPINNER_FRAMES)
+    return failures
+
+
+def test_cancel_token() -> int:
+    failures = 0
+    token = orun.CancelToken()
+    failures = _check(failures, "token starts clean", not token.cancelled)
+    token.cancel()
+    failures = _check(failures, "cancel() sets it", token.cancelled and token.is_set())
+    token.reset()
+    failures = _check(failures, "reset() clears it", not token.cancelled)
+    return failures
+
+
+def test_stream_cancel() -> int:
+    """Cancelling must stop a stream even while it is blocked on the socket."""
+    failures = 0
+    release = threading.Event()
+    closed = threading.Event()
+
+    class BlockingResponse(_FakeResponse):
+        def iter_lines(self, decode_unicode=False):
+            yield json.dumps({"message": {"content": "partial "}}).encode()
+            release.wait(10)          # simulates the model taking its time
+            yield json.dumps({"message": {"content": "rest"}, "done": True}).encode()
+
+        def close(self):
+            closed.set()
+            release.set()             # closing unblocks the reader
+
+    response = BlockingResponse()
+    client = orun.OllamaClient()
+    client.http = _FakeSession(lambda *a, **k: response)
+    token = orun.CancelToken()
+    seen = []
+
+    def consume():
+        for event in client.chat({"model": "m"}, cancel=token):
+            seen.append(event)
+
+    reader = threading.Thread(target=consume)
+    reader.start()
+    time.sleep(0.2)
+    failures = _check(failures, "stream is blocked mid-response", len(seen) == 1)
+    failures = _check(failures, "abort_stream closes the response",
+                      client.abort_stream() and closed.is_set())
+    token.cancel()
+    reader.join(5)
+    failures = _check(failures, "cancelled stream ends without raising",
+                      not reader.is_alive() and len(seen) == 1, str(seen))
+    failures = _check(failures, "abort_stream is a no-op when idle",
+                      client.abort_stream() is False)
+
+    # A cancel that lands between chunks stops without closing anything.
+    events = iter([{"message": {"content": "a"}}, {"message": {"content": "b"}},
+                   {"done": True}])
+    client2 = orun.OllamaClient()
+    client2.http = _FakeSession(lambda *a, **k: _FakeResponse(
+        lines=[json.dumps(event).encode() for event in
+               [{"message": {"content": "a"}}, {"message": {"content": "b"}},
+                {"done": True}]]))
+    token2 = orun.CancelToken()
+    got = []
+    for event in client2.chat({"model": "m"}, cancel=token2):
+        got.append(event)
+        token2.cancel()
+    failures = _check(failures, "cancel between chunks stops the stream",
+                      len(got) == 1, str(got))
+    return failures
+
+
+def test_boundary_delivery() -> int:
+    """A message typed while a tool round runs is delivered at the boundary,
+    inside the same turn."""
+    failures = 0
+    repl, client, tmp = _test_repl()
+    repl.tools_enabled = True
+    repl.tools_policy = "auto"
+    repl.auto_approve = True
+    queued = {"done": False}
+
+    class ScriptedClient(_FakeClient):
+        def chat(self, payload, timeout=None, cancel=None):
+            self.chat_payloads.append(payload)
+            self.chat_calls += 1
+            round_number = self.chat_calls
+            if round_number == 1:
+                return iter([
+                    {"message": {"tool_calls": [{"function": {
+                        "name": "list_dir", "arguments": {"path": "."}}}]}},
+                    {"done": True, "eval_count": 3, "eval_duration": 1e9},
+                ])
+            if not queued["done"] and round_number == 2:
+                queued["done"] = True
+            return iter([{"message": {"content": "final answer"}}, {"done": True}])
+
+        def is_resident(self, model):
+            return False
+
+    scripted = ScriptedClient()
+    scripted.base = client.base
+    repl.client = scripted
+
+    original_execute = repl._execute_tool_calls
+
+    def execute_with_queue(calls, **kwargs):
+        # the user types while the tool is running -- the queue fills mid-turn
+        repl.queue_message("and also check the parent directory")
+        return original_execute(calls, **kwargs)
+
+    repl._execute_tool_calls = execute_with_queue
+    result = repl.send("look around")
+    failures = _check(failures, "turn finished normally", not result.cancelled
+                      and not result.error, str(result))
+    failures = _check(failures, "the queued message was sent in the same turn",
+                      scripted.chat_calls == 2, str(scripted.chat_calls))
+    second = scripted.chat_payloads[1]["messages"]
+    roles = [message["role"] for message in second]
+    failures = _check(failures, "second round carries tool result, then the message",
+                      roles == ["user", "assistant", "tool", "user"], str(roles))
+    failures = _check(failures, "the queued text is the last user message",
+                      second[-1]["content"] == "and also check the parent directory",
+                      str(second[-1]))
+    failures = _check(failures, "the queue is empty afterwards",
+                      len(repl.queue) == 0, repl.queue.describe())
+    failures = _check(failures, "the model's final answer was recorded",
+                      any(message.get("role") == "assistant"
+                          and message.get("content") == "final answer"
+                          for message in repl.session.messages))
+
+    # A queued message also keeps the turn alive when no tool was called.
+    repl2, client2, tmp2 = _test_repl()
+
+    class TailClient(_FakeClient):
+        def chat(self, payload, timeout=None, cancel=None):
+            self.chat_payloads.append(payload)
+            self.chat_calls += 1
+            if self.chat_calls == 1:
+                repl2.queue_message("one more thing")
+            return iter([{"message": {"content": f"answer {self.chat_calls}"}},
+                         {"done": True}])
+
+    repl2.client = TailClient()
+    result = repl2.send("hello")
+    failures = _check(failures, "a queued message triggers a follow-up round",
+                      repl2.client.chat_calls == 2 and not result.cancelled,
+                      str(repl2.client.chat_calls))
+    shutil.rmtree(tmp, ignore_errors=True)
+    shutil.rmtree(tmp2, ignore_errors=True)
+    return failures
+
+
+class _TuiClient(_FakeClient):
+    """Fake client with a paced stream, cancellation and abort tracking."""
+
+    def __init__(self, scripts=None, delay=0.0, **kwargs):
+        super().__init__(**kwargs)
+        self.scripts = [list(events) for events in (scripts or [])]
+        self.delay = delay
+        self.aborts = 0
+        self.cancel_tokens = []
+        self.executed = []
+
+    def chat(self, payload, timeout=None, cancel=None):
+        self.chat_payloads.append(payload)
+        self.cancel_tokens.append(cancel)
+        events = (self.scripts[self.chat_calls % len(self.scripts)] if self.scripts
+                  else [{"message": {"content": "ok"}, "done": True}])
+        self.chat_calls += 1
+
+        def gen():
+            for event in events:
+                if cancel is not None and cancel.cancelled:
+                    return
+                if self.delay:
+                    time.sleep(self.delay)
+                yield event
+
+        return gen()
+
+    def abort_stream(self):
+        self.aborts += 1
+        return True
+
+
+def _tui_setup(scripts=None, delay=0.0, tools=False, **kwargs):
+    """A Repl ready for the Textual front end (fake client, temp store)."""
+    tmp = tempfile.mkdtemp()
+    store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
+    args = orun.build_parser().parse_args(
+        ["m1", "--render", "markdown", "--no-save"] + (["--tools"] if tools else []))
+    config = dict(orun.DEFAULT_CONFIG)
+    config["ui"] = "tui"
+    config["tools"] = tools
+    client = _TuiClient(scripts=scripts, delay=delay,
+                        show_data={"model_info": {"llama.context_length": 8192},
+                                   "capabilities": ["completion", "tools"]})
+    session = orun.Session.create("m1", client.base)
+    repl = orun.Repl(args, config, client, store, session)
+    repl._preload_model = lambda: None
+    return repl, client, tmp
+
+
+def _transcript_text(app) -> str:
+    """Plain text of every transcript widget (the app's visible conversation)."""
+    from rich.console import Console
+
+    out = []
+    for child in app.query_one("#transcript").children:
+        visual = child.render()
+        renderable = getattr(visual, "_renderable", None)
+        if renderable is None:
+            out.append(str(visual).strip())
+            continue
+        buffer = io.StringIO()
+        try:
+            Console(file=buffer, width=110, force_terminal=False).print(renderable)
+        except Exception as exc:  # a widget that cannot render is a test failure
+            out.append(f"<render error: {exc}>")
+            continue
+        out.append(_plain(buffer.getvalue()))
+    return "\n".join(out)
+
+
+def _status_text(app) -> str:
+    return orun.strip_markup(str(app.query_one("#status").render()))
+
+
+async def _wait_until(pilot, predicate, timeout=8.0, step=0.05) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        await pilot.pause(step)
+    return bool(predicate())
+
+
+def test_tui_app() -> int:
+    """The Textual front end: panes, queue, stop, send-now, approvals, quit."""
+    try:
+        import textual  # noqa: F401
+    except ImportError:  # pragma: no cover - textual is optional
+        print("SKIP  TUI tests (textual is not installed)")
+        return 0
+    import asyncio
+
+    from ollamarun_lib import tui as tui_mod
+
+    saved_history = os.environ.get("OLLAMA_NOHISTORY")
+    os.environ["OLLAMA_NOHISTORY"] = "1"
+    failures = 0
+    try:
+        failures += asyncio.run(_tui_basics(tui_mod))
+        failures += asyncio.run(_tui_queue(tui_mod))
+        failures += asyncio.run(_tui_stop_and_send_now(tui_mod))
+        failures += asyncio.run(_tui_approval(tui_mod))
+        failures += asyncio.run(_tui_quit(tui_mod))
+    finally:
+        if saved_history is None:
+            os.environ.pop("OLLAMA_NOHISTORY", None)
+        else:
+            os.environ["OLLAMA_NOHISTORY"] = saved_history
+    return failures
+
+
+async def _tui_basics(tui_mod) -> int:
+    from textual.widgets import Input
+
+    from ollamarun_lib.tui import PromptInput
+
+    failures = 0
+    repl, client, tmp = _tui_setup(scripts=[[
+        {"message": {"thinking": "let me think "}},
+        {"message": {"content": "Hello "}},
+        {"message": {"content": "**world**"}},
+        {"done": True, "eval_count": 10, "eval_duration": 2_000_000_000,
+         "prompt_eval_count": 5, "prompt_eval_duration": 1_000_000_000,
+         "total_duration": 3_000_000_000},
+    ]], delay=0.02)
+    app = tui_mod.OllamarunTui(repl)
+    repl.ui = tui_mod.TuiUi(app)
+    async with app.run_test(size=(110, 32)) as pilot:
+        await pilot.pause(0.3)
+        status = _status_text(app)
+        transcript = _transcript_text(app)
+        failures = _check(failures, "banner lands in the transcript pane",
+                          "ollamarun" in transcript and "m1" in transcript,
+                          transcript[:200])
+        failures = _check(failures, "status bar starts ready with the model",
+                          "ready" in status and "m1" in status and "ctx" in status,
+                          status)
+        failures = _check(failures, "status bar shows the mode",
+                          "think:collapsed" in status and "render:markdown" in status,
+                          status)
+        failures = _check(failures, "input box is always there",
+                          app.query_one("#prompt").is_mounted
+                          and app.query_one("#prompt").has_focus)
+        failures = _check(failures, "input box sits next to the status bar",
+                          app.query_one("#status").region.y
+                          <= app.query_one("#prompt").region.y)
+
+        app.query_one("#prompt").value = "hi"
+        await pilot.press("enter")
+        ok = await _wait_until(pilot, lambda: not app._busy, timeout=8)
+        failures = _check(failures, "an idle Enter starts a turn and finishes it", ok)
+        roles = [message["role"] for message in repl.session.messages]
+        failures = _check(failures, "the turn reached the session",
+                          roles == ["user", "assistant"], str(roles))
+        failures = _check(failures, "the answer was recorded",
+                          repl.session.messages[-1]["content"] == "Hello **world**",
+                          repl.session.messages[-1].get("content", ""))
+        transcript = _transcript_text(app)
+        failures = _check(failures, "the answer shows in the transcript",
+                          "world" in transcript and "hi" in transcript,
+                          transcript[-300:])
+        failures = _check(failures, "thinking stays collapsed by default",
+                          "thinking" in transcript and "let me think" not in transcript,
+                          transcript[-300:])
+        status = _status_text(app)
+        failures = _check(failures, "status reports the finished turn",
+                          await _wait_until(pilot, lambda: "done" in _status_text(app)
+                                            and "tok/s" in _status_text(app), timeout=3),
+                          _status_text(app))
+
+        # Tab completion and history in the input box
+        prompt = app.query_one("#prompt", PromptInput)
+        prompt.value = "/think"
+        prompt.cursor_position = len(prompt.value)
+        await pilot.press("tab")
+        failures = _check(failures, "Tab completes commands",
+                          prompt.value == "/thinking", prompt.value)
+        prompt.value = ""
+        await pilot.press("up")
+        failures = _check(failures, "Up recalls the last message",
+                          prompt.value == "hi", prompt.value)
+        await pilot.press("down")
+        failures = _check(failures, "Down clears the recalled line", prompt.value == "")
+
+        # modals: the REPL asks from a worker thread, the app shows a screen
+        answers: dict[str, Any] = {}
+
+        def ask_from_worker() -> None:
+            answers["confirm"] = repl.ui.confirm("keep the context?", default=False)
+            answers["ask"] = repl.ui.ask("model number, name or 'q' to quit",
+                                         default="q")
+            answers["approval"] = repl.ui.approval(
+                [], name="run_shell", detail="$ rm -rf /",
+                reason="writes outside the workspace")[0]
+
+        worker = threading.Thread(target=ask_from_worker)
+        worker.start()
+        shown = await _wait_until(pilot, lambda: isinstance(app.screen,
+                                                            tui_mod.ConfirmScreen),
+                                  timeout=3)
+        failures = _check(failures, "confirm() opens a modal from a worker", shown,
+                          type(app.screen).__name__)
+        await pilot.press("y")
+        shown = await _wait_until(pilot, lambda: isinstance(app.screen, tui_mod.AskScreen),
+                                  timeout=3)
+        failures = _check(failures, "ask() opens a modal from a worker", shown)
+        app.screen.query_one("#modal-input", Input).value = "42"
+        await pilot.press("enter")
+        shown = await _wait_until(pilot, lambda: isinstance(app.screen,
+                                                            tui_mod.ApprovalScreen),
+                                  timeout=3)
+        failures = _check(failures, "approval() opens a modal from a worker", shown)
+        await pilot.press("A")
+        worker.join(5)
+        failures = _check(failures, "the modal answers reach the caller",
+                          answers == {"confirm": True, "ask": "42", "approval": "auto"},
+                          str(answers))
+    shutil.rmtree(tmp, ignore_errors=True)
+    return failures
+
+
+async def _tui_queue(tui_mod) -> int:
+    failures = 0
+    repl, client, tmp = _tui_setup(scripts=[
+        [{"message": {"content": "first answer"}}, {"done": True}],
+        [{"message": {"content": "second answer"}}, {"done": True}],
+        [{"message": {"content": "third answer"}}, {"done": True}],
+    ], delay=0.25)
+    app = tui_mod.OllamarunTui(repl)
+    repl.ui = tui_mod.TuiUi(app)
+    async with app.run_test(size=(110, 32)) as pilot:
+        await pilot.pause(0.2)
+        app.query_one("#prompt").value = "first"
+        await pilot.press("enter")
+        failures = _check(failures, "the turn is running",
+                          await _wait_until(pilot, lambda: app._busy, timeout=3))
+
+        app.query_one("#prompt").value = "second"
+        await pilot.press("enter")
+        await pilot.pause(0.05)
+        failures = _check(failures, "Enter while busy queues the message",
+                          [item.text for item in repl.queue.items] == ["second"],
+                          repl.queue.describe())
+        failures = _check(failures, "the status bar counts the queue",
+                          "1 queued" in _status_text(app), _status_text(app))
+        failures = _check(failures, "the input box is emptied after queueing",
+                          app.query_one("#prompt").value == "")
+
+        # immediate command: runs while the model is still working
+        app.query_one("#prompt").value = "/thinking expanded"
+        await pilot.press("enter")
+        failures = _check(failures, "an immediate command runs while busy",
+                          await _wait_until(pilot,
+                                            lambda: repl.thinking_mode == "expanded",
+                                            timeout=3), repl.thinking_mode)
+        # a session-rewriting command waits for the turn to end
+        app.query_one("#prompt").value = "/clear"
+        await pilot.press("enter")
+        await pilot.pause(0.05)
+        failures = _check(failures, "other commands queue instead of running",
+                          "/clear" in [item.text for item in repl.queue.items]
+                          and len(repl.session.messages) >= 1,
+                          f"{repl.queue.describe()} {len(repl.session.messages)}")
+        failures = _check(failures, "the session still has the running turn",
+                          len(repl.session.messages) >= 1, str(repl.session.messages))
+
+        ok = await _wait_until(pilot, lambda: not app._busy and not repl.queue,
+                               timeout=10)
+        failures = _check(failures, "the queue drains and the turn ends", ok,
+                          repl.queue.describe())
+        payloads = client.chat_payloads
+        failures = _check(failures, "the queued message was delivered mid-turn",
+                          len(payloads) == 2
+                          and any(message["role"] == "user"
+                                  and message.get("content") == "second"
+                                  for message in payloads[1]["messages"]),
+                          str([[m.get("content") for m in p["messages"]] for p in payloads]))
+        failures = _check(failures, "the assistant answer from round 1 stays in context",
+                          any(message["role"] == "assistant"
+                              and message.get("content") == "first answer"
+                              for message in payloads[1]["messages"]))
+        failures = _check(failures, "the queued command ran after the turn",
+                          repl.session.messages == [], str(repl.session.messages))
+    shutil.rmtree(tmp, ignore_errors=True)
+    return failures
+
+
+async def _tui_stop_and_send_now(tui_mod) -> int:
+    failures = 0
+    long_script = [{"message": {"content": f"word{index} "}} for index in range(30)] \
+        + [{"done": True}]
+    repl, client, tmp = _tui_setup(scripts=[long_script, long_script,
+                                            [{"message": {"content": "fine"}},
+                                             {"done": True}]], delay=0.2)
+    app = tui_mod.OllamarunTui(repl)
+    repl.ui = tui_mod.TuiUi(app)
+    async with app.run_test(size=(110, 32)) as pilot:
+        await pilot.pause(0.2)
+        app.query_one("#prompt").value = "write a long essay"
+        await pilot.press("enter")
+        await _wait_until(pilot, lambda: app._busy, timeout=3)
+
+        await pilot.press("escape")
+        await pilot.pause(0.3)
+        failures = _check(failures, "the first Esc only arms the stop",
+                          "Esc again" in app._hint and app._busy, app._hint)
+        await pilot.press("escape")
+        await pilot.pause(0.3)
+        failures = _check(failures, "Esc Esc cancels the turn",
+                          repl.cancel_token.cancelled and client.aborts >= 1,
+                          f"{repl.cancel_token.cancelled} {client.aborts}")
+        ok = await _wait_until(pilot, lambda: not app._busy, timeout=5)
+        failures = _check(failures, "the cancelled turn ends", ok)
+        assistant = [message for message in repl.session.messages
+                     if message["role"] == "assistant"]
+        failures = _check(failures, "the partial answer is kept and marked cancelled",
+                          assistant and assistant[-1].get("cancelled") is True
+                          and assistant[-1]["content"].startswith("word0"),
+                          str(assistant[-1])[:160] if assistant else "none")
+        failures = _check(failures, "the status bar says it stopped",
+                          "stopped" in _status_text(app), _status_text(app))
+
+        # Ctrl+B: send the typed text now, cutting the streaming answer short
+        await _wait_until(pilot, lambda: repl.state in {"done", "ready"}, timeout=4)
+        app.query_one("#prompt").value = "write another long essay"
+        await pilot.press("enter")
+        await _wait_until(pilot, lambda: app._busy, timeout=3)
+        aborts_before = client.aborts
+        app.query_one("#prompt").value = "actually, do this instead"
+        await pilot.press("ctrl+b")
+        await pilot.pause(0.2)
+        failures = _check(failures, "Ctrl+B queues the message and cancels now",
+                          client.aborts > aborts_before
+                          and [item.text for item in repl.queue.items]
+                          in (["actually, do this instead"], []),
+                          f"{client.aborts} {repl.queue.describe()}")
+        await _wait_until(pilot, lambda: not app._busy and not repl.queue, timeout=10)
+        delivered = [message for message in repl.session.messages
+                     if message["role"] == "user"
+                     and message.get("content") == "actually, do this instead"]
+        failures = _check(failures, "Ctrl+B delivers the message", bool(delivered),
+                          str([m.get("content") for m in repl.session.messages])[:200])
+        failures = _check(failures, "the message arrived as a running turn",
+                          any(message["role"] == "assistant"
+                              and message.get("content") == "fine"
+                              for message in repl.session.messages),
+                          str(repl.session.messages[-1])[:160])
+    shutil.rmtree(tmp, ignore_errors=True)
+    return failures
+
+
+async def _tui_approval(tui_mod) -> int:
+    failures = 0
+    marker = Path(tempfile.mkdtemp()) / "touched.txt"
+    unsafe = f"touch {marker}"
+    scripts = [
+        [{"message": {"tool_calls": [{"function": {
+            "name": "run_shell", "arguments": {"command": unsafe}}}]}},
+         {"done": True}],
+        [{"message": {"content": "done"}}, {"done": True}],
+        [{"message": {"tool_calls": [{"function": {
+            "name": "run_shell", "arguments": {"command": unsafe}}}]}},
+         {"done": True}],
+        [{"message": {"content": "done"}}, {"done": True}],
+    ]
+    repl, client, tmp = _tui_setup(scripts=scripts, delay=0.02, tools=True)
+    app = tui_mod.OllamarunTui(repl)
+    repl.ui = tui_mod.TuiUi(app)
+    async with app.run_test(size=(110, 32)) as pilot:
+        await pilot.pause(0.2)
+        app.query_one("#prompt").value = "run the command"
+        await pilot.press("enter")
+        shown = await _wait_until(pilot, lambda: isinstance(app.screen,
+                                                            tui_mod.ApprovalScreen),
+                                  timeout=5)
+        failures = _check(failures, "a risky tool call opens the approval modal", shown,
+                          type(app.screen).__name__)
+        failures = _check(failures, "the status bar shows the pending approval",
+                          await _wait_until(pilot,
+                                            lambda: "approval" in _status_text(app),
+                                            timeout=2),
+                          _status_text(app))
+        await pilot.press("n")
+        await _wait_until(pilot, lambda: not app._busy, timeout=8)
+        failures = _check(failures, "denying leaves the command unrun", not marker.exists())
+        denied = [message for message in repl.session.messages
+                  if message["role"] == "tool"
+                  and "denied by the user" in message.get("content", "")]
+        failures = _check(failures, "the model is told the call was denied",
+                          bool(denied), str(repl.session.messages)[-300:])
+
+        # the same call, approved this time
+        app.query_one("#prompt").value = "run it again"
+        await pilot.press("enter")
+        await _wait_until(pilot, lambda: isinstance(app.screen, tui_mod.ApprovalScreen),
+                          timeout=5)
+        await pilot.press("enter")
+        await _wait_until(pilot, lambda: not app._busy, timeout=8)
+        failures = _check(failures, "approving runs the tool", marker.exists())
+        results = [message for message in repl.session.messages
+                   if message["role"] == "tool" and "exit 0" in message.get("content", "")]
+        failures = _check(failures, "the tool result is fed back to the model",
+                          bool(results), str(repl.session.messages)[-300:])
+        failures = _check(failures, "the answer after the tool loop gets the divider",
+                          "response" in _transcript_text(app),
+                          _transcript_text(app)[-200:])
+    shutil.rmtree(tmp, ignore_errors=True)
+    shutil.rmtree(str(marker.parent), ignore_errors=True)
+    return failures
+
+
+async def _tui_quit(tui_mod) -> int:
+    failures = 0
+    long_script = [{"message": {"content": f"w{index} "}} for index in range(40)] \
+        + [{"done": True}]
+    repl, client, tmp = _tui_setup(scripts=[long_script], delay=0.2)
+    app = tui_mod.OllamarunTui(repl)
+    repl.ui = tui_mod.TuiUi(app)
+    async with app.run_test(size=(110, 32)) as pilot:
+        await pilot.pause(0.2)
+        app.query_one("#prompt").value = "long one"
+        await pilot.press("enter")
+        await _wait_until(pilot, lambda: app._busy, timeout=3)
+        await pilot.press("ctrl+q")
+        await pilot.pause(0.2)
+        failures = _check(failures, "Ctrl+Q asks before dropping a running turn",
+                          app.is_running and "Ctrl+Q again" in app._hint, app._hint)
+        await pilot.press("ctrl+q")
+        await pilot.pause(0.4)
+        failures = _check(failures, "a second Ctrl+Q quits", not app.is_running)
+    shutil.rmtree(tmp, ignore_errors=True)
+    return failures
+
+
+def test_cancel_stops_turn() -> int:
+    """Esc Esc: the stream stops, the partial answer is kept, the queue runs."""
+    failures = 0
+    repl, client, tmp = _test_repl()
+
+    class CancelClient(_FakeClient):
+        def chat(self, payload, timeout=None, cancel=None):
+            self.chat_payloads.append(payload)
+            self.chat_calls += 1
+
+            def gen():
+                yield {"message": {"content": "partial answer"}}
+                for _ in range(200):
+                    if cancel is not None and cancel.cancelled:
+                        return
+                    time.sleep(0.01)
+                    yield {"message": {"content": " more"}}
+                yield {"done": True}
+
+            return gen()
+
+    repl.client = CancelClient()
+    threaded = threading.Thread(target=lambda: repl.send("write an essay"))
+    threaded.start()
+    time.sleep(0.2)
+    failures = _check(failures, "turn is running", threaded.is_alive())
+    repl.queue_message("never mind")
+    repl.cancel_token.cancel()
+    threaded.join(10)
+    failures = _check(failures, "cancel ends the turn", not threaded.is_alive())
+    assistants = [message for message in repl.session.messages
+                  if message.get("role") == "assistant"]
+    last_assistant = assistants[-1] if assistants else {}
+    failures = _check(failures, "the partial answer is kept and marked cancelled",
+                      last_assistant.get("cancelled") is True
+                      and last_assistant.get("content", "").startswith("partial answer"),
+                      json.dumps(repl.session.messages)[-200:])
+    failures = _check(failures, "the queued message survives the stop",
+                      len(repl.queue) == 1, repl.queue.describe())
     return failures
 
 
@@ -3964,6 +4755,9 @@ if __name__ == "__main__":
              + test_tool_payloads() + test_tool_cli_flags()
              + test_tts_tools() + test_tts_command() + test_tts_auto_speak()
              + test_client_http() + test_cmd_image()
+             + test_message_queue() + test_status_format() + test_cancel_token()
+             + test_stream_cancel() + test_boundary_delivery()
+             + test_cancel_stops_turn() + test_tui_app()
              + test_live_stream_final_frame_is_complete())
     if total:
         print(f"\n{total} failure(s)")

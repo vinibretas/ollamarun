@@ -86,7 +86,23 @@ except ImportError:  # pragma: no cover - fallback path
     HAS_PYLATEXENC = False
     LatexNodes2Text = None
 
-VERSION = "1.28"
+# The Textual TUI (`--ui tui`) is optional: without it the inline
+# prompt_toolkit REPL is used and the flag degrades with a note. Only the
+# names re-exported for the package are bound here; `tui.py` imports the rest.
+TEXTUAL_MIN_VERSION = "1.0"
+try:
+    import textual
+    from textual.app import App as TextualApp  # noqa: F401
+    from textual.widgets import Input as _TextualInput  # noqa: F401
+
+    HAS_TEXTUAL = True
+    TEXTUAL_VERSION = getattr(textual, "__version__", "?")
+except ImportError:  # pragma: no cover - fallback path
+    HAS_TEXTUAL = False
+    TEXTUAL_VERSION = ""
+    TextualApp = None
+
+VERSION = "1.29"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -213,6 +229,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "render": "markdown",
     "math": True,
     "thinking": "collapsed",
+    "ui": "inline",
     "show_stats": False,
     "auto_title": False,
     "auto_compact": "ask",
@@ -244,6 +261,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 THINKING_MODES = {"collapsed", "expanded", "hidden"}
+UI_MODES = {"inline", "tui", "auto"}
 CTRL_T = 0x14
 
 EMBED_MODEL_HINTS = {"bert", "nomic-embed", "mxbai-embed", "all-minilm", "snowflake-arctic-embed"}
