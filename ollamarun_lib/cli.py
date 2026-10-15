@@ -22,8 +22,11 @@ from .constants import (
     DEFAULT_HOST,
     DEFAULT_TIMEOUT,
     EMBED_MODEL_HINTS,
+    HAS_TEXTUAL,
     LOG_PATH,
     REMOTE_PROBE_TIMEOUT,
+    TEXTUAL_MIN_VERSION,
+    UI_MODES,
     VERSION,
     console,
     set_tool_colors,
@@ -63,6 +66,33 @@ from .run import run_embed, run_once
 from .session import Session, SessionStore
 
 
+def ui_mode(args: argparse.Namespace, config: dict[str, Any]) -> str:
+    """Which interactive front end to start: inline, tui, or the auto choice."""
+    wanted = (getattr(args, "ui", None) or config.get("ui") or "inline").lower()
+    if wanted not in UI_MODES:
+        wanted = "inline"
+    if wanted == "auto":
+        wanted = "tui"
+    return wanted
+
+
+def wants_tui(args: argparse.Namespace, config: dict[str, Any]) -> bool:
+    """True when the Textual front end should be used for this run."""
+    if ui_mode(args, config) != "tui":
+        return False
+    if not HAS_TEXTUAL:
+        console.print(f"[warn]--ui tui needs the textual package "
+                      f"({TEXTUAL_MIN_VERSION}+) — using the inline REPL[/warn]")
+        return False
+    from .tui import tui_available
+
+    ok, reason = tui_available()
+    if not ok:
+        console.print(f"[warn]{escape(reason)} — using the inline REPL[/warn]")
+        return False
+    return True
+
+
 def build_parser() -> argparse.ArgumentParser:
     epilog = """\
 interactive commands:
@@ -89,9 +119,19 @@ interactive commands:
   /gpu-layers [SPEC]    GPU layers: N, P%, +N/-N, all, cpu or auto
   /image PATH           attach an image to the next message
   /export [FILE]        export mid-session as md/json/html
+  /queue [list|clear|rm N]  what is waiting while a turn is running (--ui tui)
 
 while a response streams:
   Ctrl+T                expand the thinking panel (press again to collapse)
+  --ui tui: Enter queues a message, Ctrl+B sends what you typed right now,
+            Esc Esc stops the turn, /queue shows what is waiting
+
+front end:
+  --ui inline|tui|auto  inline (default) keeps the scrolling prompt_toolkit
+                        REPL; tui splits the screen into transcript, status bar
+                        and an always-available input box (needs the optional
+                        textual package); auto picks tui when it is installed.
+                        Config key: "ui".
 
 model housekeeping:
   /model and /load unload the previous model before switching; leaving the
@@ -196,6 +236,10 @@ sessions live in ~/etc/data/ollamarun; config in ~/etc/config_files/ollamarun.js
                                    "the unload_on_exit config default)")
     wrapper.add_argument("--pager", action="store_true",
                          help="page long transcripts")
+    wrapper.add_argument("--ui", choices=["inline", "tui", "auto"], metavar="MODE",
+                         help="interactive front end: inline (default prompt_toolkit "
+                              "REPL), tui (Transcript / status bar / always-on input "
+                              "box, Textual) or auto (tui when Textual is installed)")
     tools_group = wrapper.add_mutually_exclusive_group()
     tools_group.add_argument("--tools", action="store_true",
                              help="enable the tool harness (default: on; the model "
@@ -631,6 +675,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not console.is_terminal:
             console.print("[err]no prompt given on a non-interactive stdin[/err]")
             return 2
+        if wants_tui(args, config):
+            from .tui import run_tui
+
+            return run_tui(repl)
         return repl.run()
     except KeyboardInterrupt:
         console.print()

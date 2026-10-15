@@ -1,16 +1,17 @@
 """Ollama HTTP client: wraps `/api/chat`, `/api/generate`, `/api/embed`,
 `/api/ps`, `/api/create` etc. over raw `requests`, streaming response bodies
-line-by-line.
+line-by-line and supporting cancellation of an in-flight stream.
 """
 from __future__ import annotations
 
 import json
+import threading
 from typing import Any, Callable, Iterator, Optional
 
 import requests
 
 from .constants import DEFAULT_HOST, DEFAULT_TIMEOUT
-from .helpers import canonical_model_name, normalize_host
+from .helpers import CancelToken, canonical_model_name, normalize_host
 
 
 class OllamaError(RuntimeError):
@@ -26,6 +27,10 @@ class OllamaClient:
         self.insecure = insecure
         self.timeout = timeout
         self.http = requests.Session()
+        # The stream being read right now, so another thread can close it and
+        # unblock the reader (see `abort_stream`).
+        self._stream_lock = threading.Lock()
+        self._active_stream: Optional[requests.Response] = None
 
     def _url(self, path: str) -> str:
         return self.base + path
@@ -102,12 +107,34 @@ class OllamaClient:
         except OllamaError:
             return False
 
+    def abort_stream(self) -> bool:
+        """Close the stream being read right now (safe no-op when idle).
+
+        Called from the UI thread to make a blocked `iter_lines()` return, so a
+        cancelled turn stops immediately instead of waiting for the next chunk.
+        """
+        with self._stream_lock:
+            response = self._active_stream
+        if response is None:
+            return False
+        try:
+            response.close()
+        except Exception:  # closing a half-read response must never raise
+            pass
+        return True
+
     def stream_ndjson(self, path: str, payload: dict,
-                      timeout: Optional[float] = None) -> Iterator[dict[str, Any]]:
+                      timeout: Optional[float] = None,
+                      cancel: Optional[CancelToken] = None
+                      ) -> Iterator[dict[str, Any]]:
         response = self._request("POST", path, payload=payload, stream=True,
                                  timeout=timeout or self.timeout)
+        with self._stream_lock:
+            self._active_stream = response
         try:
             for raw in response.iter_lines(decode_unicode=False):
+                if cancel is not None and cancel.cancelled:
+                    return
                 if not raw:
                     continue
                 try:
@@ -115,13 +142,25 @@ class OllamaClient:
                 except (ValueError, UnicodeDecodeError) as exc:
                     raise OllamaError(f"bad stream chunk from {path}: {exc}") from exc
         except requests.RequestException as exc:
+            if cancel is not None and cancel.cancelled:
+                return  # the abort we asked for, not an error
+            raise OllamaError(f"stream interrupted: {exc}") from exc
+        except Exception as exc:
+            # Closing the response under a blocked read surfaces as assorted
+            # low-level errors (urllib3/socket/ValueError); with a cancel
+            # requested they all just mean "cancelled".
+            if cancel is not None and cancel.cancelled:
+                return
             raise OllamaError(f"stream interrupted: {exc}") from exc
         finally:
+            with self._stream_lock:
+                self._active_stream = None
             response.close()
 
-    def chat(self, payload: dict, timeout: Optional[float] = None) -> Iterator[dict[str, Any]]:
+    def chat(self, payload: dict, timeout: Optional[float] = None,
+             cancel: Optional[CancelToken] = None) -> Iterator[dict[str, Any]]:
         payload = {**payload, "stream": True}
-        return self.stream_ndjson("/api/chat", payload, timeout=timeout)
+        return self.stream_ndjson("/api/chat", payload, timeout=timeout, cancel=cancel)
 
     def chat_once(self, payload: dict, timeout: Optional[float] = None) -> dict[str, Any]:
         payload = {**payload, "stream": False}
