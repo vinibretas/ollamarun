@@ -5,11 +5,11 @@ ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 Version: 1.25
 
 Summary of changes in this version:
-  - Approval rules. The tool-confirmation prompt is a checkbox picker now:
-    space ticks rows, enter runs the call and stores what is ticked, `a`
-    auto-allows every later call (the old "A") and `d`/escape denies. Next to
-    "allow exactly this call" (the old "a") the picker suggests generalized,
-    session-scoped rules derived from the call itself -- `shell: mkdir -p :*`
+  - Approval rules. The tool-confirmation prompt lists numbered choices and
+    you type one: `1/y` runs once, `2/a` always allows that exact call, the
+    middle numbers always allow a suggested generalized rule, `A`
+    auto-allows every later call and `n` denies. The suggested rules are
+    session-scoped and derived from the call itself -- `shell: mkdir -p :*`
     (a literal command prefix), `path: ~/proj/**` (a directory tree,
     writes included) and `python: imports os,sys` (module roots a snippet
     may import and use).
@@ -135,8 +135,8 @@ Summary of changes in this version:
     always run; run_shell runs unattended only when every command segment is on
     the safe list (ls, cat, grep, rg, find without -exec/-delete, read-only git,
     ...) and run_python only when an AST scan proves the snippet cannot touch
-    files or the OS; everything else asks through the picker, which can
-    remember that exact call or store a broader rule. Unattended runs deny
+    files or the OS; everything else asks through the numbered prompt, which
+    can remember that exact call or store a broader rule. Unattended runs deny
     non-approved calls with a note the
     model can explain, unless -y/--yes or `/tools policy auto`; write_file
     always asks by default.

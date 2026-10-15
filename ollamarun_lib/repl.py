@@ -31,16 +31,11 @@ from .constants import (
     HAS_PYPERCLIP,
     HISTORY_PATH,
     THINKING_MODES,
-    Application,
     Completer,
     Completion,
     FileHistory,
-    FormattedTextControl,
     KeyBindings,
-    Layout,
     PromptSession,
-    PromptStyle,
-    Window,
     console,
     patch_stdout,
     pyperclip,
@@ -179,97 +174,37 @@ class SlashCompleter(Completer):  # type: ignore[misc]
                     yield Completion(entry["id"], start_position=-len(argument))
 
 
-class ApprovalPicker:
-    """Checkbox state machine behind the tool-approval prompt.
+def _prompt_approval(suggestions: list[ToolRule]) -> tuple[str, Optional[ToolRule]]:
+    """Numbered, typed approval prompt for one tool call.
 
-    Rows are the suggested approval rules (plus the exact-call grant). Space
-    toggles the row under the cursor, enter runs the call storing what is
-    ticked, `a` switches to auto-allowing every later call and `d`/`q`/escape
-    deny. Pure key handling, so tests can drive it without a terminal.
+    Lists every choice on its own line -- `1/y` run once, `2/a` always allow
+    the exact call, one line per suggested generalized rule, `A` auto-allow
+    every later call, `n` deny -- and reads a single typed number or letter.
+    Returns (action, rule) with action "run" | "remember" | "rule" | "auto"
+    | "deny"; "rule" carries the ToolRule to store.
     """
-
-    def __init__(self, labels: list[str]):
-        self.labels = labels
-        self.cursor = 0
-        self.ticked: set[int] = set()
-        self.action: Optional[str] = None
-
-    def handle(self, key: str) -> bool:
-        """Process one key press; True once the picker is resolved."""
-        if key in {"up", "k", "c-p"}:
-            self.cursor = (self.cursor - 1) % max(1, len(self.labels))
-        elif key in {"down", "j", "c-n"}:
-            self.cursor = (self.cursor + 1) % max(1, len(self.labels))
-        elif key == "space":
-            self.ticked ^= {self.cursor}
-        elif key in {"enter", "c-j"}:
-            self.action = "run"
-            return True
-        elif key == "a":
-            self.action = "auto"
-            return True
-        elif key in {"d", "q", "escape"}:
-            self.action = "deny"
-            return True
-        return False
-
-    def render(self) -> list[tuple[str, str]]:
-        lines: list[tuple[str, str]] = []
-        for index, label in enumerate(self.labels):
-            pointer = "❯ " if index == self.cursor else "  "
-            marker = "[x]" if index in self.ticked else "[ ]"
-            style = "class:pick-cursor" if index == self.cursor else ""
-            lines.append((style, f"{pointer}{marker} {label}\n"))
-        lines.append(("class:pick-hint",
-                      " space toggle · enter run · a auto-allow all · d deny"))
-        return lines
-
-
-def _run_approval_picker_text(picker: ApprovalPicker) -> None:
-    """Plain prompt fallback when prompt_toolkit is unavailable."""
-    choices = " · ".join(f"[{index + 1}] {label}"
-                         for index, label in enumerate(picker.labels))
-    answer = Prompt.ask(
-        f"[y] run once only · {choices} · [a] auto-allow all · [n] deny",
-        default="y").strip().lower()
-    if answer in {"a", "auto"}:
-        picker.action = "auto"
-    elif answer.isdigit() and 1 <= int(answer) <= len(picker.labels):
-        picker.action = "run"
-        picker.ticked = {int(answer) - 1}
-    elif answer in {"y", "yes", ""}:
-        picker.action = "run"
-    else:
-        picker.action = "deny"
-
-
-def _run_approval_picker(picker: ApprovalPicker, *, input_source: Any = None,
-                         output: Any = None) -> None:
-    """Run the checkbox picker on the terminal, filling in `picker.action`.
-
-    `input_source`/`output` are the prompt_toolkit test seam: pass a pipe
-    input and a DummyOutput to drive the picker headlessly.
-    """
-    if not HAS_PROMPT_TOOLKIT or Application is None:
-        _run_approval_picker_text(picker)
-        return
-    control = FormattedTextControl(text=picker.render, focusable=True)
-    key_bindings = KeyBindings()
-
-    def bind(key: str) -> None:
-        @key_bindings.add(key)
-        def _handler(event: Any) -> None:
-            if picker.handle(key):
-                event.app.exit()
-
-    for key in ("up", "k", "c-p", "down", "j", "c-n", "space", "enter",
-                "c-j", "a", "d", "q", "escape"):
-        bind(key)
-    app = Application(layout=Layout(Window(control)), key_bindings=key_bindings,
-                      style=PromptStyle.from_dict({"pick-cursor": "reverse",
-                                                   "pick-hint": "fg:ansibrightblack"}),
-                      full_screen=False, input=input_source, output=output)
-    app.run()
+    entries: list[tuple[str, Optional[ToolRule], str]] = [
+        ("run", None, "run once"),
+        ("remember", None, "always allow exactly this call"),
+    ]
+    for suggestion in suggestions:
+        entries.append(("rule", suggestion,
+                        f"always allow {rule_label(suggestion)} (this session)"))
+    entries.append(("auto", None, "auto-allow every later call  [CAREFUL]"))
+    entries.append(("deny", None, "deny"))
+    letters = {0: "y", 1: "a", len(entries) - 2: "A", len(entries) - 1: "n"}
+    for index, (_action, _rule, label) in enumerate(entries):
+        tag = f"{index + 1}/{letters[index]}" if index in letters else str(index + 1)
+        console.print(f"  [key]{tag:<4}[/key] {escape(label)}")
+    choices = [str(index + 1) for index in range(len(entries))]
+    choices += list(letters.values())
+    answer = Prompt.ask("[dim]choose[/dim]", choices=choices, default="1",
+                        show_choices=False).strip()
+    for index, letter in letters.items():
+        if answer == letter:
+            return entries[index][0], entries[index][1]
+    action, rule, _label = entries[int(answer) - 1]
+    return action, rule
 
 
 class Repl:
@@ -600,37 +535,23 @@ class Repl:
             return False, f"not auto-approved ({decision.reason}) and this run is unattended"
         console.print(f"[warn]{escape(spec.name)} needs confirmation: "
                       f"{escape(decision.reason)}[/warn]")
-        rows: list[tuple[str, Optional[ToolRule], str]] = [
-            ("call", None, "allow exactly this call")]
-        for suggestion in suggest_rules(spec.name, args, cwd=self.tool_ctx.cwd):
-            rows.append(("rule", suggestion, rule_label(suggestion)))
-        picker = ApprovalPicker([label for _kind, _rule, label in rows])
-        _run_approval_picker(picker)
-        if picker.action == "auto":
+        action, rule = _prompt_approval(
+            suggest_rules(spec.name, args, cwd=self.tool_ctx.cwd))
+        if action == "auto":
             self.auto_approve = True
             self.session.touch()
             return True, "auto-allow everything (careful)"
-        if picker.action != "run":
+        if action == "deny":
             return False, "denied by the user"
-        remembered_call = False
-        stored_rules: list[dict[str, Any]] = []
-        stored: list[str] = []
-        for index in sorted(picker.ticked):
-            kind, rule, _label = rows[index]
-            if kind == "call":
-                remembered_call = True
-            elif rule is not None:
-                stored_rules.append(rule.to_dict())
-                stored.append(rule_label(rule))
-        if remembered_call:
+        if action == "remember":
             self.session.tool_allow = list(self.session.tool_allow or []) + [fingerprint]
-            stored.insert(0, "exactly this call")
-        if stored_rules:
-            self.session.tool_rules = list(self.session.tool_rules or []) + stored_rules
-        if stored:
             self.session.touch()
-            console.print("[dim]stored rule(s):[/dim] "
-                          + escape(" · ".join(stored)))
+            console.print("[dim]stored rule:[/dim] exactly this call")
+            return True, "allowed (remembered)"
+        if action == "rule" and rule is not None:
+            self.session.tool_rules = list(self.session.tool_rules or []) + [rule.to_dict()]
+            self.session.touch()
+            console.print(f"[dim]stored rule:[/dim] {escape(rule_label(rule))}")
             return True, "allowed (remembered)"
         return True, "confirmed"
 
@@ -1122,8 +1043,8 @@ def _cmd_tools_rules(repl: Repl, parts: list[str]) -> None:
         return
     rows = _rule_rows(repl)
     if not rows:
-        console.print("[dim]no stored approval rules — tick a pattern in the "
-                      "confirmation picker or add one with /tools rules add[/dim]")
+        console.print("[dim]no stored approval rules — pick a pattern number in "
+                      "the confirmation prompt or add one with /tools rules add[/dim]")
         return
     table = Table(title="approval rules", box=box.ROUNDED,
                   header_style="bold magenta", row_styles=["", "dim"])

@@ -2865,7 +2865,8 @@ def test_tool_commands() -> int:
 
 def test_approval_rules() -> int:
     failures = 0
-    from ollamarun_lib.repl import _run_approval_picker, _run_approval_picker_text
+    import ollamarun_lib.repl as repl_module
+    from ollamarun_lib.repl import _prompt_approval
 
     # ── the hard floor no rule may ever cover ──────────────────────────────
     floor = ["sudo ls", "dd if=/dev/zero of=/dev/sda", "rm -rf /", "rm -rf ~",
@@ -3098,63 +3099,125 @@ def test_approval_rules() -> int:
                           orun.ToolRule.from_dict({"kind": "nope", "pattern": "x"}) is None
                           and orun.ToolRule.from_dict("x") is None)
 
-    # ── the picker state machine ───────────────────────────────────────────
-    picker = orun.ApprovalPicker(["exact", "shell rule"])
-    picker.handle("space")
-    picker.handle("down")
-    picker.handle("space")
-    failures = _check(failures, "picker toggles rows and confirms",
-                      picker.handle("enter") and picker.action == "run"
-                      and picker.ticked == {0, 1}, str(picker.ticked))
-    picker = orun.ApprovalPicker(["x"])
-    picker.handle("space")
-    picker.handle("space")
-    failures = _check(failures, "picker space toggles off again", picker.ticked == set())
-    picker = orun.ApprovalPicker(["x"])
-    picker.handle("c-j")
-    failures = _check(failures, "picker treats c-j (pty enter) as enter",
-                      picker.action == "run", picker.action)
-    picker = orun.ApprovalPicker(["x"])
-    picker.handle("a")
-    failures = _check(failures, "picker 'a' switches to auto-allow", picker.action == "auto")
-    for key in ("d", "q", "escape"):
-        picker = orun.ApprovalPicker(["x"])
-        picker.handle(key)
-        failures = _check(failures, f"picker {key} denies", picker.action == "deny")
-
-    if orun.HAS_PROMPT_TOOLKIT:
-        from prompt_toolkit.input import create_pipe_input
-        from prompt_toolkit.output import DummyOutput
-
-        picker = orun.ApprovalPicker(["exact", "shell rule"])
-        with create_pipe_input() as pipe:
-            pipe.send_text("\x1b[B \r")  # down, space, enter
-            _run_approval_picker(picker, input_source=pipe, output=DummyOutput())
-        failures = _check(failures, "picker Application runs headlessly",
-                          picker.action == "run" and picker.ticked == {1},
-                          f"{picker.action} {picker.ticked}")
-
-    import ollamarun_lib.repl as repl_module
-
+    # ── the numbered approval prompt ───────────────────────────────────────
     class _StubPrompt:
-        answer = "2"
+        answer = "1"
+        seen: list = []
 
         @classmethod
-        def ask(cls, *_args, **_kwargs):
+        def ask(cls, *args, **kwargs):
+            cls.seen.append({"args": args, **kwargs})
             return cls.answer
 
     original_prompt = repl_module.Prompt
     repl_module.Prompt = _StubPrompt
     try:
-        picker = orun.ApprovalPicker(["one", "two"])
-        _run_approval_picker_text(picker)
-        failures = _check(failures, "text fallback picks a numbered rule",
-                          picker.action == "run" and picker.ticked == {1},
-                          f"{picker.action} {picker.ticked}")
-        _StubPrompt.answer = "n"
-        picker = orun.ApprovalPicker(["one"])
-        _run_approval_picker_text(picker)
-        failures = _check(failures, "text fallback denies", picker.action == "deny")
+        suggestions = [
+            orun.ToolRule(kind="shell", pattern="mkdir -p :*", created="t"),
+            orun.ToolRule(kind="path", pattern="**", base="/tmp/x", created="t"),
+        ]
+        _StubPrompt.answer = "1"
+        with orun.console.capture() as cap:
+            action, rule = _prompt_approval(suggestions)
+        out = _plain(cap.get())
+        failures = _check(failures, "prompt default answer runs once",
+                          (action, rule) == ("run", None), f"{action} {rule}")
+        failures = _check(failures, "prompt numbers every row with letters "
+                          "for the fixed actions",
+                          "1/y" in out and "2/a" in out and "5/A" in out
+                          and "6/n" in out and "3 " in out and "4 " in out, out)
+        failures = _check(failures, "prompt lists the suggested rules",
+                          "mkdir -p :*" in out and "/tmp/x/**" in out, out)
+        kwargs = _StubPrompt.seen[-1]
+        failures = _check(failures, "prompt offers every number and letter",
+                          all(choice in kwargs.get("choices", [])
+                              for choice in ["1", "2", "3", "4", "5", "6",
+                                             "y", "a", "A", "n"])
+                          and kwargs.get("default") == "1", str(kwargs))
+        expected = [
+            ("1", "run", None), ("y", "run", None),
+            ("2", "remember", None), ("a", "remember", None),
+            ("3", "rule", "shell"), ("4", "rule", "path"),
+            ("5", "auto", None), ("A", "auto", None),
+            ("6", "deny", None), ("n", "deny", None),
+        ]
+        for answer, want_action, want_kind in expected:
+            _StubPrompt.answer = answer
+            with orun.console.capture():
+                action, rule = _prompt_approval(suggestions)
+            ok = action == want_action and ((rule is None) if want_kind is None
+                                            else (rule is not None
+                                                  and rule.kind == want_kind))
+            failures = _check(failures, f"prompt answer {answer!r}",
+                              ok, f"{action} {rule}")
+
+        # ── interactive flow through _approve_tool_call ─────────────────────
+        class _TerminalConsole:
+            is_terminal = True
+
+            @staticmethod
+            def print(*args, **kwargs):
+                orun.console.print(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp2:
+            store2 = orun.SessionStore(sessions_dir=Path(tmp2) / "s",
+                                       index_path=Path(tmp2) / "i.json")
+            args2 = orun.build_parser().parse_args(
+                ["m1", "--render", "plain", "--no-save"])
+            client2 = _FakeClient(models=["m1"], capabilities=["completion", "tools"])
+            repl2 = orun.Repl(args2, dict(orun.DEFAULT_CONFIG), client2, store2,
+                              orun.Session.create("m1", client2.base))
+            repl2._build_prompt_session = lambda: None
+            shell_spec = repl2.tool_registry["run_shell"]
+            original_console = repl_module.console
+            repl_module.console = _TerminalConsole()
+            try:
+                deny_args = {"command": "rm /tmp/approval-b/x"}
+                _StubPrompt.answer = "n"
+                with orun.console.capture():
+                    run, note = repl2._approve_tool_call(
+                        shell_spec, deny_args,
+                        orun.call_fingerprint("run_shell", deny_args))
+                failures = _check(failures, "typing n denies the call",
+                                  run is False and note == "denied by the user", note)
+                store_args = {"command": "mkdir -p /tmp/approval-a/x"}
+                _StubPrompt.answer = "3"
+                with orun.console.capture() as cap:
+                    run, note = repl2._approve_tool_call(
+                        shell_spec, store_args,
+                        orun.call_fingerprint("run_shell", store_args))
+                failures = _check(failures, "typing a rule number stores it and runs",
+                                  run is True and "stored rule" in _plain(cap.get())
+                                  and [entry.get("pattern")
+                                       for entry in repl2.session.tool_rules]
+                                  == ["mkdir -p :*"],
+                                  str(repl2.session.tool_rules))
+                failures = _check(failures, "the stored rule matches the call again",
+                                  orun.matching_rule(repl2._session_rules(),
+                                                     "run_shell", store_args,
+                                                     cwd=repl2.tool_ctx.cwd,
+                                                     shell_allow=repl2.shell_allow)
+                                  is not None)
+                remember_args = {"command": "cp /tmp/approval-c/x /tmp/approval-c/y"}
+                _StubPrompt.answer = "2"
+                with orun.console.capture():
+                    run, note = repl2._approve_tool_call(
+                        shell_spec, remember_args,
+                        orun.call_fingerprint("run_shell", remember_args))
+                failures = _check(failures, "typing 2 remembers the exact call",
+                                  run is True
+                                  and orun.call_fingerprint("run_shell", remember_args)
+                                  in repl2.session.tool_allow)
+                auto_args = {"command": "rm /tmp/approval-d/x"}
+                _StubPrompt.answer = "A"
+                with orun.console.capture():
+                    run, note = repl2._approve_tool_call(
+                        shell_spec, auto_args,
+                        orun.call_fingerprint("run_shell", auto_args))
+                failures = _check(failures, "typing A switches to auto-allow",
+                                  run is True and repl2.auto_approve is True)
+            finally:
+                repl_module.console = original_console
     finally:
         repl_module.Prompt = original_prompt
     return failures
