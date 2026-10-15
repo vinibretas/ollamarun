@@ -2,7 +2,7 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.25
+Version: 1.27
 
 Summary of changes in this version:
   - Approval rules. The tool-confirmation prompt lists numbered choices and
@@ -25,6 +25,37 @@ Summary of changes in this version:
   - `/tools rules` lists every stored grant (exact fingerprints included),
     `rm N…` removes one and `add shell|path|python|call …` adds one by hand;
     the `/tools` status line shows the count.
+  - Context fitting for the GPU. `/num-ctx --max-gpu` (CLI: `--num-ctx
+    max-gpu`) picks the largest context that still keeps the model fully on
+    the GPU. The estimate is built from what is deterministic: KV-cache
+    bytes per token from /api/show's GGUF metadata (llama.cpp's own formula,
+    per-layer head_count_kv arrays from hybrid models included,
+    key/value_length fallbacks, OLLAMA_NUM_PARALLEL slices and
+    OLLAMA_KV_CACHE_TYPE element sizes), the on-disk model size from
+    /api/tags, and the machine's free VRAM -- nvidia-smi locally, one
+    BatchMode ssh probe for --remote hosts (reading LLAMA_ARG_FIT_TARGET /
+    OLLAMA_NUM_PARALLEL / OLLAMA_KV_CACHE_TYPE from the ollama unit too).
+    A pinned /gpu-layers is honoured (the fit targets that layer set, and
+    with per-layer KV metadata only the attention blocks in the offloaded
+    tail count). The fit margin mirrors llama.cpp's 1 GiB per device
+    (config max_gpu_margin_mb) and max_gpu_overhead_mb reserves room for the
+    compute/output/recurrent buffers the metadata cannot see. The chosen
+    value is set like any other /num-ctx value; a machine whose ollama is
+    bound to its own tailnet address is recognised as "this machine".
+  - `/num-ctx --max-gpu --probe` (CLI: `--max-gpu-probe`) verifies by
+    loading: the model is warmed at candidate contexts and each real GPU
+    split is read back from /api/ps. Partial loads only contribute their
+    sign (their reported size double-counts CPU buffers), so candidates are
+    re-placed by bisecting footprint bytes -- the size a full offload would
+    report is affine in the context, exactly the relation llama.cpp's own
+    fit interpolates -- until the largest 100%-GPU context is bracketed
+    (config max_gpu_probes, default 8). Probe loads unload first so the
+    free-VRAM reading is clean, and the model is left warm at the chosen
+    context. `/num-ctx --help` documents the whole thing.
+  - `host_is_self()` (helpers) recognises a base URL that points at this
+    machine by hostname, its resolved addresses or its own tailnet IPs, so
+    `--host <my-tailscale-ip>` gets a local VRAM probe and `--remote` on the
+    machine you are already on falls back to local instead of a failing ssh.
   - Tool calls are colour-coded. Every tool has its own colour for the call
     panel (the arguments box after the model asks for a tool), the
     "running NAME…" line and the "tool · NAME" title of its result panel --

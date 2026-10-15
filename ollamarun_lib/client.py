@@ -155,11 +155,14 @@ class OllamaClient:
     def unload(self, model: str) -> None:
         self._json("POST", "/api/generate", {"model": model, "keep_alive": 0})
 
-    def load(self, model: str, *, keepalive: Optional[str] = None) -> None:
+    def load(self, model: str, *, keepalive: Optional[str] = None,
+             options: Optional[dict[str, Any]] = None) -> None:
         """Warms a model into memory without generating anything."""
         payload: dict[str, Any] = {"model": model}
         if keepalive:
             payload["keep_alive"] = keepalive
+        if options:
+            payload["options"] = options
         self._json("POST", "/api/generate", payload)
 
     def pull_model(self, model: str,
