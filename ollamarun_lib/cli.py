@@ -26,6 +26,7 @@ from .constants import (
     REMOTE_PROBE_TIMEOUT,
     VERSION,
     console,
+    set_tool_colors,
 )
 from .emit import cli_delete, cli_export, cli_list, cli_search, cli_show
 from .helpers import (
@@ -410,6 +411,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if resuming and args.model and not args.prompt and not args.model_flag:
         args.prompt, args.model = [args.model], None
     config = load_config(Path(args.config) if args.config else None)
+    set_tool_colors(config.get("tool_colors"))
     setup_logging(args.debug)
 
     if args.reindex:

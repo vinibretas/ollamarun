@@ -19,6 +19,7 @@ import zlib
 from pathlib import Path
 
 import requests
+from rich.color import Color, ColorParseError
 from rich.console import Console
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -1335,6 +1336,114 @@ def test_render_transcript_bubbles() -> int:
         print("PASS  render_transcript renders user/model chat bubbles")
     else:
         print(f"FAIL  render_transcript bubbles: {out!r}")
+        failures += 1
+    return failures
+
+
+def test_tool_colors() -> int:
+    failures = 0
+    orun.set_tool_colors({})  # known state: built-in colours, no memoised picks
+
+    invalid = []
+    for color in list(orun.TOOL_COLORS.values()) + list(orun.TOOL_COLOR_PALETTE):
+        try:
+            Color.parse(color)
+        except ColorParseError:
+            invalid.append(color)
+    if not invalid:
+        print("PASS  tool colours are valid rich colour names")
+    else:
+        print(f"FAIL  invalid tool colours: {invalid}")
+        failures += 1
+
+    if len(set(orun.TOOL_COLORS.values())) == len(orun.TOOL_COLORS):
+        print("PASS  every built-in tool has a unique colour")
+    else:
+        print(f"FAIL  duplicate built-in tool colours: {orun.TOOL_COLORS}")
+        failures += 1
+
+    if not (set(orun.TOOL_COLORS.values()) & set(orun.TOOL_COLOR_PALETTE)):
+        print("PASS  fallback palette is disjoint from the fixed colours")
+    else:
+        print("FAIL  palette overlaps fixed tool colours")
+        failures += 1
+
+    if orun.tool_color("run_shell") == orun.TOOL_COLORS["run_shell"]:
+        print("PASS  a mapped tool keeps its fixed colour")
+    else:
+        print(f"FAIL  mapped tool colour: {orun.tool_color('run_shell')!r}")
+        failures += 1
+
+    first = orun.tool_color("mystery_one")
+    again = orun.tool_color("mystery_one")
+    second = orun.tool_color("mystery_two")
+    if (first in orun.TOOL_COLOR_PALETTE and again == first and second != first
+            and second in orun.TOOL_COLOR_PALETTE):
+        print("PASS  unknown tools get stable, distinct random palette colours")
+    else:
+        print(f"FAIL  unknown tool colours: {first!r}, {again!r}, {second!r}")
+        failures += 1
+    if orun.tool_color("") == orun.tool_color("tool"):
+        print("PASS  a nameless call uses the 'tool' fallback colour")
+    else:
+        print(f"FAIL  nameless fallback: {orun.tool_color('')!r} "
+              f"vs {orun.tool_color('tool')!r}")
+        failures += 1
+
+    orun.set_tool_colors({"run_shell": "red", "mystery_one": "blue"})
+    if orun.tool_color("run_shell") == "red" and orun.tool_color("mystery_one") == "blue":
+        print("PASS  config tool_colors overrides win")
+    else:
+        print(f"FAIL  config overrides: {orun.tool_color('run_shell')!r} "
+              f"{orun.tool_color('mystery_one')!r}")
+        failures += 1
+
+    with orun.console.capture() as cap:
+        orun.set_tool_colors({"run_shell": "notacolor", "run_python": "bold green"})
+    warned = _plain(cap.get())
+    if (orun.tool_color("run_shell") == "cyan"
+            and orun.tool_color("run_python") == "bold green"
+            and "ignoring invalid tool colour" in warned):
+        print("PASS  invalid tool_colors values are ignored with a warning")
+    else:
+        print(f"FAIL  invalid override: {orun.tool_color('run_shell')!r} "
+              f"{orun.tool_color('run_python')!r} {warned!r}")
+        failures += 1
+    orun.set_tool_colors({})  # back to the built-ins for the rest of the suite
+
+    panel = orun.tool_call_panel("run_shell", {"command": "ls -la"})
+    if isinstance(panel, orun.Panel) and panel.border_style == "cyan" \
+            and panel.title.plain == "tool · run_shell" \
+            and str(panel.title.style) == "cyan":
+        print("PASS  tool_call_panel uses the tool colour for border and title")
+    else:
+        print(f"FAIL  tool_call_panel: {panel.border_style!r} {panel.title!r}")
+        failures += 1
+
+    result = orun.tool_result_panel("run_shell", detail="ls", text="out",
+                                    ok=False, duration=0.5)
+    name_spans = [span for span in result.title.spans
+                  if result.title.plain[span.start:span.end] == "run_shell"]
+    if (result.border_style == "red"
+            and result.title.plain == "tool · run_shell · failed · 0.50s"
+            and name_spans and str(name_spans[0].style) == "cyan"):
+        print("PASS  tool_result_panel keeps the ok/failed border and colours the name")
+    else:
+        print(f"FAIL  tool_result_panel: {result.border_style!r} "
+              f"{result.title.plain!r}")
+        failures += 1
+
+    session = orun.Session.create("m1", "http://h", title="tools")
+    session.add_message("assistant", "", tool_calls=[{
+        "function": {"name": "run_python", "arguments": {"code": "print(1)"}}}])
+    buffer = io.StringIO()
+    console = Console(file=buffer, width=100, force_terminal=False, theme=orun.THEME)
+    orun.render_transcript(session, console, show_stats=False)
+    out = _plain(buffer.getvalue())
+    if "run_python" in out and "print(1)" in out:
+        print("PASS  render_transcript renders the tool call panel")
+    else:
+        print(f"FAIL  transcript tool panel: {out!r}")
         failures += 1
     return failures
 
@@ -3367,7 +3476,8 @@ if __name__ == "__main__":
              + test_generate_waits_for_pending_preload_before_showing_ps()
              + test_empty_enter_sends_pending_images() + test_context_length()
              + test_naive_title() + test_chat_bubbles()
-             + test_render_transcript_bubbles() + test_ps_table_and_cmd_ps()
+             + test_render_transcript_bubbles() + test_tool_colors()
+             + test_ps_table_and_cmd_ps()
              + test_maybe_show_ps() + test_resolve_num_ctx()
              + test_context_usage()
              + test_cmd_num_ctx() + test_emit_and_cli_functions()

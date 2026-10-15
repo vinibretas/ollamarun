@@ -78,7 +78,7 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"1.22"`) and prepend a
+  constant in `ollamarun_lib/constants.py`, currently `"1.24"`) and prepend a
   new bullet list under `Summary of changes in this version:` in the
   top-level `ollamarun` entry script's module docstring — read the existing
   entries there before adding one; that block is the changelog, there is no
@@ -107,7 +107,10 @@ a module's own docstring for what lives there before editing:
 
 1. **`constants.py`** — shared stdlib/`rich`/optional-dependency imports,
    `VERSION`, config/session/log paths, `THEME`, the shared `console`
-   singleton, `DEFAULT_CONFIG`. Every other module sits on top of this one.
+   singleton, `DEFAULT_CONFIG`, and the tool-panel colours (`TOOL_COLORS`/
+   `TOOL_COLOR_PALETTE`, `tool_color()` with its random per-run fallback,
+   `set_tool_colors()` for the config `tool_colors` overrides). Every other
+   module sits on top of this one.
 2. **`helpers.py`** — small helpers: ISO timestamps, id generation,
    bool/host/think coercion, `--remote` resolution (`resolve_remote`,
    `remote_node`, `tailscale_map`, `tailscale_peer_state`, `is_local_host`),
@@ -140,7 +143,10 @@ a module's own docstring for what lives there before editing:
    `/thinking full` prints the stored panel directly), and
    `TpsEstimator` for the live `~tok/s` footer. Also has the chat-bubble
    helpers (`user_message_box`, small right-aligned box for a user turn;
-   `model_message_panel`, full-width titled box for a model turn) and
+   `model_message_panel`, full-width titled box for a model turn) and the
+   tool panels -- `tool_call_panel()`/`tool_result_panel()`, both coloured
+   by `constants.tool_color()` so every tool keeps one identity across the
+   live view and the transcript -- plus
    `render_transcript()` (replays a saved session the way it looked live,
    used by `/show`/`--show`). This is the piece that talks to the terminal
    frame-by-frame; changes to streaming UX go here.
