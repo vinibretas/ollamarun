@@ -78,7 +78,7 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"1.21"`) and prepend a
+  constant in `ollamarun_lib/constants.py`, currently `"1.22"`) and prepend a
   new bullet list under `Summary of changes in this version:` in the
   top-level `ollamarun` entry script's module docstring — read the existing
   entries there before adding one; that block is the changelog, there is no
@@ -150,13 +150,20 @@ a module's own docstring for what lives there before editing:
    progress events). `build_chat_payload()` assembles
    the request body from CLI args + session history.
 8. **`tools.py`** — the tool harness: `ToolSpec`/`default_registry()` (shell,
-   python, files, fetch, tts-remote speak/list_voices), the allowlist policy
+   python, files, `web_search` when `ddgs` is installed, `fetch_url`, tts-remote
+   speak/list_voices), the allowlist policy
    (`shell_safety`, `python_safety`, `approval_decision`), the approval-rule
    engine (`ToolRule`, `suggest_rules`, `rule_matches`, `dangerous_command`),
-   argument normalization, output truncation and `execute_tool()`. The agent
-   loop that calls into it lives in `repl.py` (approve → execute → append a
-   `role: tool` message → ask the model again), auto-speak lives in
-   `Repl.speak_text`, and rendering of calls/results is `renderer.py`.
+   argument normalization, output truncation and `execute_tool()`. The web half
+   is self-contained: `_HTMLTextExtractor`/`extract_html_text` turn pages into
+   readable text plus links, `extract_pdf_text` uses pypdf or pdftotext,
+   `format_fetch_response` maps a response onto model-readable text (never the
+   site's error page), `run_web_search` wraps ddgs and `TOOL_ALIASES`/
+   `resolve_tool_alias` map invented tool names (`search`, `curl`, ...) onto
+   the real ones. The agent loop that
+   calls into it lives in `repl.py` (approve → execute → append a `role: tool`
+   message → ask the model again), auto-speak lives in `Repl.speak_text`, and
+   rendering of calls/results is `renderer.py`.
 9. **`session.py`** — `Session` (in-memory conversation model: messages,
    model, system prompt, options) and `SessionStore` (atomic read/write of
    the JSON files + `index.json`, list/search/export/delete).

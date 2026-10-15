@@ -2,7 +2,7 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
-Version: 1.23
+Version: 1.24
 
 Summary of changes in this version:
   - Approval rules. The tool-confirmation prompt is a checkbox picker now:
@@ -25,6 +25,33 @@ Summary of changes in this version:
   - `/tools rules` lists every stored grant (exact fingerprints included),
     `rm N…` removes one and `add shell|path|python|call …` adds one by hand;
     the `/tools` status line shows the count.
+  - Tool-loop separation. A tool loop ends when the model finally commits to
+    an answer (a round that finishes without requesting more tools); that
+    answer is now separated from the processing above it by a bright
+    centered `response` rule, so narration that precedes further tool calls
+    is no longer mistaken for the answer. A round's fate is only known once
+    it finishes, so nothing changes while it streams -- the rule lands in
+    the frozen frame the moment the answer's round commits. Turns that never
+    call a tool render exactly as before, and cancelled/errored rounds are
+    left unmarked.
+  - Smarter web tooling. New `web_search` tool (present when the `ddgs`
+    package is installed): it returns titles, URLs and snippets, so the
+    model stops guessing URLs, and its results are cached per session.
+    `fetch_url` now returns readable page text instead of raw markup that
+    was truncated to a few KB of <head>/<script>: HTML becomes plain text
+    plus the page's links (the <article>/<main> region wins), JSON is
+    pretty-printed, and PDFs are text-extracted via pypdf or pdftotext.
+  - Failed fetches now teach instead of failing silently: 404/410, 403
+    bot walls (Cloudflare/Akamai), 429, 5xx, timeouts and DNS errors come
+    back as one actionable line ("the page does not exist... call
+    web_search") instead of the site's error page, JavaScript-only shells
+    and empty bodies say so explicitly, a search-engine URL (a Google/
+    Bing/DuckDuckGo /search page) is rerouted to `web_search`, and a URL
+    already fetched in the session is answered from that cache.
+  - The tool dispatcher resolves invented tool names onto the real ones
+    (`search`/`google` -> `web_search`, `browse`/`curl`/`get_url` ->
+    `fetch_url`) and tells the model the real name; both web tools are
+    read-only, so like the other read-only tools they never prompt.
   - Ctrl+T no longer opens the thinking in the system pager (`less`): it now
     expands the boxed thinking panel directly in the live view -- the same
     panel you used to land on only after quitting the pager -- and pressing

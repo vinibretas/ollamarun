@@ -170,16 +170,31 @@ def model_message_rule(model: str) -> Rule:
     return Rule(title, style="ai", align="left")
 
 
+def final_response_rule() -> Rule:
+    """Bright centered divider between a tool loop and the committed answer.
+
+    A round is only known to be the final answer once it has finished without
+    requesting more tools, so this rule is not part of the streaming view:
+    it appears in the frame frozen at that moment (and in the pager, which
+    renders a round after it completed), separating the processing above
+    from the answer below.
+    """
+    return Rule("[answer]response[/answer]", style="answer", align="center")
+
+
 class Renderer:
     """Streams NDJSON chat events to the terminal and returns the transcript."""
 
     def __init__(self, console: Console, *, mode: str = "markdown", math: bool = True,
                  nowordwrap: bool = False, thinking_mode: str = "collapsed",
                  tps_footer: bool = True, show_stats: bool = False, verbose: bool = False,
-                 max_render_chars: int = 12000, pager: bool = False, model: str = ""):
+                 max_render_chars: int = 12000, pager: bool = False, model: str = "",
+                 after_tools: bool = False):
         self.console = console
         self.mode = mode
         self.model = model
+        self.after_tools = after_tools
+        self._committed_final = False
         self.math = math
         self.nowordwrap = nowordwrap
         self.thinking_mode = thinking_mode if thinking_mode in THINKING_MODES else "collapsed"
@@ -236,6 +251,17 @@ class Renderer:
     def _thinking_preview_lines(self) -> int:
         height = getattr(self.console, "height", None) or 24
         return max(5, height - 10)
+
+    def final_rule_wanted(self, result: GenerationResult) -> bool:
+        """True when this round is the committed answer of a tool loop.
+
+        Detection happens the only way it can: a round that finishes with
+        tool calls is interim (the model is still working), so a round that
+        runs after tools and finishes without them is the answer the model
+        committed to. Cancelled or errored rounds never get the divider.
+        """
+        return bool(self.after_tools and not result.tool_calls
+                    and not result.cancelled and not result.error)
 
     def render_final(self, content: str) -> None:
         if self.mode == "raw" or not content:
@@ -331,7 +357,11 @@ class Renderer:
                 # view stops reflects the complete content -- throttled
                 # refreshes during streaming can leave the last live frame
                 # stale otherwise, which used to be papered over by printing
-                # the whole response a second time below.
+                # the whole response a second time below. This is also the
+                # moment a round's fate is known: `_committed_final` lets the
+                # frozen frame (and only it) carry the response divider when
+                # this was the answer that ended a tool loop.
+                self._committed_final = self.final_rule_wanted(result)
                 refresh(0.0, force=True)
                 live.stop()
             if fd is not None and saved_term is not None:
@@ -370,6 +400,8 @@ class Renderer:
 
     def _pager_render(self, result: GenerationResult) -> None:
         with self.console.pager(styles=True):
+            if self.final_rule_wanted(result):
+                self.console.print(final_response_rule())
             if self.thinking_visible() and result.thinking:
                 self.console.print(thinking_panel(result.thinking))
             self.render_final(result.content)
@@ -409,7 +441,11 @@ class Renderer:
             parts.append(tps)
         group = Group(*parts)
         if self.live_render:
-            return Group(model_message_rule(self.model), group)
+            head: list[Any] = []
+            if self._committed_final:
+                head.append(final_response_rule())
+            head.append(model_message_rule(self.model))
+            return Group(*head, group)
         return group
 
     def _render_tool_calls(self, calls: list[dict[str, Any]]) -> None:

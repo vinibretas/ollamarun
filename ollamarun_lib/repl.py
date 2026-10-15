@@ -91,6 +91,7 @@ from .tools import (
     find_tts_remote,
     matching_rule,
     normalize_arguments,
+    resolve_tool_alias,
     rule_label,
     suggest_rules,
     tool_schemas as build_tool_schemas,
@@ -426,7 +427,7 @@ class Repl:
 
     # ── rendering ───────────────────────────────────────────────────────────
 
-    def _renderer(self) -> Renderer:
+    def _renderer(self, *, after_tools: bool = False) -> Renderer:
         mode = self.render_mode
         if mode == "auto":
             mode = "markdown" if console.is_terminal else "plain"
@@ -438,7 +439,7 @@ class Repl:
                         tps_footer=self.tps_footer,
                         show_stats=self.show_stats, verbose=self.verbose,
                         max_render_chars=self.max_render_chars, pager=self.pager,
-                        model=self.session.model)
+                        model=self.session.model, after_tools=after_tools)
 
     # ── model housekeeping ──────────────────────────────────────────────────
 
@@ -653,6 +654,14 @@ class Repl:
                     console.print(tool_result_panel(name, text=text, ok=False))
                 continue
             spec = self.tool_registry.get(name) if name not in disabled else None
+            alias_note = ""
+            if spec is None:
+                alias = resolve_tool_alias(name)
+                if alias != name and alias not in disabled:
+                    spec = self.tool_registry.get(alias)
+                    if spec is not None:
+                        alias_note = f"(note: {name!r} is called {alias!r} here)\n"
+                        name = alias
             if spec is None:
                 text = f"unknown or disabled tool: {name}"
                 if available:
@@ -670,7 +679,7 @@ class Repl:
                 run, note = False, "interrupted by user"
                 interrupted = True
             if not run:
-                text = f"tool not run: {note}"
+                text = alias_note + f"tool not run: {note}"
                 self.session.add_message("tool", text, tool_name=name)
                 if not quiet:
                     console.print(tool_result_panel(name, detail=detail, text=text,
@@ -688,9 +697,11 @@ class Repl:
                                                     ok=False))
                 interrupted = True
                 continue
-            self.session.add_message("tool", outcome.text, tool_name=name)
+            self.session.add_message("tool", alias_note + outcome.text,
+                                     tool_name=name)
             if not quiet:
-                console.print(tool_result_panel(name, detail=detail, text=outcome.text,
+                console.print(tool_result_panel(name, detail=detail,
+                                                text=alias_note + outcome.text,
                                                 ok=outcome.ok, duration=outcome.duration))
         if not self.no_save:
             self.store.save(self.session)
@@ -743,7 +754,7 @@ class Repl:
         result = GenerationResult()
         tool_rounds = 0
         while True:
-            renderer = self._renderer()
+            renderer = self._renderer(after_tools=bool(tool_rounds))
             marker = f"[ai]{escape(self.session.model)} ›[/ai]"
             if renderer.mode != "raw" and not renderer.live_render:
                 console.print(marker)
