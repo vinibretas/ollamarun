@@ -78,7 +78,7 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"1.18"`) and prepend a
+  constant in `ollamarun_lib/constants.py`, currently `"1.21"`) and prepend a
   new bullet list under `Summary of changes in this version:` in the
   top-level `ollamarun` entry script's module docstring — read the existing
   entries there before adding one; that block is the changelog, there is no
@@ -136,7 +136,8 @@ a module's own docstring for what lives there before editing:
    `max_file_kb` truncation.
 6. **`renderer.py`** — `Renderer` class drives a `rich.Live` view:
    incremental markdown re-render while tokens stream, the collapsible
-   thinking panel (`render_thinking`, Ctrl+T pager handoff), and
+   thinking panel (`render_thinking`, Ctrl+T expand/collapse in place;
+   `/thinking full` prints the stored panel directly), and
    `TpsEstimator` for the live `~tok/s` footer. Also has the chat-bubble
    helpers (`user_message_box`, small right-aligned box for a user turn;
    `model_message_panel`, full-width titled box for a model turn) and

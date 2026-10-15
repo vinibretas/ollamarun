@@ -482,8 +482,14 @@ class Repl:
             return False, f"not auto-approved ({decision.reason}) and this run is unattended"
         console.print(f"[warn]{escape(spec.name)} needs confirmation: "
                       f"{escape(decision.reason)}[/warn]")
-        answer = Prompt.ask("[y] run once · [a] always allow this exact call · [n] deny",
-                            choices=["y", "a", "n"], default="n")
+        answer = Prompt.ask("[y] run once · [a] [bold bright_green]ALWAYS[/] allow this exact call · [n] deny · [A] auto allow all calls [warn]CAREFUL[/warn]",
+                            choices=["y", "a", "n", "A"], default="y")
+        if answer == "A":
+            self.auto_approve = True
+            self.session.tool_allow = list(self.session.tool_allow or []) + [fingerprint]
+            self.session.touch()
+            return True, "allowed (set to auto approve)"
+            pass
         if answer == "a":
             self.session.tool_allow = list(self.session.tool_allow or []) + [fingerprint]
             self.session.touch()
@@ -808,8 +814,8 @@ def cmd_help(repl: Repl, argument: str) -> None:
         table.add_column("action")
         for key, action in (("Ctrl+D", "exit"),
                             ("Ctrl+C", "cancel input / generation"),
-                            ("Ctrl+T", "expand thinking & open it in the pager "
-                                       "(again to collapse)"),
+                            ("Ctrl+T", "expand or collapse the thinking panel "
+                                       "while a response streams"),
                             ("Ctrl+G", "$OLLAMA_EDITOR for the current prompt"),
                             ("Ctrl+J", "insert newline"),
                             ("Ctrl+R", "search prompt history"),
@@ -1426,12 +1432,7 @@ def cmd_thinking(repl: Repl, argument: str) -> None:
         if not thinking:
             console.print("[dim]the last response has no stored thinking[/dim]")
             return
-        panel = thinking_panel(thinking, f"thinking · {human_chars(len(thinking))}")
-        if console.is_terminal:
-            with console.pager(styles=True):
-                console.print(panel)
-        else:
-            console.print(panel)
+        console.print(thinking_panel(thinking, f"thinking · {human_chars(len(thinking))}"))
         return
     if topic in {"", "status"}:
         console.print(f"thinking display: [key]{repl.thinking_mode}[/key] "

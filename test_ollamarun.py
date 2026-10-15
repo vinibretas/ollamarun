@@ -491,11 +491,11 @@ def test_thinking_display() -> int:
     renderer._toggle_thinking()
     check("toggle collapsed -> expanded", renderer.thinking_mode == "expanded")
     expanded = render_text(renderer._live_view(result))
-    check("expanded panel", "Ctrl+T to re-read" in expanded and "deep reasoning" in expanded)
+    check("expanded panel", "Ctrl+T to collapse" in expanded and "deep reasoning" in expanded)
     result.content = "The answer."
     with_content = render_text(renderer._live_view(result))
     check("content with expanded panel",
-          "The answer." in with_content and "Ctrl+T to re-read" in with_content)
+          "The answer." in with_content and "Ctrl+T to collapse" in with_content)
     renderer._toggle_thinking()
     check("toggle expanded -> collapsed", renderer.thinking_mode == "collapsed")
     renderer.thinking_mode = "hidden"
@@ -517,25 +517,22 @@ def test_thinking_display() -> int:
     read_fd, write_fd = os.pipe()
     try:
         renderer.thinking_mode = "collapsed"
-        renderer._pager_request = False
         os.write(write_fd, b"x" + bytes([orun.CTRL_T]))
         os.close(write_fd)
         changed = renderer._poll_keys(read_fd)
-        check("Ctrl+T poll expands and requests pager",
+        check("Ctrl+T poll expands inline (no pager)",
               changed and renderer.thinking_mode == "expanded"
-              and renderer._pager_request is True)
+              and not hasattr(renderer, "_pager_request"))
     finally:
         os.close(read_fd)
 
     read_fd, write_fd = os.pipe()
     try:
-        renderer._pager_request = False
         os.write(write_fd, bytes([orun.CTRL_T]))
         os.close(write_fd)
         changed = renderer._poll_keys(read_fd)
-        check("Ctrl+T poll collapses without pager",
-              changed and renderer.thinking_mode == "collapsed"
-              and renderer._pager_request is False)
+        check("Ctrl+T poll collapses again",
+              changed and renderer.thinking_mode == "collapsed")
     finally:
         os.close(read_fd)
 
