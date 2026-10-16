@@ -2,6 +2,27 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.31
+
+Summary of changes in this version:
+  - `/num-ctx --max-gpu` no longer misreads a resident model as VRAM pressure.
+    The free-VRAM reading is taken with the model already loaded, so its own
+    bytes used to be counted twice -- once excluded from "free", then again
+    deducted as weights -- and a 0.8B model on a 4 GiB card came back "the
+    GPU placement does not fit" while it plainly did. Resident models are now
+    credited back into the pool (their `/api/ps` size_vram is released when
+    they reload at the new context; `max_gpu_credit_residents: false` limits
+    the credit to the model being sized), so the report reads
+    "1.8 GiB free + 2.6 GiB resident → 4.4 GiB pool", and when the per-device
+    fit margin is the only blocker the estimate says so and prints the
+    context it would fit without it.
+  - `--probe` starts from that estimate instead of falling back to 4,096, and
+    picks every next candidate by solving the measured bytes-per-token line
+    for the capacity (llama.cpp's footprint is affine in num_ctx) instead of
+    climbing bisection midpoints, so a good estimate needs one or two probes
+    and the default budget of 8 brackets the boundary instead of walking
+    toward it a step at a time.
+
 Version: 1.30
 
 Summary of changes in this version:
