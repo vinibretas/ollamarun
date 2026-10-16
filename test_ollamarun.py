@@ -879,7 +879,7 @@ def test_tps_estimator() -> int:
 class _FakeClient:
     def __init__(self, resident=(), models=(), ps_entries=(), show_data=None,
                  capabilities=("completion",), chat_script=None,
-                 pull_events=None, pull_error=None):
+                 pull_events=None, pull_error=None, tag_data=None):
         self.base = "http://fake:11434"
         self.resident = list(resident)
         self.models = list(models)
@@ -895,6 +895,8 @@ class _FakeClient:
         self.pull_events = list(pull_events or [])
         self.pull_error = pull_error
         self.pulled = []
+        self.tag_data = list(tag_data) if tag_data is not None else None
+        self.show_calls = []
 
     def is_resident(self, model):
         return model in self.resident
@@ -918,9 +920,12 @@ class _FakeClient:
         return iter([{"message": {"content": "ok"}, "done": True}])
 
     def tags(self):
+        if self.tag_data is not None:
+            return list(self.tag_data)
         return [{"name": name} for name in self.models]
 
     def show(self, model):
+        self.show_calls.append(model)
         return self.show_data if self.show_data is not None else {}
 
     def ps(self):
@@ -2442,12 +2447,15 @@ def test_ensure_model() -> int:
 
         interactive.Confirm = _No
         no_client = _FakeClient()
-        interactive.pick_model = lambda client, current: "other-model"
+        picker_kwargs: dict = {}
+        interactive.pick_model = (
+            lambda client, current, **kwargs: picker_kwargs.update(kwargs) or "other-model")
         with orun.console.capture() as cap:
             got = orun.ensure_model(no_client, "m9", config, interactive=True,
-                                    pick_on_decline=True)
+                                    pick_on_decline=True, sort="size")
         check("declining opens the picker", got, "other-model")
         check("declining does not pull", no_client.pulled, [])
+        check("decline picker honours --sort", picker_kwargs.get("sort"), "size")
 
         interactive.pick_model = saved_pick
         with orun.console.capture() as cap:
@@ -2489,6 +2497,284 @@ def test_ensure_model() -> int:
             orun.cmd_pull(repl, "m9")
         check("cmd_pull pulls", client.pulled, ["m9"])
         check("cmd_pull reports success", "pulled" in _plain(cap.get()), True)
+    return failures
+
+
+class _ScriptedUi(orun.ConsoleUi):
+    """ConsoleUi whose `ask` replays a fixed list of answers."""
+
+    def __init__(self, answers):
+        self.answers = list(answers)
+
+    def ask(self, question, *, choices=None, default=None):
+        return self.answers.pop(0) if self.answers else "q"
+
+
+class _TagClient(_FakeClient):
+    """_FakeClient with real tag entries and per-model /api/show data."""
+
+    def __init__(self, tags, contexts=None):
+        super().__init__(models=[tag["name"] for tag in tags])
+        self.tag_data = list(tags)
+        self.contexts = dict(contexts or {})
+
+    def show(self, model):
+        self.show_calls.append(model)
+        length = self.contexts.get(model)
+        return {"model_info": {"llama.context_length": length}} if length else {}
+
+
+def test_model_sort() -> int:
+    failures = 0
+
+    def check(name, got, expected):
+        nonlocal failures
+        if got == expected:
+            print(f"PASS  {name}")
+        else:
+            print(f"FAIL  {name}: {got!r} != {expected!r}")
+            failures += 1
+
+    check("parse_model_sort: canonical", orun.parse_model_sort("name"), "name")
+    check("parse_model_sort: trims and lowercases",
+          orun.parse_model_sort("  SIZE "), "size")
+    check("parse_model_sort: params alias", orun.parse_model_sort("params"), "parameters")
+    check("parse_model_sort: ctx alias", orun.parse_model_sort("ctx"), "context")
+    check("parse_model_sort: recent alias", orun.parse_model_sort("recent"), "modified")
+    try:
+        orun.parse_model_sort("bogus")
+        check("parse_model_sort rejects unknown keys", False, True)
+    except ValueError as exc:
+        check("parse_model_sort rejects unknown keys", "name" in str(exc), True)
+
+    check("parameter_count: 7.6B",
+          orun.model_parameter_count({"details": {"parameter_size": "7.6B"}}), 7.6)
+    check("parameter_count: 70B",
+          orun.model_parameter_count({"details": {"parameter_size": "70B"}}), 70.0)
+    check("parameter_count: 8x7B is the total",
+          orun.model_parameter_count({"details": {"parameter_size": "8x7B"}}), 56.0)
+    check("parameter_count: 134M",
+          orun.model_parameter_count({"details": {"parameter_size": "134M"}}), 0.134)
+    check("parameter_count: missing", orun.model_parameter_count({"details": {}}), None)
+    check("parameter_count: garbage",
+          orun.model_parameter_count({"details": {"parameter_size": "n/a"}}), None)
+
+    models = [
+        {"name": "z-small:latest", "size": 100, "modified_at": "2026-01-01",
+         "details": {"parameter_size": "1B"}},
+        {"name": "a-big:latest", "size": 900, "modified_at": "2025-01-01",
+         "details": {"parameter_size": "70B"}},
+        {"name": "m-mid:latest", "size": 500, "modified_at": "2026-05-01",
+         "details": {}},
+    ]
+
+    def names(items):
+        return [item["name"] for item in items]
+
+    check("sort by name is A→Z", names(orun.sort_models(models, "name")),
+          ["a-big:latest", "m-mid:latest", "z-small:latest"])
+    check("sort by size lists the largest first",
+          names(orun.sort_models(models, "size")),
+          ["a-big:latest", "m-mid:latest", "z-small:latest"])
+    check("sort by parameters puts missing last",
+          names(orun.sort_models(models, "parameters")),
+          ["a-big:latest", "z-small:latest", "m-mid:latest"])
+    check("sort by modified is newest first",
+          names(orun.sort_models(models, "modified")),
+          ["m-mid:latest", "z-small:latest", "a-big:latest"])
+    contexts = {"z-small:latest": 131072, "a-big:latest": 8192,
+                "m-mid:latest": 32768}
+    check("sort by context lists the largest first",
+          names(orun.sort_models(models, "context", contexts=contexts)),
+          ["z-small:latest", "m-mid:latest", "a-big:latest"])
+    check("sort by context without data is deterministic",
+          names(orun.sort_models(models, "context")),
+          ["a-big:latest", "m-mid:latest", "z-small:latest"])
+    check("sort_models leaves the input alone", names(models),
+          ["z-small:latest", "a-big:latest", "m-mid:latest"])
+
+    with orun.console.capture() as cap:
+        orun.console.print(orun.model_table(models, sort="context", contexts=contexts))
+    text = _plain(cap.get())
+    check("model_table names the sort", "by context" in text, True)
+    check("model_table shows ctx values", "131k" in text, True)
+    check("model_table shows params", "70B" in text, True)
+    return failures
+
+
+def test_model_picker_sort() -> int:
+    failures = 0
+
+    def check(name, got, expected):
+        nonlocal failures
+        if got == expected:
+            print(f"PASS  {name}")
+        else:
+            print(f"FAIL  {name}: {got!r} != {expected!r}")
+            failures += 1
+
+    tags = [
+        {"name": "z-small:latest", "size": 100, "modified_at": "2026-01-01",
+         "details": {"parameter_size": "1B", "family": "llama"}},
+        {"name": "a-big:latest", "size": 900, "modified_at": "2025-01-01",
+         "details": {"parameter_size": "70B", "family": "llama"}},
+        {"name": "m-mid:latest", "size": 500, "modified_at": "2026-05-01",
+         "details": {"parameter_size": "8B", "family": "qwen2"}},
+    ]
+
+    client = _TagClient(tags)
+    ui = _ScriptedUi(["--sort size", "1"])
+    with orun.console.capture() as cap:
+        picked = orun.pick_model(client, None, ui=ui, sort="modified")
+    text = _plain(cap.get())
+    check("picker sorts then picks by number", picked, "a-big:latest")
+    check("picker re-renders in the new order",
+          text.rindex("a-big") < text.rindex("z-small"), True)
+    check("picker names the sort", "by size" in text, True)
+    check("picker still shows params", "70B" in text, True)
+
+    seen = {}
+    ui = _ScriptedUi(["-s name", "sort size", "q"])
+    with orun.console.capture():
+        orun.pick_model(client, None, ui=ui, sort="modified",
+                        on_sort=lambda key: seen.update(sort=key))
+    check("picker accepts -s and 'sort KEY' aliases", seen.get("sort"), "size")
+
+    contexts = {"z-small:latest": 131072, "a-big:latest": 8192,
+                "m-mid:latest": 32768}
+    client = _TagClient(tags, contexts=contexts)
+    orun.interactive._CONTEXT_CACHE.clear()
+    ui = _ScriptedUi(["--sort context", "--sort context", "1"])
+    with orun.console.capture() as cap:
+        picked = orun.pick_model(client, None, ui=ui)
+    text = _plain(cap.get())
+    check("context sort picks the largest window", picked, "z-small:latest")
+    check("context sort fetches each model once", len(client.show_calls), 3)
+    check("context column is shown", "131k" in text, True)
+
+    client = _TagClient(tags)
+    ui = _ScriptedUi(["--sort bogus", "2"])
+    with orun.console.capture() as cap:
+        picked = orun.pick_model(client, None, ui=ui, sort="size")
+    text = _plain(cap.get())
+    check("bad sort key warns", "unknown sort key" in text, True)
+    check("bad sort key keeps the previous order", picked, "m-mid:latest")
+    check("bad sort key shows the usage", "sort keys:" in text, True)
+    return failures
+
+
+def test_model_command_sort() -> int:
+    failures = 0
+
+    def check(name, got, expected):
+        nonlocal failures
+        if got == expected:
+            print(f"PASS  {name}")
+        else:
+            print(f"FAIL  {name}: {got!r} != {expected!r}")
+            failures += 1
+
+    tags = [
+        {"name": "z-small:latest", "size": 100, "modified_at": "2026-01-01",
+         "details": {"parameter_size": "1B"}},
+        {"name": "a-big:latest", "size": 900, "modified_at": "2025-01-01",
+         "details": {"parameter_size": "70B"}},
+    ]
+    repl, _client, _tmp = _test_repl(models=("a-big:latest", "z-small:latest"),
+                                     tag_data=tags)
+
+    with orun.console.capture() as cap:
+        orun.cmd_model(repl, "--list --sort size")
+    text = _plain(cap.get())
+    check("/model --list --sort size lists largest first",
+          text.index("a-big") < text.index("z-small"), True)
+    check("--list keeps the sort for the session", repl.model_sort, "size")
+
+    seen = {}
+    saved_pick = orun.repl.pick_model
+
+    def fake_pick(client, current=None, *, ui=None, sort="modified", on_sort=None):
+        seen["sort"] = sort
+        if on_sort:
+            on_sort("parameters")
+        return None
+
+    orun.repl.pick_model = fake_pick
+    try:
+        with orun.console.capture():
+            orun.cmd_model(repl, "")
+    finally:
+        orun.repl.pick_model = saved_pick
+    check("picker starts with the session sort", seen.get("sort"), "size")
+    check("picker sort sticks for later pickers", repl.model_sort, "parameters")
+
+    check("/models dispatches to cmd_model",
+          orun.COMMAND_HANDLERS.get("/models") is orun.cmd_model, True)
+    check("/models is advertised", "/model, /models" in orun.COMMAND_INFO, True)
+
+    saved_pick = orun.repl.pick_model
+    orun.repl.pick_model = lambda *args, **kwargs: check("bad --sort must not pick", False, True)
+    try:
+        with orun.console.capture() as cap:
+            orun.cmd_model(repl, "--sort bogus")
+        check("bad --sort key errors", "unknown sort key" in _plain(cap.get()), True)
+    finally:
+        orun.repl.pick_model = saved_pick
+
+    saved_ensure = orun.repl.ensure_model
+    orun.repl.ensure_model = lambda client, name, config, **kwargs: name
+    try:
+        with orun.console.capture():
+            orun.cmd_model(repl, "--sort name z-small:latest")
+    finally:
+        orun.repl.ensure_model = saved_ensure
+    check("--sort with a name sets the sort", repl.model_sort, "name")
+    check("--sort with a name still switches", repl.session.model, "z-small:latest")
+    return failures
+
+
+def test_sort_flag() -> int:
+    failures = 0
+
+    def check(name, got, expected):
+        nonlocal failures
+        if got == expected:
+            print(f"PASS  {name}")
+        else:
+            print(f"FAIL  {name}: {got!r} != {expected!r}")
+            failures += 1
+
+    parser = orun.build_parser()
+    check("--sort parses", parser.parse_args(["--sort", "size"]).sort, "size")
+    check("--sort defaults to None", parser.parse_args(["m1"]).sort, None)
+
+    with orun.console.capture() as cap:
+        rc = orun.main(["--sort", "bogus"])
+    text = _plain(cap.get())
+    check("main rejects a bad --sort key", rc, 2)
+    check("bad --sort prints the valid keys", "name" in text, True)
+
+    seen = {}
+    saved_pick = orun.cli.pick_model
+    saved_terminal = orun.console._force_terminal
+    orun.cli.pick_model = lambda client, current=None, **kwargs: seen.update(kwargs) or None
+    orun.console._force_terminal = True
+    try:
+        with orun.console.capture():
+            orun.resolve_model(parser.parse_args(["--sort", "context"]),
+                               dict(orun.DEFAULT_CONFIG), _FakeClient(), None)
+        check("resolve_model forwards --sort", seen.get("sort"), "context")
+        seen.clear()
+        with orun.console.capture():
+            orun.resolve_model(parser.parse_args([]), dict(orun.DEFAULT_CONFIG),
+                               _FakeClient(), None)
+        check("resolve_model defaults to modified", seen.get("sort"), "modified")
+    finally:
+        orun.cli.pick_model = saved_pick
+        orun.console._force_terminal = saved_terminal
+
+    args = parser.parse_args(["--sort", "ctx", "--list"])
+    check("--sort aliases survive parse", args.sort, "ctx")
     return failures
 
 
@@ -2650,6 +2936,34 @@ def test_slash_completer() -> int:
         else:
             print(f"FAIL  SlashCompleter models: {names}")
             failures += 1
+
+        names = {c.text for c in completer.get_completions(_Doc("/models m"), None)}
+        if names == {"m1", "m2"}:
+            print("PASS  SlashCompleter completes model names after /models")
+        else:
+            print(f"FAIL  SlashCompleter /models: {names}")
+            failures += 1
+
+        names = {c.text for c in completer.get_completions(_Doc("/model -"), None)}
+        if names == {"--list", "--sort"}:
+            print("PASS  SlashCompleter completes /model flags")
+        else:
+            print(f"FAIL  SlashCompleter /model flags: {names}")
+            failures += 1
+
+        names = {c.text for c in completer.get_completions(_Doc("/model --sort s"), None)}
+        if names == {"size"}:
+            print("PASS  SlashCompleter completes sort keys")
+        else:
+            print(f"FAIL  SlashCompleter sort keys: {names}")
+            failures += 1
+
+        names = {c.text for c in completer.get_completions(_Doc("/model --sort "), None)}
+        if names == set(orun.MODEL_SORT_KEYS):
+            print("PASS  SlashCompleter offers every sort key")
+        else:
+            print(f"FAIL  SlashCompleter all sort keys: {names}")
+            failures += 1
     return failures
 
 
@@ -2689,7 +3003,8 @@ def _check(failures, name, cond, detail=""):
     return failures
 
 
-def _test_repl(resident=(), models=("m1",), args_extra=(), config_extra=None):
+def _test_repl(resident=(), models=("m1",), args_extra=(), config_extra=None,
+               tag_data=None):
     """A throwaway Repl wired to `_FakeClient` and a temp session store."""
     tmp = tempfile.mkdtemp()
     store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
@@ -2698,7 +3013,8 @@ def _test_repl(resident=(), models=("m1",), args_extra=(), config_extra=None):
     config = dict(orun.DEFAULT_CONFIG)
     config.update(config_extra or {})
     client = _FakeClient(resident=resident, models=models,
-                         show_data={"model_info": {"llama.context_length": 8192}})
+                         show_data={"model_info": {"llama.context_length": 8192}},
+                         tag_data=tag_data)
     session = orun.Session.create("m1", client.base)
     repl = orun.Repl(args, config, client, store, session)
     repl._preload_model = lambda: None
@@ -4748,6 +5064,8 @@ if __name__ == "__main__":
              + test_emit_and_cli_functions()
              + test_build_parser_flags() + test_remote_hosts()
              + test_pull_and_disk_helpers() + test_ensure_model()
+             + test_model_sort() + test_model_picker_sort()
+             + test_model_command_sort() + test_sort_flag()
              + test_gpu_layers() + test_slash_completer()
              + test_tools_policy() + test_tool_execution() + test_web_tools()
              + test_tool_loop() + test_tool_loop_separation()

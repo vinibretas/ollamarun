@@ -195,7 +195,16 @@ a module's own docstring for what lives there before editing:
    the TUI front end), `model_context_length`
    (reads context window from `/api/show`), and the missing-model flow:
    `ensure_model()` (free-space line + y/N pull prompt, `--pull` skip,
-   picker on decline), `pull_with_progress()` and `disk_free_line()`. Also
+   picker on decline), `pull_with_progress()` and `disk_free_line()`.
+   Model-list sorting lives here too: `MODEL_SORT_KEYS`/`parse_model_sort`
+   (`modified`|`name`|`size`|`parameters`|`context`, plus aliases),
+   `model_parameter_count` (parses `details.parameter_size`, MoE totals
+   included), `sort_models`/`model_table` (shared by the picker and
+   `/model --list`) and `fetch_context_lengths`/`cached_context_length`
+   (one `/api/show` per uncached model, in parallel behind a status line,
+   cached per host); `pick_model` takes `sort=`/`on_sort=` and its prompt
+   accepts `--sort KEY`/`-s KEY`/`sort KEY` to re-order the table in place.
+   Also
    the GPU-layer spec logic: `model_block_count()`,
    `parse_gpu_layers_spec()`, `resolve_gpu_layers()`, `gpu_layers_label()`.
 13. **`ctxfit.py`** — the GPU context fit behind `/num-ctx --max-gpu`:
@@ -219,7 +228,8 @@ a module's own docstring for what lives there before editing:
    from (`approval_entries`/`_prompt_approval`, storing generalized
    `ToolRule`s in the session) now live in `ui.py`, re-exported here so
    `_prompt_approval` keeps resolving from this module. Each slash command
-   (`/set`, `/show`, `/load`, `/save`, `/pull`, `/undo`, `/retry`, `/edit`,
+   (`/model`/`/models` -- switch, `--list`, `--sort KEY`, `/set`, `/show`,
+   `/load`, `/save`, `/pull`, `/undo`, `/retry`, `/edit`,
    `/branch`, `/context`, `/summarize`, `/image`, `/render`, `/math`,
    `/pager`, `/tps`, `/ps`, `/num-ctx`, `/gpu-layers`, `/copy`, `/export`, `/stats`,
    `/thinking`, `/tools`, `/tts`, `/queue`, ...) is a standalone
@@ -255,7 +265,9 @@ Model housekeeping (unload-before-switch, unload-on-exit, embedding models
 always resident) is cross-cutting logic that lives in the REPL commands
 (`cmd_model`, `cmd_load`, both in `repl.py`) and `main()`'s exit path
 (`cli.py`), coordinated through `/api/ps` lookups in `OllamaClient` — not a
-separate module.
+separate module. The model picker those commands (and a model-less
+`ollamarun` run) open is ordered by the session's `model_sort`, seeded from
+`--sort` and updated whenever a sort is chosen at the prompt.
 
 Cross-module imports follow the numbering above (a module only imports from
 one earlier in the list, plus `constants.py`/`helpers.py` from anywhere) —
