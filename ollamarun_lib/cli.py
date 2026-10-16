@@ -188,7 +188,10 @@ sessions live in ~/etc/data/ollamarun; config in ~/etc/config_files/ollamarun.js
                         help="for embedding models: truncate inputs exceeding context "
                              "length (default: true). Set --truncate=false to error instead")
     ollama.add_argument("--verbose", action="store_true",
-                        help="show timings for response")
+                        help="obsolete: response timings are always shown on a "
+                             "terminal; pass this to also get them when the output "
+                             "is piped or redirected (--raw/--json never print them; "
+                             "config show_stats: false disables)")
 
     wrapper = parser.add_argument_group("wrapper flags")
     host_group = wrapper.add_mutually_exclusive_group()

@@ -102,7 +102,7 @@ except ImportError:  # pragma: no cover - fallback path
     TEXTUAL_VERSION = ""
     TextualApp = None
 
-VERSION = "1.32"
+VERSION = "1.33"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -230,7 +230,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "math": True,
     "thinking": "collapsed",
     "ui": "inline",
-    "show_stats": False,
+    "show_stats": True,
     "auto_title": False,
     "auto_compact": "ask",
     "image_storage": "embed",

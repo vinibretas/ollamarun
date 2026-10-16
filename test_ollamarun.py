@@ -179,6 +179,25 @@ def test_stats_helpers() -> int:
     return failures
 
 
+def test_resolve_show_stats() -> int:
+    failures = 0
+    cases = [
+        ("--verbose wins over the off-switch", (True, False, False), True),
+        ("--verbose forces timings in piped output", (True, True, False), True),
+        ("off-switch silences the terminal default", (False, False, True), False),
+        ("terminal default shows timings", (False, True, True), True),
+        ("piped output stays clean by default", (False, True, False), False),
+    ]
+    for name, (verbose, config_value, is_terminal), expected in cases:
+        got = orun.resolve_show_stats(verbose, config_value, is_terminal)
+        if got == expected:
+            print(f"PASS  resolve_show_stats: {name}")
+        else:
+            print(f"FAIL  resolve_show_stats: {name}: {got!r} != {expected!r}")
+            failures += 1
+    return failures
+
+
 def test_file_mentions() -> int:
     failures = 0
     with tempfile.TemporaryDirectory() as tmp:
@@ -459,6 +478,16 @@ def test_renderer_plain() -> int:
         print("PASS  renderer without final stats")
     else:
         print("FAIL  renderer without final stats")
+        failures += 1
+
+    quiet_buffer = io.StringIO()
+    quiet = orun.Renderer(Console(file=quiet_buffer, width=100, force_terminal=False),
+                          mode="plain", math=True)
+    quiet.stream(events())
+    if "tok/s" not in quiet_buffer.getvalue():
+        print("PASS  renderer hides stats unless show_stats is set")
+    else:
+        print(f"FAIL  renderer stats default: {quiet_buffer.getvalue()!r}")
         failures += 1
     return failures
 
@@ -2233,6 +2262,13 @@ def test_build_parser_flags() -> int:
         print("PASS  --ui accepts tui and defaults to None (config decides)")
     else:
         print(f"FAIL  --ui: {getattr(args, 'ui', None)!r}")
+        failures += 1
+
+    verbose_args = parser.parse_args(["m1", "--verbose"])
+    if verbose_args.verbose is True:
+        print("PASS  --verbose still parses (obsolete, kept for ollama compatibility)")
+    else:
+        print(f"FAIL  --verbose: {getattr(verbose_args, 'verbose', None)!r}")
         failures += 1
 
     failures = _check(failures, "/queue is wired into the command tables",
@@ -5236,6 +5272,7 @@ def test_client_http() -> int:
 
 if __name__ == "__main__":
     total = (test_math() + test_parsing_helpers() + test_stats_helpers()
+             + test_resolve_show_stats()
              + test_file_mentions() + test_images() + test_session_store()
              + test_session_payloads() + test_chat_payload()
              + test_normalize_argv() + test_renderer_plain()

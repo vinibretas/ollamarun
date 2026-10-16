@@ -115,7 +115,8 @@ a module's own docstring for what lives there before editing:
    bool/host/think coercion, `--remote` resolution (`resolve_remote`,
    `remote_node`, `tailscale_map`, `tailscale_peer_state`, `is_local_host`),
    disk-space probes (`local_free_disk`, `ssh_free_disk`), config load
-   (`load_config`), logging setup.
+   (`load_config`) and the response-timings policy (`resolve_show_stats`),
+   logging setup.
 3. **`mathrender.py`** — LaTeX → Unicode, combined in one module because the
    two halves call into each other: regex-level conversion for inline math
    (`convert_math`, `latex_to_unicode`) falls through to the 2D layout
@@ -141,7 +142,10 @@ a module's own docstring for what lives there before editing:
    incremental markdown re-render while tokens stream, the collapsible
    thinking panel (`render_thinking`, Ctrl+T expand/collapse in place;
    `/thinking full` prints the stored panel directly), and
-   `TpsEstimator` for the live `~tok/s` footer. `StreamSink` is the seam the
+   `TpsEstimator` for the live `~tok/s` footer, and the per-response `⏱`
+   timings line whose visibility comes from `resolve_show_stats()` (on by
+   default on a terminal, piped output only with `--verbose`, config
+   `show_stats: false` as the off-switch). `StreamSink` is the seam the
    TUI uses: with a sink, `stream()` pushes the same frames to a widget
    instead of a `rich.Live`, so both front ends share one streaming loop
    (and `stream(cancel=…)` honors a `CancelToken`). Also has the chat-bubble
