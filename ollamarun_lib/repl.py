@@ -55,6 +55,7 @@ from .helpers import (
     parse_bool,
     parse_think,
     remote_node,
+    resolve_show_stats,
     short_stamp,
     shortcut,
 )
@@ -325,8 +326,8 @@ class Repl:
             self.unload_on_exit = False
         else:
             self.unload_on_exit = config.get("unload_on_exit", True)
-        self.show_stats = bool(args.verbose or config.get("show_stats", False))
-        self.verbose = bool(args.verbose)
+        self.show_stats = resolve_show_stats(
+            bool(args.verbose), config.get("show_stats", True), console.is_terminal)
         self.no_save = bool(args.no_save)
         if getattr(args, "no_tools", False):
             self.tools_enabled = False
@@ -474,7 +475,7 @@ class Repl:
                             nowordwrap=self.args.nowordwrap,
                             thinking_mode=self.thinking_mode,
                             tps_footer=self.tps_footer,
-                            show_stats=self.show_stats, verbose=self.verbose,
+                            show_stats=self.show_stats,
                             max_render_chars=self.max_render_chars,
                             pager=self.pager and not self.tui_mode,
                             model=self.session.model, after_tools=after_tools)

@@ -2,6 +2,20 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.33
+
+Summary of changes in this version:
+  - `--verbose` is obsolete: the `⏱ load … · prompt … · eval … · total …`
+    timings line now prints under every answer by default on a terminal
+    (REPL, TUI, one-shot, pager), as if the flag had been passed. Piped or
+    redirected output stays clean unless `--verbose` is given explicitly --
+    that is the flag's only remaining job, so `ollama run`-style command
+    lines keep working unchanged. `--raw` and `--json` never print it.
+  - Config `show_stats` is now an off-switch (default true): `false` silences
+    the timings line, while an explicit `--verbose` still forces it on. The
+    renderer's redundant `verbose` knob is gone; `resolve_show_stats()` in
+    helpers.py owns the decision.
+
 Version: 1.32
 
 Summary of changes in this version:

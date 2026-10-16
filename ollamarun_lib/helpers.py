@@ -554,6 +554,21 @@ def load_config(path: Optional[Path] = None) -> dict[str, Any]:
     return config
 
 
+def resolve_show_stats(verbose: bool, config_value: Any, is_terminal: bool) -> bool:
+    """Whether the per-response `⏱` timings line is shown.
+
+    Timings print by default on a terminal (as if `--verbose` had been
+    passed); piped/redirected output stays clean unless `--verbose` asks for
+    them. Config `show_stats: false` is an off-switch that silences the
+    terminal default, but an explicit `--verbose` still wins over it.
+    """
+    if verbose:
+        return True
+    if not config_value:
+        return False
+    return is_terminal
+
+
 def setup_logging(enabled: bool) -> None:
     if not enabled:
         return
