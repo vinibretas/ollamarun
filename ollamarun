@@ -2,6 +2,30 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.34
+
+Summary of changes in this version:
+  - `/num-ctx --max-cpu N [--probe]` fills DRAM instead of VRAM. It raises
+    the context until the model's host RAM reaches N% (1-100) of the DRAM
+    available to it: /proc/meminfo's MemAvailable on the ollama machine --
+    one ssh probe for --remote hosts -- plus the RAM the loaded model already
+    holds (/api/ps `size - size_vram`, back when it reloads; other programs
+    and models keep theirs), less a max_cpu_overhead_mb allowance. Some
+    layers stay on the GPU unless /gpu-layers is cpu -- a pinned layer count
+    is honoured and only the host side counts toward the target; unpinned,
+    the estimate simulates llama.cpp's fit (the weights and per-layer KV of
+    the tail it can keep). `--probe` loads candidates, reads the real
+    footprint back from /api/ps and solves the measured footprint line for
+    the target (max_cpu_probes, default 8), never choosing a context above
+    it, and leaves the model warm there. Recorded on a GTX 1050 + 32 GiB
+    box: a fully CPU-placed qwen2.5:7b reported 5,203 MiB of host RAM in
+    /api/ps while MemAvailable gave up 5,006 MiB, so the reported number
+    tracks the machine's memory in steady state.
+  - The CLI probe flag is now the mode-agnostic `--probe`: `--num-ctx
+    max-gpu --probe` and `--num-ctx --max-cpu 80 --probe` (--max-gpu-probe
+    stays as a hidden alias). The command line is `/num-ctx N | --max-gpu
+    [--probe] | --max-cpu N [--probe]`.
+
 Version: 1.33
 
 Summary of changes in this version:

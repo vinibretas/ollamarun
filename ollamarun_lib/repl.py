@@ -64,7 +64,9 @@ from .ctxfit import (
     FitRequest,
     NUM_CTX_HELP,
     machine_state_for,
+    max_cpu_context,
     max_gpu_context,
+    parse_fill_percent,
     parse_num_ctx_arg,
 )
 from .interactive import (
@@ -127,8 +129,8 @@ COMMAND_INFO: dict[str, tuple[str, str]] = {
     "/model, /models": ("[NAME|--list|--sort KEY]",
                         "switch model, list or sort the installed models"),
     "/ps": ("", "show resident models (ollama ps)"),
-    "/num-ctx": ("[N | --max-gpu [--probe]]",
-                 "context window: N, or the largest that keeps the GPU placement"),
+    "/num-ctx": ("[N | --max-gpu [--probe] | --max-cpu N [--probe]]",
+                 "context window: N, the largest that keeps the GPU, or N% of DRAM"),
     "/gpu-layers": ("[N|N%|+N|-N|all|cpu|auto]", "GPU layers for this model"),
     "/params": ("", "show session parameters"),
     "/tools": ("[on|off|policy MODE|enable|disable NAME…|allow|rules]", "tool harness, approval rules and per-tool control"),
@@ -1565,6 +1567,7 @@ def resolve_num_ctx(client: OllamaClient, model: str, requested: int) -> tuple[i
 
 
 def cmd_num_ctx(repl: Repl, argument: str) -> None:
+    usage = "usage: /num-ctx N | --max-gpu [--probe] | --max-cpu N [--probe]"
     argument = argument.strip()
     if not argument:
         current = repl.session.parameters.get("num_ctx")
@@ -1577,31 +1580,21 @@ def cmd_num_ctx(repl: Repl, argument: str) -> None:
             bits.append(f"model max {max_ctx}")
         console.print(f"[key]context size[/key] " + " · ".join(bits))
         console.print("[dim]--max-gpu picks the largest context that still fits 100% "
-                      "on the GPU (--probe verifies by loading)[/dim]")
+                      "on the GPU; --max-cpu N fills N% of the DRAM available to the "
+                      "model (--probe verifies by loading)[/dim]")
         return
     tokens = argument.split()
     if tokens[0] in {"--help", "-h", "help"}:
         console.print(NUM_CTX_HELP)
         return
-    kind, value = parse_num_ctx_arg(tokens[0])
-    if kind == "max-gpu":
-        probe = False
-        for token in tokens[1:]:
-            flag = token.lower()
-            if flag in {"--probe", "probe", "-p"}:
-                probe = True
-            elif flag in {"--help", "-h", "help"}:
-                console.print(NUM_CTX_HELP)
-                return
-            else:
-                console.print("[err]usage: /num-ctx N | --max-gpu [--probe][/err]")
-                return
+
+    def fit_request() -> FitRequest:
         ssh_target = remote_node(repl.session.remote, repl.config) \
             if repl.session.remote else None
         ssh_user = repl.config.get("remote_ssh_user")
         base = getattr(repl.client, "base", "") or ""
         host_label = repl.session.remote or (None if is_local_host(base) else base)
-        request = FitRequest(
+        return FitRequest(
             client=repl.client, model=repl.session.model, config=repl.config,
             host_label=host_label, ssh_target=ssh_target, ssh_user=ssh_user,
             pinned_spec=repl.session.gpu_layers,
@@ -1612,16 +1605,61 @@ def cmd_num_ctx(repl: Repl, argument: str) -> None:
             refresh_gpu=lambda: machine_state_for(base, ssh_target=ssh_target,
                                                   ssh_user=ssh_user),
         )
-        ctx = max_gpu_context(request, probe=probe)
+
+    def apply(ctx: Optional[int], *, probe: bool) -> None:
         if ctx is None:
             return
         repl.session.parameters["num_ctx"] = ctx
         repl.session.touch()
         note = " [dim]· model is loaded at that context[/dim]" if probe else ""
         console.print(f"[ok]num_ctx set to {ctx}[/ok]{note}")
+
+    head = tokens[0].lower()
+    rest = tokens[1:]
+    max_cpu: Optional[str] = None
+    if head in {"--max-cpu", "max-cpu"}:
+        if not rest:
+            console.print(f"[err]{usage} — --max-cpu needs a percentage[/err]")
+            return
+        max_cpu, rest = rest[0], rest[1:]
+    elif head.startswith("--max-cpu="):
+        max_cpu = tokens[0].split("=", 1)[1]
+    if max_cpu is not None:
+        percent = parse_fill_percent(max_cpu)
+        if percent is None:
+            console.print("[err]--max-cpu takes a percentage between 1 and 100[/err]")
+            return
+        probe = False
+        for token in rest:
+            flag = token.lower()
+            if flag in {"--probe", "probe", "-p"}:
+                probe = True
+            elif flag in {"--help", "-h", "help"}:
+                console.print(NUM_CTX_HELP)
+                return
+            else:
+                console.print(f"[err]{usage}[/err]")
+                return
+        apply(max_cpu_context(fit_request(), percent=percent, probe=probe), probe=probe)
+        return
+
+    kind, value = parse_num_ctx_arg(tokens[0])
+    if kind == "max-gpu":
+        probe = False
+        for token in rest:
+            flag = token.lower()
+            if flag in {"--probe", "probe", "-p"}:
+                probe = True
+            elif flag in {"--help", "-h", "help"}:
+                console.print(NUM_CTX_HELP)
+                return
+            else:
+                console.print(f"[err]{usage}[/err]")
+                return
+        apply(max_gpu_context(fit_request(), probe=probe), probe=probe)
         return
     if kind == "error":
-        console.print("[err]usage: /num-ctx N | --max-gpu [--probe][/err]")
+        console.print(f"[err]{usage}[/err]")
         return
     requested = int(value or 0)
     if requested <= 0:
