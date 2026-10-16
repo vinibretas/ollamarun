@@ -397,6 +397,77 @@ def ssh_gpu_probe(target: str, *, user: Optional[str] = None, timeout: float = 8
     return devices, parse_service_env(env_text)
 
 
+# One ssh round trip for the --max-cpu probe: the target machine's DRAM is
+# what the fill targets, wherever ollama runs.
+SSH_RAM_COMMAND = "cat /proc/meminfo"
+
+
+def parse_meminfo(text: str) -> dict[str, int]:
+    """MemTotal/MemAvailable/MemFree in bytes from /proc/meminfo (kB scaled)."""
+    values: dict[str, int] = {}
+    for line in (text or "").splitlines():
+        key, _, rest = line.partition(":")
+        key = key.strip()
+        if key not in {"MemTotal", "MemAvailable", "MemFree"}:
+            continue
+        bits = rest.split()
+        if not bits:
+            continue
+        try:
+            amount = int(bits[0])
+        except ValueError:
+            continue
+        if len(bits) > 1 and bits[1] == "kB":
+            amount *= 1024
+        values[key] = amount
+    return values
+
+
+def _ram_from_fields(values: dict[str, int]) -> Optional[tuple[int, int]]:
+    total = values.get("MemTotal")
+    available = values.get("MemAvailable", values.get("MemFree"))
+    if not total or available is None:
+        return None
+    return total, available
+
+
+def local_ram_probe(reader: Any = None) -> Optional[tuple[int, int]]:
+    """(total, available) bytes on this machine from /proc/meminfo, or None.
+
+    `MemAvailable` is the kernel's estimate of what can still be allocated
+    without swapping, which is what "available DRAM" means here; `MemFree`
+    is the fallback on kernels too old to report it. `reader` is injectable
+    for tests (defaults to reading /proc/meminfo).
+    """
+    read = reader or (lambda: Path("/proc/meminfo").read_text())
+    try:
+        text = read()
+    except OSError:
+        return None
+    return _ram_from_fields(parse_meminfo(text))
+
+
+def ssh_ram_probe(target: str, *, user: Optional[str] = None, timeout: float = 8.0,
+                  runner: Any = None) -> Optional[tuple[int, int]]:
+    """(total, available) bytes on a remote machine over SSH, or None on failure.
+
+    Best-effort exactly like `ssh_free_disk`: a missing/unreachable host, no
+    key or a bad response all return None; the caller degrades to "unknown".
+    """
+    if not target or shutil.which("ssh") is None:
+        return None
+    dest = f"{user}@{target}" if user else target
+    run = runner or subprocess.run
+    try:
+        proc = run(["ssh", *SSH_OPTS, dest, SSH_RAM_COMMAND],
+                   capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return _ram_from_fields(parse_meminfo(proc.stdout or ""))
+
+
 def _first_existing_path(path: str) -> str:
     current = path or "/"
     while current != "/" and not os.path.exists(current):

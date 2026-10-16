@@ -1753,6 +1753,17 @@ CTX_SHOW = {"model_info": {
     "qwen35.context_length": 262144,
 }}
 
+# Dense attention (like qwen2.5), so the per-token KV is one scalar per
+# block: 2 * 4 kv heads * (128 + 128) * 2 bytes * 28 blocks = 57,344 B.
+CPU_SHOW = {"model_info": {
+    "qwen2.block_count": 28,
+    "qwen2.attention.head_count": 28,
+    "qwen2.attention.head_count_kv": 4,
+    "qwen2.attention.key_length": 128,
+    "qwen2.attention.value_length": 128,
+    "qwen2.context_length": 32768,
+}}
+
 
 class _CtxFitClient(_FakeClient):
     """Fake Ollama whose loaded footprint scales with num_ctx (for --probe).
@@ -2161,6 +2172,341 @@ def test_cmd_num_ctx_max_gpu() -> int:
     return failures
 
 
+def test_ram_helpers() -> int:
+    failures = 0
+    values = orun.parse_meminfo(
+        "MemTotal:       32717456 kB\n"
+        "MemFree:        23318456 kB\n"
+        "MemAvailable:   29306612 kB\n"
+        "SwapTotal:       8388604 kB\n"
+        "Bogus:           not a number\n")
+    failures += _fit_check("parse_meminfo reads MemTotal/MemAvailable in bytes",
+                           values == {"MemTotal": 32717456 * 1024,
+                                      "MemFree": 23318456 * 1024,
+                                      "MemAvailable": 29306612 * 1024},
+                           repr(values))
+    failures += _fit_check("parse_meminfo falls back to MemFree without MemAvailable",
+                           orun.parse_meminfo("MemTotal: 8 kB\nMemFree: 3 kB\n")
+                           == {"MemTotal": 8192, "MemFree": 3072})
+
+    got = orun.local_ram_probe(reader=lambda: "MemTotal: 8 kB\nMemAvailable: 3 kB\n")
+    failures += _fit_check("local_ram_probe parses an injected reader",
+                           got == (8192, 3072), repr(got))
+
+    def _missing():
+        raise OSError("no /proc/meminfo here")
+
+    failures += _fit_check("local_ram_probe survives a missing /proc/meminfo",
+                           orun.local_ram_probe(reader=_missing) is None)
+
+    class _Proc:
+        def __init__(self, returncode=0, stdout=""):
+            self.returncode = returncode
+            self.stdout = stdout
+
+    got = orun.ssh_ram_probe("h", runner=lambda *a, **k: _Proc(
+        0, "MemTotal: 16 kB\nMemAvailable: 6 kB\n"))
+    failures += _fit_check("ssh_ram_probe parses the remote /proc/meminfo",
+                           got == (16 * 1024, 6 * 1024), repr(got))
+    failures += _fit_check("ssh_ram_probe survives a failed ssh",
+                           orun.ssh_ram_probe("h", runner=lambda *a, **k: _Proc(255)) is None)
+    failures += _fit_check("SSH_RAM_COMMAND reads /proc/meminfo",
+                           orun.SSH_RAM_COMMAND == "cat /proc/meminfo")
+    return failures
+
+
+class _CpuFitClient(_FakeClient):
+    """Fake Ollama whose /api/ps host bytes grow with num_ctx (for --max-cpu).
+
+    `cpu_weights` and `cpu_kv` shape the reported host footprint -- the RAM
+    the fit left on the CPU plus its per-token KV -- and `vram_weights` the
+    reported size_vram; `fail_above` makes loads beyond a context raise like
+    an out-of-memory late in a real one.
+    """
+
+    def __init__(self, *, weights=4_000_000_000, cpu_weights=2_000_000_000,
+                 cpu_kv=40000, vram_weights=1_000_000_000, model_max=262144,
+                 fail_above=None, base="http://127.0.0.1:11434", show_data=None):
+        super().__init__(models=["m1"])
+        self.base = base
+        self.weights = weights
+        self.cpu_weights = cpu_weights
+        self.cpu_kv = cpu_kv
+        self.vram_weights = vram_weights
+        self.fail_above = fail_above
+        self.current = None
+        self.load_ctxs = []
+        self.show_data = show_data if show_data is not None else {
+            "model_info": dict(CPU_SHOW["model_info"],
+                               **{"qwen2.context_length": model_max})}
+
+    def tags(self):
+        return [{"name": "m1", "size": self.weights}]
+
+    def ps(self):
+        if self.current is None:
+            return []
+        ctx, host, vram = self.current
+        return [{"name": "m1", "model": "m1", "size": host + vram,
+                 "size_vram": vram, "context_length": ctx}]
+
+    def unload(self, model):
+        self.unloaded.append(model)
+        self.current = None
+
+    def load(self, model, *, keepalive=None, options=None):
+        self.loaded.append(model)
+        self.load_options.append(dict(options or {}))
+        ctx = int((options or {}).get("num_ctx") or 0)
+        if self.fail_above is not None and ctx > self.fail_above:
+            raise orun.OllamaError("CUDA error: out of memory")
+        self.current = (ctx, self.cpu_weights + self.cpu_kv * ctx, self.vram_weights)
+        self.load_ctxs.append(ctx)
+
+    def truth(self, target: int) -> int:
+        """Largest 256-aligned context whose reported host RAM is <= target."""
+        room = target - self.cpu_weights
+        if room < 0:
+            return 0
+        return (room // self.cpu_kv // 256) * 256
+
+
+def test_cpu_fit() -> int:
+    failures = 0
+    GIB = 2 ** 30
+    weights = 4_000_000_000
+    ram = orun.MachineRam(total_bytes=16 * GIB, available_bytes=16 * GIB, source="local")
+    machine = orun.MachineGpu(devices=[(4096, 3300)], env={})
+
+    fit = orun.estimate_max_cpu_ctx(CPU_SHOW, weights, ram, percent=30,
+                                    machine=machine, pinned_layers=8)
+    failures += _fit_check("estimate_max_cpu_ctx solves a pinned placement",
+                           fit.ctx == 32768 and fit.capped_by_model
+                           and fit.cpu_weights == 2896551724
+                           and fit.cpu_kv_per_token == 43008
+                           and fit.footprint_bytes == 4574273324,
+                           f"ctx={fit.ctx} cpu_w={fit.cpu_weights} kv={fit.cpu_kv_per_token} "
+                           f"fp={fit.footprint_bytes} capped={fit.capped_by_model}")
+
+    fit = orun.estimate_max_cpu_ctx(CPU_SHOW, weights, ram, percent=30, machine=machine)
+    failures += _fit_check("estimate_max_cpu_ctx fits the GPU tail when unpinned",
+                           fit.gpu_layers == 10 and fit.cpu_weights == 2620689655
+                           and fit.cpu_kv_per_token == 38912 and fit.capped_by_model,
+                           f"layers={fit.gpu_layers} cpu_w={fit.cpu_weights} "
+                           f"kv={fit.cpu_kv_per_token}")
+
+    fit = orun.estimate_max_cpu_ctx(CPU_SHOW, weights, ram, percent=30, machine=None)
+    failures += _fit_check("estimate_max_cpu_ctx assumes all-CPU without GPU data",
+                           fit.ctx == 15360 and fit.gpu_layers == 0
+                           and fit.cpu_weights == weights and fit.cpu_kv_per_token == 57344
+                           and fit.footprint_bytes <= fit.target_bytes
+                           and any("no GPU memory data" in note for note in fit.notes),
+                           f"ctx={fit.ctx} fp={fit.footprint_bytes} target={fit.target_bytes}")
+
+    fit = orun.estimate_max_cpu_ctx(CPU_SHOW, weights, ram, percent=30,
+                                    machine=machine, pinned_layers=29)
+    failures += _fit_check("estimate_max_cpu_ctx flags a placement that cannot grow",
+                           fit.cpu_kv_per_token == 0
+                           and any("cannot grow" in note for note in fit.notes),
+                           f"kv={fit.cpu_kv_per_token} notes={fit.notes}")
+
+    fit = orun.estimate_max_cpu_ctx(CPU_SHOW, weights, ram, percent=30,
+                                    resident_bytes=2 * GIB, machine=machine, pinned_layers=8)
+    failures += _fit_check("estimate_max_cpu_ctx counts the resident model in the budget",
+                           fit.budget_bytes == 18 * GIB
+                           and fit.target_bytes == 18 * GIB * 30 // 100
+                           and any("back into the budget" in note for note in fit.notes),
+                           f"budget={fit.budget_bytes} notes={fit.notes}")
+
+    tiny = orun.MachineRam(total_bytes=16 * GIB, available_bytes=2 * GIB, source="local")
+    fit = orun.estimate_max_cpu_ctx(CPU_SHOW, weights, tiny, percent=5, machine=machine)
+    failures += _fit_check("estimate_max_cpu_ctx refuses a target under the floor",
+                           not fit.feasible and "past the" in fit.error, fit.error)
+
+    # ── probe loop ──────────────────────────────────────────────────────────
+    def run_cpu_probe(client, *, available=16 * GIB, percent=30, **request_kwargs):
+        request = orun.FitRequest(
+            client=client, model="m1", config={"max_cpu_probes": 8},
+            ram=orun.MachineRam(total_bytes=16 * GIB, available_bytes=available,
+                                source="local"),
+            machine=orun.MachineGpu(devices=[(4096, 3300)], env={}),
+            **request_kwargs)
+        with orun.console.capture() as cap:
+            chosen = orun.max_cpu_context(request, percent=percent, probe=True)
+        return chosen, _plain(cap.get())
+
+    target = 16 * GIB * 30 // 100
+    client = _CpuFitClient()
+    chosen, out = run_cpu_probe(client)
+    failures += _fit_check("--max-cpu --probe lands on the simulated boundary",
+                           chosen == client.truth(target) == 78848
+                           and client.load_ctxs == [51200, 78080, 78848]
+                           and "host RAM" in out,
+                           f"chosen={chosen} truth={client.truth(target)} "
+                           f"probes={client.load_ctxs}")
+
+    capped = _CpuFitClient(model_max=4096)
+    chosen, out = run_cpu_probe(capped)
+    failures += _fit_check("--max-cpu --probe stops at the model's max context",
+                           chosen == 4096 and "capped by the model's max" in out,
+                           f"chosen={chosen} probes={capped.load_ctxs}")
+
+    oom = _CpuFitClient(fail_above=50000)
+    chosen, out = run_cpu_probe(oom)
+    failures += _fit_check("--max-cpu --probe backs off from load failures",
+                           chosen is not None and chosen <= 49920
+                           and "load failed" in out,
+                           f"chosen={chosen} probes={oom.load_ctxs}")
+
+    over = _CpuFitClient(cpu_weights=6_000_000_000)
+    chosen, out = run_cpu_probe(over)
+    failures += _fit_check("--max-cpu --probe reports a target under the model's floor",
+                           chosen is None and "past the target" in out, out[-200:])
+
+    class _BlindCpu(_CpuFitClient):
+        def ps(self):
+            raise orun.OllamaError("no ps")
+
+    chosen, out = run_cpu_probe(_BlindCpu())
+    failures += _fit_check("--max-cpu --probe reports when the model can't be measured",
+                           chosen is None and "/api/ps" in out, out[-200:])
+
+    # ── orchestration ───────────────────────────────────────────────────────
+    estimate_only = _CpuFitClient()
+    request = orun.FitRequest(client=estimate_only, model="m1", config={},
+                              ram=orun.MachineRam(total_bytes=16 * GIB,
+                                                  available_bytes=16 * GIB, source="local"),
+                              machine=orun.MachineGpu(devices=[(4096, 3300)], env={}))
+    with orun.console.capture() as cap:
+        chosen = orun.max_cpu_context(request, percent=30)
+    out = _plain(cap.get())
+    failures += _fit_check("max_cpu_context estimates without loading",
+                           chosen is not None and "estimate only" in out
+                           and estimate_only.load_ctxs == [],
+                           f"chosen={chosen}")
+
+    resident = _CpuFitClient()
+    resident.current = (65536, 3_000_000_000, 1_000_000_000)
+    request = orun.FitRequest(client=resident, model="m1", config={},
+                              ram=orun.MachineRam(total_bytes=16 * GIB,
+                                                  available_bytes=16 * GIB, source="local"),
+                              machine=orun.MachineGpu(devices=[(4096, 3300)], env={}))
+    with orun.console.capture() as cap:
+        chosen = orun.max_cpu_context(request, percent=30)
+    out = _plain(cap.get())
+    failures += _fit_check("max_cpu_context credits the model's own host RAM",
+                           chosen is not None and "back on reload" in out
+                           and resident.load_ctxs == [],
+                           f"chosen={chosen} out={out[-200:]}")
+
+    request = orun.FitRequest(client=_CpuFitClient(), model="m1",
+                              ram=orun.MachineRam(error="cannot read /proc/meminfo"))
+    with orun.console.capture() as cap:
+        chosen = orun.max_cpu_context(request, percent=30)
+    failures += _fit_check("max_cpu_context reports unreadable DRAM",
+                           chosen is None and "cannot read free memory" in cap.get(),
+                           cap.get()[-160:])
+
+    remote_like = _CpuFitClient(base="http://10.9.9.9:11434")
+    with orun.console.capture() as cap:
+        chosen = orun.max_cpu_context(orun.FitRequest(client=remote_like, model="m1"),
+                                      percent=30)
+    failures += _fit_check("max_cpu_context needs --remote for non-local hosts",
+                           chosen is None and "--remote" in cap.get(), cap.get()[-160:])
+
+    request = orun.FitRequest(client=_CpuFitClient(), model="m1",
+                              ram=orun.MachineRam(total_bytes=16 * GIB,
+                                                  available_bytes=16 * GIB))
+    with orun.console.capture() as cap:
+        chosen = orun.max_cpu_context(request, percent=0)
+    failures += _fit_check("max_cpu_context validates the percentage",
+                           chosen is None and "1 and 100" in cap.get())
+
+    class _NoTags(_CpuFitClient):
+        def tags(self):
+            return []
+
+    with orun.console.capture() as cap:
+        chosen = orun.max_cpu_context(orun.FitRequest(
+            client=_NoTags(), model="m1",
+            ram=orun.MachineRam(total_bytes=16 * GIB, available_bytes=16 * GIB)),
+            percent=30)
+    failures += _fit_check("max_cpu_context needs the model in /api/tags",
+                           chosen is None and "/api/tags" in cap.get())
+    return failures
+
+
+def test_cmd_num_ctx_max_cpu() -> int:
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+        config = dict(orun.DEFAULT_CONFIG)
+        client = _CpuFitClient()
+        repl = orun.Repl(args, config, client, store, orun.Session.create("m1", client.base))
+
+        original_gpu = orun.ctxfit.probe_machine_gpu
+        original_ram = orun.ctxfit.probe_machine_ram
+        orun.ctxfit.probe_machine_gpu = lambda **kwargs: orun.MachineGpu(
+            devices=[(4096, 3300)], env={}, source="local")
+        orun.ctxfit.probe_machine_ram = lambda **kwargs: orun.MachineRam(
+            total_bytes=16 * 2 ** 30, available_bytes=16 * 2 ** 30, source="local")
+        try:
+            with orun.console.capture() as cap:
+                orun.cmd_num_ctx(repl, "--max-cpu 30")
+            out = _plain(cap.get())
+            failures += _fit_check("/num-ctx --max-cpu estimates without loading",
+                                   repl.session.parameters.get("num_ctx") is not None
+                                   and "estimate only" in out
+                                   and client.load_ctxs == [],
+                                   f"params={repl.session.parameters} out={out[-160:]}")
+
+            with orun.console.capture() as cap:
+                orun.cmd_num_ctx(repl, "--max-cpu 30 --probe")
+            out = _plain(cap.get())
+            target = 16 * 2 ** 30 * 30 // 100
+            failures += _fit_check("/num-ctx --max-cpu N --probe lands on the boundary",
+                                   repl.session.parameters.get("num_ctx") == client.truth(target)
+                                   and "host RAM" in out and "model is loaded" in out,
+                                   f"params={repl.session.parameters} "
+                                   f"truth={client.truth(target)} probes={client.load_ctxs}")
+
+            with orun.console.capture() as cap:
+                orun.cmd_num_ctx(repl, "--max-cpu")
+            failures += _fit_check("/num-ctx --max-cpu needs a percentage",
+                                   "usage:" in cap.get())
+
+            with orun.console.capture() as cap:
+                orun.cmd_num_ctx(repl, "--max-cpu 0")
+            failures += _fit_check("/num-ctx --max-cpu rejects 0",
+                                   "1 and 100" in cap.get())
+
+            with orun.console.capture() as cap:
+                orun.cmd_num_ctx(repl, "--max-cpu=101")
+            failures += _fit_check("/num-ctx --max-cpu=101 rejects out of range",
+                                   "1 and 100" in cap.get())
+
+            with orun.console.capture() as cap:
+                orun.cmd_num_ctx(repl, "--max-cpu 30 --max-gpu")
+            failures += _fit_check("/num-ctx --max-cpu rejects mixing with --max-gpu",
+                                   "usage:" in cap.get())
+
+            with orun.console.capture() as cap:
+                orun.cmd_num_ctx(repl, "--help")
+            out = _plain(cap.get())
+            failures += _fit_check("/num-ctx --help documents max-cpu",
+                                   "--max-cpu" in out and "max_cpu_overhead_mb" in out)
+
+            with orun.console.capture() as cap:
+                orun.cmd_num_ctx(repl, "")
+            failures += _fit_check("/num-ctx status hints at --max-cpu",
+                                   "--max-cpu" in cap.get())
+        finally:
+            orun.ctxfit.probe_machine_gpu = original_gpu
+            orun.ctxfit.probe_machine_ram = original_ram
+    return failures
+
+
 def test_emit_and_cli_functions() -> int:
     failures = 0
     with tempfile.TemporaryDirectory() as tmp:
@@ -2245,10 +2591,26 @@ def test_build_parser_flags() -> int:
 
     probe_args = parser.parse_args(["m1", "--num-ctx", "max-gpu", "--max-gpu-probe"])
     if orun.parse_num_ctx_arg(probe_args.num_ctx) == ("max-gpu", None) \
-            and probe_args.max_gpu_probe:
-        print("PASS  --num-ctx max-gpu and --max-gpu-probe parse")
+            and probe_args.probe:
+        print("PASS  --num-ctx max-gpu and --max-gpu-probe (alias) parse")
     else:
-        print(f"FAIL  --num-ctx max-gpu: {probe_args.num_ctx!r} {probe_args.max_gpu_probe!r}")
+        print(f"FAIL  --num-ctx max-gpu: {probe_args.num_ctx!r} {probe_args.probe!r}")
+        failures += 1
+
+    cpu_args = parser.parse_args(["m1", "--num-ctx", "--max-cpu", "80", "--probe"])
+    if cpu_args.num_ctx == "" and cpu_args.max_cpu == "80" and cpu_args.probe \
+            and orun.parse_fill_percent(cpu_args.max_cpu) == 80:
+        print("PASS  --num-ctx --max-cpu N and --probe parse")
+    else:
+        print(f"FAIL  --num-ctx --max-cpu: {cpu_args.num_ctx!r} {cpu_args.max_cpu!r} "
+              f"{cpu_args.probe!r}")
+        failures += 1
+
+    if parser.parse_args(["m1", "--num-ctx"]).num_ctx == "" \
+            and parser.parse_args(["m1", "--max-cpu", "80"]).max_cpu == "80":
+        print("PASS  --num-ctx alone and --max-cpu alone parse (validated in main)")
+    else:
+        print("FAIL  --num-ctx/--max-cpu bare forms")
         failures += 1
 
     if parser.parse_args(["m1"]).num_ctx is None:
@@ -5289,6 +5651,7 @@ if __name__ == "__main__":
              + test_maybe_show_ps() + test_resolve_num_ctx()
              + test_context_usage()
              + test_cmd_num_ctx() + test_ctxfit() + test_cmd_num_ctx_max_gpu()
+             + test_ram_helpers() + test_cpu_fit() + test_cmd_num_ctx_max_cpu()
              + test_emit_and_cli_functions()
              + test_build_parser_flags() + test_remote_hosts()
              + test_pull_and_disk_helpers() + test_ensure_model()
