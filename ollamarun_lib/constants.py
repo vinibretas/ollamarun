@@ -102,7 +102,7 @@ except ImportError:  # pragma: no cover - fallback path
     TEXTUAL_VERSION = ""
     TextualApp = None
 
-VERSION = "1.33"
+VERSION = "1.34"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -242,6 +242,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "max_gpu_margin_mb": 1024,
     "max_gpu_overhead_mb": 256,
     "max_gpu_probes": 8,
+    "max_cpu_overhead_mb": 256,
+    "max_cpu_probes": 8,
     "unload_on_exit": True,
     "tps_footer": True,
     "timeout": DEFAULT_TIMEOUT,
