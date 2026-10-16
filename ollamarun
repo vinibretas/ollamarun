@@ -2,6 +2,23 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.32
+
+Summary of changes in this version:
+  - The `speak` tool's result box now says where the voice comes from and
+    where it will be heard: `tool · speak · ok · optiplex → g3 · 0.42s`.
+    The new `tts-remote say --json` report names the machine that will
+    synthesize (or the one that originally rendered a phrase served from
+    the cache/saved file, marked `(cached)`) plus the machine that plays
+    it back -- always the box ollamarun runs on, since playback happens
+    there. Auto-speak (`--speak` / `/tts on`) prints the same `X → Y`
+    after its char count.
+  - The note rides on the session's tool message as `tool_note`, so
+    `/show`, `--show` and the HTML export replay the titled box, and it
+    stays display-only: what the model sees is unchanged. A tts-remote
+    that predates `say --json` is re-run without the flag, so speech
+    still queues (just without the note).
+
 Version: 1.31
 
 Summary of changes in this version:

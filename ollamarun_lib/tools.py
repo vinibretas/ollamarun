@@ -184,6 +184,10 @@ class ToolContext:
     fetched: dict[str, str] = field(default_factory=dict)
     #: lowercased query -> formatted web_search results, for the same reason.
     searches: dict[str, str] = field(default_factory=dict)
+    #: Free-form note a handler wants in the result panel title (the speak
+    #: tool sets `optiplex → g3` there); execute_tool() moves it onto the
+    #: ToolOutcome, so callers never read this directly.
+    title_note: str = ""
 
 
 @dataclass
@@ -192,6 +196,8 @@ class ToolOutcome:
     ok: bool = False
     duration: float = 0.0
     error: Optional[str] = None
+    #: Extra title text for the result panel (empty for most tools).
+    title_note: str = ""
 
 
 @dataclass
@@ -1511,6 +1517,55 @@ def find_tts_remote(ctx: ToolContext) -> Optional[str]:
     return str(entry) if entry.is_file() else None
 
 
+def speech_hosts(report: str) -> str:
+    """`synthesis host → playback host` note from a `say --json` report.
+
+    Disk hits carry the machine that originally rendered the audio, marked
+    `(cached)`. A missing, older or unreadable report yields no note --
+    never an error -- so the tool keeps working with a tts-remote that
+    does not know `--json` yet.
+    """
+    try:
+        payload = json.loads(report or "")
+    except ValueError:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    host = str(payload.get("host") or "").strip()
+    play = str(payload.get("play_host") or "").strip()
+    if not host or not play:
+        return ""
+    if str(payload.get("source") or "") in {"cache", "saved"}:
+        host = f"{host} (cached)"
+    return f"{host} → {play}"
+
+
+def run_tts_say(binary: str, text: str, *, voice: Optional[str] = None,
+                lang: Optional[str] = None, markdown: bool = False,
+                timeout: float = 120.0) -> subprocess.CompletedProcess:
+    """Queue speech via `tts-remote say`; an older CLI is retried without --json.
+
+    The `--json` report behind the speak hosts note is new, so a tts-remote
+    that does not know the flag yet still gets to speak -- it just comes back
+    without the report. Raises subprocess.TimeoutExpired when the CLI never
+    returns; the caller turns that into its own message.
+    """
+    command = [binary, "say", "-q", "--json"]
+    if markdown:
+        command.append("--markdown")
+    if voice:
+        command += ["--voice", str(voice)]
+    if lang:
+        command += ["--lang", str(lang)]
+    proc = subprocess.run(command, input=text, capture_output=True, text=True,
+                          timeout=timeout)
+    if proc.returncode != 0 and "--json" in (proc.stderr or ""):
+        proc = subprocess.run([part for part in command if part != "--json"],
+                              input=text, capture_output=True, text=True,
+                              timeout=timeout)
+    return proc
+
+
 def _handler_speak(args: dict[str, Any], ctx: ToolContext) -> str:
     text = args.get("text")
     if not isinstance(text, str) or not text.strip():
@@ -1518,21 +1573,16 @@ def _handler_speak(args: dict[str, Any], ctx: ToolContext) -> str:
     binary = find_tts_remote(ctx)
     if not binary:
         raise ToolError("tts-remote not found on PATH")
-    command = [binary, "say", "-q"]
     voice = args.get("voice")
     lang = args.get("lang")
-    if voice:
-        command += ["--voice", str(voice)]
-    if lang:
-        command += ["--lang", str(lang)]
     try:
-        proc = subprocess.run(command, input=text, capture_output=True,
-                              text=True, timeout=ctx.timeout)
+        proc = run_tts_say(binary, text, voice=voice, lang=lang, timeout=ctx.timeout)
     except subprocess.TimeoutExpired:
         raise ToolError("tts-remote timed out") from None
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()
         raise ToolError(f"tts-remote failed: {detail or 'unknown error'}")
+    ctx.title_note = speech_hosts(proc.stdout)
     note = []
     if voice:
         note.append(f"voice={voice}")
@@ -1710,6 +1760,7 @@ def execute_tool(spec: ToolSpec, args: dict[str, Any],
     """Run one handler, converting everything into a model-readable result."""
     started = time.monotonic()
     outcome = ToolOutcome()
+    ctx.title_note = ""
     try:
         outcome.text = spec.handler(args, ctx)
         outcome.ok = True
@@ -1726,4 +1777,5 @@ def execute_tool(spec: ToolSpec, args: dict[str, Any],
         outcome.error = outcome.text
     outcome.duration = time.monotonic() - started
     outcome.text = truncate_output(outcome.text, ctx.max_output)
+    outcome.title_note = ctx.title_note
     return outcome

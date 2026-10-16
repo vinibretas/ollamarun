@@ -4866,12 +4866,15 @@ def test_tool_cli_flags() -> int:
     return failures
 
 
-def _fake_tts(directory: str) -> Path:
-    """A stand-in tts-remote that records argv/stdin and answers voices --json."""
+def _fake_tts(directory: str, report: "dict | None" = None) -> Path:
+    """A stand-in tts-remote that records argv/stdin, answers voices and
+    `say --json` (the report defaults to a render on optiplex, playing on g3)."""
     base = Path(directory)
     script = base / "tts-remote"
     args_file = base / "tts-args.json"
     stdin_file = base / "tts-stdin.txt"
+    plan = report if report is not None else {
+        "ok": True, "source": "render", "host": "optiplex", "play_host": "g3"}
     script.write_text(
         "#! /usr/bin/env python3\n"
         "import json, sys\n"
@@ -4882,6 +4885,27 @@ def _fake_tts(directory: str) -> Path:
         "                      'voices': [{'slug': 'nova', 'style': 'friendly',\n"
         "                                  'lang': 'en', 'name': 'Nova'}]}))\n"
         "    sys.exit(0)\n"
+        f"open({str(stdin_file)!r}, 'w').write(sys.stdin.read())\n"
+        "if '--json' in argv:\n"
+        f"    print(json.dumps({plan!r}))\n")
+    script.chmod(0o755)
+    return script
+
+
+def _fake_old_tts(directory: str) -> Path:
+    """A tts-remote predating the report: rejects --json like argparse does."""
+    base = Path(directory)
+    script = base / "tts-remote"
+    args_file = base / "tts-args.json"
+    stdin_file = base / "tts-stdin.txt"
+    script.write_text(
+        "#! /usr/bin/env python3\n"
+        "import json, sys\n"
+        "argv = sys.argv[1:]\n"
+        f"open({str(args_file)!r}, 'w').write(json.dumps(argv))\n"
+        "if '--json' in argv:\n"
+        "    sys.stderr.write('tts-remote: error: unrecognized arguments: --json\\n')\n"
+        "    sys.exit(2)\n"
         f"open({str(stdin_file)!r}, 'w').write(sys.stdin.read())\n")
     script.chmod(0o755)
     return script
@@ -4900,14 +4924,31 @@ def test_tts_tools() -> int:
                           outcome.ok and "queued" in outcome.text, outcome.text)
         recorded = json.loads((Path(tmp) / "tts-args.json").read_text())
         stdin = (Path(tmp) / "tts-stdin.txt").read_text()
-        failures = _check(failures, "speak passes voice/lang and pipes text via stdin",
-                          recorded == ["say", "-q", "--voice", "v1", "--lang", "pt"]
+        failures = _check(failures, "speak asks for the report, passes voice/lang and pipes stdin",
+                          recorded == ["say", "-q", "--json", "--voice", "v1", "--lang", "pt"]
                           and stdin == "hello world",
                           f"args={recorded} stdin={stdin!r}")
+        failures = _check(failures, "speak notes where the voice comes from and plays",
+                          outcome.title_note == "optiplex → g3", outcome.title_note)
+        outcome = orun.execute_tool(registry["speak"], {"text": "again"}, ctx)
+        failures = _check(failures, "a report without voice/lang still notes the hosts",
+                          outcome.title_note == "optiplex → g3", outcome.title_note)
+        _fake_tts(tmp, report={"ok": True, "source": "cache",
+                               "host": "kiddo", "play_host": "g3"})
+        outcome = orun.execute_tool(registry["speak"], {"text": "again"}, ctx)
+        failures = _check(failures, "cached speech marks the origin host",
+                          outcome.title_note == "kiddo (cached) → g3", outcome.title_note)
         outcome = orun.execute_tool(registry["list_voices"], {}, ctx)
         failures = _check(failures, "list_voices formats the catalog",
                           outcome.ok and "nova" in outcome.text
                           and "friendly" in outcome.text, outcome.text)
+        _fake_old_tts(tmp)
+        outcome = orun.execute_tool(registry["speak"], {"text": "older tts-remote"}, ctx)
+        recorded = json.loads((Path(tmp) / "tts-args.json").read_text())
+        failures = _check(failures, "an older tts-remote is retried without --json",
+                          outcome.ok and outcome.title_note == ""
+                          and recorded == ["say", "-q"],
+                          f"ok={outcome.ok} note={outcome.title_note!r} args={recorded}")
         failures = _check(failures, "tts schemas are advertised",
                           {schema["function"]["name"] for schema in
                            orun.tool_schemas(registry)} >= {"speak", "list_voices"})
@@ -4917,6 +4958,83 @@ def test_tts_tools() -> int:
                                                               {"speak", "list_voices"})))
         failures = _check(failures, "tts tools are skipped entirely when off",
                           "speak" not in orun.default_registry(tts=False))
+    return failures
+
+
+def test_speech_hosts_note() -> int:
+    """The `X → Y` note: formats, the box title, the transcript, the payload."""
+    failures = 0
+    failures = _check(failures, "a render report reads host → play host",
+                      orun.speech_hosts('{"ok": true, "source": "render", '
+                                        '"host": "optiplex", "play_host": "g3"}')
+                      == "optiplex → g3")
+    failures = _check(failures, "a disk hit marks the origin as (cached)",
+                      orun.speech_hosts('{"source": "cache", "host": "kiddo", '
+                                        '"play_host": "g3"}') == "kiddo (cached) → g3")
+    failures = _check(failures, "a report without both hosts yields no note",
+                      orun.speech_hosts('{"source": "render", "host": null, '
+                                        '"play_host": "g3"}') == ""
+                      and orun.speech_hosts('{"source": "cache", "host": "g3"}') == "")
+    failures = _check(failures, "garbage or empty output yields no note",
+                      orun.speech_hosts("queued\n") == "" and orun.speech_hosts("") == "")
+
+    with orun.console.capture() as cap:
+        orun.console.print(orun.tool_result_panel("speak", text="queued 5 chars for speech",
+                                                  note="optiplex → g3", duration=0.4))
+    out = _plain(cap.get())
+    failures = _check(failures, "the result box title carries the note",
+                      "tool · speak · ok · optiplex → g3 · 0.40s" in out, out)
+    with orun.console.capture() as cap:
+        orun.console.print(orun.tool_result_panel("speak", text="queued 5 chars for speech",
+                                                  duration=0.4))
+    out = _plain(cap.get())
+    failures = _check(failures, "no note, no title change",
+                      "tool · speak · ok · 0.40s" in out, out)
+
+    session = orun.Session.create("m", "http://h")
+    session.add_message("assistant", "", tool_calls=[
+        {"function": {"name": "speak", "arguments": {"text": "hi"}}}])
+    session.add_message("tool", "queued 2 chars for speech",
+                        tool_name="speak", tool_note="optiplex → g3")
+    stored = orun.Session.from_dict(json.loads(json.dumps(session.to_dict())))
+    failures = _check(failures, "the note survives a session round trip",
+                      stored.messages[1].get("tool_note") == "optiplex → g3")
+    payloads = session.message_payloads(with_tools=True)
+    tool_payload = [payload for payload in payloads if payload["role"] == "tool"][0]
+    failures = _check(failures, "the note never reaches the model",
+                      "tool_note" not in tool_payload, json.dumps(tool_payload))
+    with orun.console.capture() as cap:
+        orun.render_transcript(session, orun.console)
+    out = _plain(cap.get())
+    failures = _check(failures, "the transcript replays the titled box",
+                      "optiplex → g3" in out, out)
+
+    # End to end through the REPL tool loop: the model calls speak and the
+    # live box (and the stored message) carry the note.
+    with tempfile.TemporaryDirectory() as tmp:
+        fake = _fake_tts(tmp)
+        repl, client, _ = _test_repl(config_extra={"tts_remote": str(fake)})
+        repl._build_prompt_session = lambda: None
+        client.capability_list = ["completion", "tools"]
+        client.chat_script = [
+            [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "speak", "arguments": {"text": "hello there"}}}]},
+              "done": False},
+             {"message": {"role": "assistant", "content": ""}, "done": True}],
+            [{"message": {"role": "assistant", "content": "spoken"}, "done": False},
+             {"message": {"role": "assistant", "content": ""}, "done": True}],
+        ]
+        repl.session.add_message("user", "say something")
+        with orun.console.capture() as cap:
+            repl._generate()
+        out = _plain(cap.get())
+        tool_message = [message for message in repl.session.messages
+                        if message.get("role") == "tool"][0]
+        failures = _check(failures, "the REPL stores the note on the tool message",
+                          tool_message.get("tool_note") == "optiplex → g3",
+                          json.dumps(tool_message))
+        failures = _check(failures, "the live box title carries the note",
+                          "tool · speak · ok · optiplex → g3" in out, out)
     return failures
 
 
@@ -4999,7 +5117,7 @@ def test_tts_auto_speak() -> int:
         recorded = json.loads((Path(tmp) / "tts-args.json").read_text())
         stdin = (Path(tmp) / "tts-stdin.txt").read_text()
         failures = _check(failures, "--speak reads the final answer aloud",
-                          recorded == ["say", "-q", "--markdown"]
+                          recorded == ["say", "-q", "--json", "--markdown"]
                           and stdin == "spoken answer", f"{recorded} {stdin!r}")
 
         quiet = orun.build_parser().parse_args(["m1", "--render", "plain", "--no-save"])
@@ -5144,7 +5262,8 @@ if __name__ == "__main__":
              + test_tool_loop() + test_tool_loop_separation()
              + test_tool_commands() + test_approval_rules()
              + test_tool_payloads() + test_tool_cli_flags()
-             + test_tts_tools() + test_tts_command() + test_tts_auto_speak()
+             + test_tts_tools() + test_speech_hosts_note()
+             + test_tts_command() + test_tts_auto_speak()
              + test_client_http() + test_cmd_image()
              + test_message_queue() + test_status_format() + test_cancel_token()
              + test_stream_cancel() + test_boundary_delivery()
