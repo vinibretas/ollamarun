@@ -68,18 +68,23 @@ from .ctxfit import (
 )
 from .interactive import (
     GPU_LAYERS_USAGE,
+    MODEL_SORT_KEYS,
     _CODE_BLOCK_RE,
     disk_free_line,
     ensure_model,
+    fetch_context_lengths,
     gpu_layers_label,
     model_block_count,
     model_context_length,
+    model_table,
     open_in_editor,
     parse_gpu_layers_spec,
+    parse_model_sort,
     pick_model,
     pick_session,
     pull_with_progress,
     resolve_gpu_layers,
+    sort_models,
 )
 from .renderer import (GenerationResult, Renderer, StreamSink, thinking_panel,
                        tool_result_panel, user_message_box)
@@ -116,7 +121,8 @@ COMMAND_INFO: dict[str, tuple[str, str]] = {
     "/sessions": ("[filter]", "browse and switch saved sessions"),
     "/title": ("[TEXT|--auto]", "show or set the session title"),
     "/tag": ("[list|add TAG…|rm TAG]", "session tags"),
-    "/model": ("[NAME|--list]", "switch model"),
+    "/model, /models": ("[NAME|--list|--sort KEY]",
+                        "switch model, list or sort the installed models"),
     "/ps": ("", "show resident models (ollama ps)"),
     "/num-ctx": ("[N | --max-gpu [--probe]]",
                  "context window: N, or the largest that keeps the GPU placement"),
@@ -177,10 +183,16 @@ def completion_candidates(repl: "Repl", text: str) -> list[str]:
         return [name for command in COMMAND_INFO for name in command.split(", ")
                 if name.startswith(text)]
     command, _, argument = text.partition(" ")
+    if command in {"/model", "/models"} and argument.startswith("--sort "):
+        fragment = argument[len("--sort "):]
+        return [key for key in MODEL_SORT_KEYS if key.startswith(fragment)]
     if " " in argument:
         return []
     candidates: list[str] = []
-    if command in {"/model", "/load", "/save", "/show"}:
+    if command in {"/model", "/models"}:
+        candidates += [flag for flag in ("--list", "--sort")
+                       if flag.startswith(argument)]
+    if command in {"/model", "/models", "/load", "/save", "/show"}:
         candidates += [name for name in repl.model_names if name.startswith(argument)]
     if command in {"/load", "/sessions", "/branch"}:
         candidates += [entry["id"] for entry in repl.store.entries()[:25]
@@ -282,6 +294,10 @@ class Repl:
         self.store = store
         self.session = session
         self.model_names: list[str] = []
+        try:
+            self.model_sort = parse_model_sort(getattr(args, "sort", None) or "modified")
+        except ValueError:
+            self.model_sort = "modified"
         self.pending_images: list[dict[str, Any]] = []
         self.auto_title = args.auto_title or config.get("auto_title", False)
         self.image_storage = config.get("image_storage", "embed")
@@ -1754,8 +1770,26 @@ def cmd_save(repl: Repl, argument: str) -> None:
     console.print(f"[ok]created[/ok] {escape(name)} — `ollamarun {escape(name)}`")
 
 
+def _pick_model(repl: Repl, current: Optional[str] = None) -> Optional[str]:
+    """The model picker ordered by the session's sort; a sort chosen inside
+    the picker sticks for the rest of the session."""
+    return pick_model(repl.client, current, ui=repl.ui, sort=repl.model_sort,
+                      on_sort=lambda key: setattr(repl, "model_sort", key))
+
+
+def _print_model_list(repl: Repl, sort: str) -> None:
+    try:
+        models = repl.client.tags()
+    except OllamaError as exc:
+        console.print(f"[err]{escape(str(exc))}[/err]")
+        return
+    contexts = fetch_context_lengths(repl.client, models) if sort == "context" else {}
+    console.print(model_table(sort_models(models, sort, contexts=contexts),
+                              sort=sort, contexts=contexts))
+
+
 def cmd_pull(repl: Repl, argument: str) -> None:
-    name = argument.strip() or pick_model(repl.client, None, ui=repl.ui)
+    name = argument.strip() or _pick_model(repl)
     if not name:
         return
     ssh_target = remote_node(repl.session.remote, repl.config) if repl.session.remote else None
@@ -1842,23 +1876,42 @@ def cmd_tag(repl: Repl, argument: str) -> None:
 
 
 def cmd_model(repl: Repl, argument: str) -> None:
-    if argument == "--list":
-        try:
-            models = repl.client.tags()
-        except OllamaError as exc:
-            console.print(f"[err]{escape(str(exc))}[/err]")
-            return
-        table = Table(title="models", box=box.ROUNDED, header_style="bold magenta")
-        table.add_column("name")
-        table.add_column("size", justify="right")
-        table.add_column("modified")
-        for model in sorted(models, key=lambda item: item.get("modified_at") or "",
-                            reverse=True):
-            table.add_row(escape(model.get("name", "?")), human_bytes(model.get("size")),
-                          short_stamp(model.get("modified_at")))
-        console.print(table)
+    try:
+        tokens = shlex.split(argument)
+    except ValueError as exc:
+        console.print(f"[err]unparsable arguments: {escape(str(exc))}[/err]")
         return
-    name = argument.strip() or pick_model(repl.client, repl.session.model, ui=repl.ui)
+    wants_list = False
+    sort: Optional[str] = None
+    name_parts: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--sort" or token.startswith("--sort="):
+            value = token.split("=", 1)[1] if "=" in token else (
+                tokens[index + 1] if index + 1 < len(tokens) else "")
+            if not value:
+                console.print("[err]usage: /model --sort "
+                              + "|".join(MODEL_SORT_KEYS) + "[/err]")
+                return
+            try:
+                sort = parse_model_sort(value)
+            except ValueError as exc:
+                console.print(f"[err]{escape(str(exc))}[/err]")
+                return
+            index += 1 if "=" in token else 2
+            continue
+        if token == "--list":
+            wants_list = True
+        else:
+            name_parts.append(token)
+        index += 1
+    if sort is not None:
+        repl.model_sort = sort
+    if wants_list:
+        _print_model_list(repl, repl.model_sort)
+        return
+    name = " ".join(name_parts).strip() or _pick_model(repl, repl.session.model)
     if not name:
         return
     ssh_target = remote_node(repl.session.remote, repl.config) if repl.session.remote else None
@@ -2302,7 +2355,7 @@ COMMAND_HANDLERS: dict[str, Callable[[Repl, str], Any]] = {
     "/sessions": cmd_sessions,
     "/title": cmd_title,
     "/tag": cmd_tag,
-    "/model": cmd_model,
+    "/model": cmd_model, "/models": cmd_model,
     "/ps": cmd_ps,
     "/num-ctx": cmd_num_ctx,
     "/gpu-layers": cmd_gpu_layers,

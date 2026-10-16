@@ -53,10 +53,12 @@ from .ctxfit import (
     parse_num_ctx_arg,
 )
 from .interactive import (
+    MODEL_SORT_KEYS,
     ensure_model,
     gpu_layers_label,
     model_block_count,
     parse_gpu_layers_spec,
+    parse_model_sort,
     pick_model,
     pick_session,
     resolve_gpu_layers,
@@ -100,6 +102,10 @@ interactive commands:
   /set parameter NAME V session parameter (temperature, num_ctx, seed, …)
   /set system TEXT      system prompt
   /show [topic]         model info|license|modelfile|parameters|system|template
+  /model [NAME|--list|--sort KEY]
+                        switch model, or list/sort installed models
+                        (KEY: name|size|parameters|context|modified; the
+                        picker prompt takes --sort KEY too)
   /load [MODEL|SESSION] switch model or resume a saved session
   /save NAME            create an Ollama model from this session
   /pull [MODEL]         pull a model onto this host (updates if present)
@@ -196,6 +202,10 @@ sessions live in ~/etc/data/ollamarun; config in ~/etc/config_files/ollamarun.js
     wrapper.add_argument("--pull", action="store_true",
                          help="pull the model if it is not installed, without asking "
                               "(shows free disk space and progress on a terminal)")
+    wrapper.add_argument("--sort", metavar="KEY",
+                         help="order for the model picker and lists: "
+                              + ", ".join(MODEL_SORT_KEYS)
+                              + " (default: modified)")
     wrapper.add_argument("-m", "--model", dest="model_flag", metavar="MODEL",
                          help="model name (same as the positional MODEL)")
     wrapper.add_argument("--system", metavar="TEXT", help="system prompt")
@@ -316,7 +326,7 @@ def resolve_model(args: argparse.Namespace, config: dict[str, Any],
     model = explicit or (session.model if session else None) or config.get("model")
     if not model:
         if console.is_terminal:
-            model = pick_model(client, None)
+            model = pick_model(client, None, sort=args.sort or "modified")
         if not model:
             console.print("[err]no model given[/err] — pass MODEL or configure one")
             return None
@@ -492,6 +502,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.dimensions is not None and args.dimensions <= 0:
         console.print("[err]--dimensions must be a positive integer[/err]")
         return 2
+    if args.sort is not None:
+        try:
+            args.sort = parse_model_sort(args.sort)
+        except ValueError as exc:
+            console.print(f"[err]{escape(str(exc))}[/err]")
+            return 2
     if args.system_file and not args.system:
         try:
             args.system = Path(args.system_file).read_text(encoding="utf-8").rstrip("\n")
@@ -569,7 +585,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
     chosen = ensure_model(client, model, config, ssh_target=ssh_target,
                           host_label=host_label, assume_yes=args.pull,
-                          pick_on_decline=True, quiet=quiet)
+                          pick_on_decline=True, quiet=quiet,
+                          sort=args.sort or "modified")
     if not chosen:
         return 2
     model = chosen
