@@ -569,6 +569,33 @@ def human_chars(count: int) -> str:
     return f"{count / 1_000_000:.1f}M chars"
 
 
+def human_tokens(value: Optional[int]) -> str:
+    """A context token count: raw below 1k, 3-decimal k above.
+
+    Three decimals make a single streamed token visible (`12.345k` ->
+    `12.346k`) -- the point of the live counter -- while the fixed width
+    keeps the footer from jittering; a 1-decimal `12.3k` only moves once
+    every 100 tokens.
+    """
+    if value is None:
+        return "?"
+    return str(value) if value < 1000 else f"{value / 1000:.3f}k"
+
+
+def format_context(used: Optional[int], total: Optional[int]) -> str:
+    """The `ctx 12.345k/32.768k (38.123%)` piece of the footer and status bar.
+
+    Missing numbers degrade like the status bar always did: no usage yet
+    reads `ctx ?` (or `ctx 0/total`), an unknown window drops the share.
+    """
+    if not used:
+        return "ctx ?" if not total else f"ctx 0/{human_tokens(total)}"
+    if not total:
+        return f"ctx {human_tokens(used)}"
+    return (f"ctx {human_tokens(used)}/{human_tokens(total)} "
+            f"({used * 100 / total:.3f}%)")
+
+
 def shortcut(text: str, limit: int = 60) -> str:
     text = " ".join(text.split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
