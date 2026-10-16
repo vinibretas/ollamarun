@@ -143,12 +143,14 @@ def tool_call_panel(name: str, args: Any) -> Panel:
 
 def tool_result_panel(name: str, detail: str = "", text: str = "", *,
                       ok: bool = True, duration: Optional[float] = None,
-                      head: int = 12, max_chars: int = 1400) -> Panel:
+                      note: str = "", head: int = 12, max_chars: int = 1400) -> Panel:
     """Compact view of what a tool returned; the model gets the full text.
 
     The whole box wears the tool's colour, exactly like its call panel; the
     ok/failed state lives in the title instead of the border (green ok, red
-    failed), so the tool identity stays unbroken across a run.
+    failed), so the tool identity stays unbroken across a run. `note` is an
+    optional extra title bit (the speak tool's `optiplex → g3`), also drawn
+    in the tool's colour.
     """
     lines = (text or "").splitlines()
     shown = lines[:head]
@@ -164,6 +166,8 @@ def tool_result_panel(name: str, detail: str = "", text: str = "", *,
     color = tool_color(name)
     title = Text.assemble("tool · ", (str(name), color), " · ",
                           ("ok" if ok else "failed", "green" if ok else "red"))
+    if note:
+        title.append(f" · {note}", style=color)
     if duration is not None:
         title.append(f" · {duration:.2f}s")
     return Panel(rendered, title=title, border_style=color, title_align="left")
@@ -571,7 +575,8 @@ def render_transcript(session: "Session", console: Console, *, show_stats: bool 
                 content = message.get("content") or ""
                 if content:
                     console.print(tool_result_panel(message.get("tool_name") or "tool",
-                                                    text=content))
+                                                    text=content,
+                                                    note=message.get("tool_note") or ""))
             else:
                 console.print(Panel(escape(content), title=role, border_style="dim",
                                     title_align="left"))

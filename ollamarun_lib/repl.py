@@ -103,6 +103,8 @@ from .tools import (
     normalize_arguments,
     resolve_tool_alias,
     rule_label,
+    run_tts_say,
+    speech_hosts,
     suggest_rules,
     tool_schemas as build_tool_schemas,
 )
@@ -752,11 +754,13 @@ class Repl:
                            duration=outcome.duration
                            if outcome.duration else time.monotonic() - started)
             self.session.add_message("tool", alias_note + outcome.text,
-                                     tool_name=name)
+                                     tool_name=name,
+                                     tool_note=outcome.title_note or None)
             if not quiet:
                 console.print(tool_result_panel(name, detail=detail,
                                                 text=alias_note + outcome.text,
-                                                ok=outcome.ok, duration=outcome.duration))
+                                                ok=outcome.ok, duration=outcome.duration,
+                                                note=outcome.title_note))
         if not self.no_save:
             self.store.save(self.session)
         return interrupted
@@ -770,14 +774,9 @@ class Repl:
         binary = find_tts_remote(self.tool_ctx)
         if not binary:
             return False
-        command = [binary, "say", "-q", "--markdown"]
-        if self.tts_voice:
-            command += ["--voice", str(self.tts_voice)]
-        if self.tts_lang:
-            command += ["--lang", str(self.tts_lang)]
         try:
-            proc = subprocess.run(command, input=text, capture_output=True,
-                                  text=True, timeout=30)
+            proc = run_tts_say(binary, text, voice=self.tts_voice or None,
+                               lang=self.tts_lang or None, markdown=True, timeout=30)
         except (OSError, subprocess.TimeoutExpired) as exc:
             console.print(f"[warn]tts: {escape(str(exc))}[/warn]")
             return False
@@ -786,7 +785,9 @@ class Repl:
             console.print(f"[warn]tts: {escape(detail or 'tts-remote failed')}[/warn]")
             return False
         if console.is_terminal:
-            console.print(f"[dim]speaking · {len(text)} chars[/dim]")
+            hosts = speech_hosts(proc.stdout)
+            suffix = f" · {hosts}" if hosts else ""
+            console.print(f"[dim]speaking · {len(text)} chars{suffix}[/dim]")
         return True
 
     # ── generation ──────────────────────────────────────────────────────────
