@@ -241,7 +241,7 @@ class Renderer:
                  nowordwrap: bool = False, thinking_mode: str = "collapsed",
                  tps_footer: bool = True, context_used: Optional[int] = None,
                  context_total: Optional[int] = None,
-                 show_stats: bool = False, verbose: bool = False,
+                 show_stats: bool = False,
                  max_render_chars: int = 12000, pager: bool = False, model: str = "",
                  after_tools: bool = False):
         self.console = console
@@ -260,7 +260,6 @@ class Renderer:
         self.context_total = context_total
         self.estimator = TpsEstimator()
         self.show_stats = show_stats
-        self.verbose = verbose
         self.max_render_chars = max_render_chars
         self.pager = pager
         self.use_pager = bool(pager) and console.is_terminal and mode != "raw"
@@ -511,7 +510,7 @@ class Renderer:
             self.console.print("[warn]cancelled[/warn]")
         if result.tool_calls and self.mode != "raw" and not self.use_pager:
             self._render_tool_calls(result.tool_calls)
-        if (self.show_stats or self.verbose) and result.stats and self.mode != "raw" \
+        if self.show_stats and result.stats and self.mode != "raw" \
                 and not self.use_pager:
             self.console.print(f"[dim]⏱  {format_stats(result.stats)}[/dim]")
         if result.error:
@@ -528,7 +527,7 @@ class Renderer:
             self.render_final(result.content)
             if result.tool_calls:
                 self._render_tool_calls(result.tool_calls)
-            if (self.show_stats or self.verbose) and result.stats:
+            if self.show_stats and result.stats:
                 self.console.print(f"[dim]⏱  {format_stats(result.stats)}[/dim]")
 
     def _live_view(self, result: GenerationResult) -> Any:

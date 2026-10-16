@@ -49,7 +49,9 @@ from .images import encode_image
 from .ctxfit import (
     FitRequest,
     machine_state_for,
+    max_cpu_context,
     max_gpu_context,
+    parse_fill_percent,
     parse_num_ctx_arg,
 )
 from .interactive import (
@@ -119,9 +121,10 @@ interactive commands:
   /thinking [MODE]      thinking display: show|collapse|hide|toggle|full
   /tps [on|off]         live tokens/s footer
   /ps                   resident models (ollama ps)
-  /num-ctx [N | --max-gpu [--probe]]
-                        context window: N, or the largest that keeps the GPU
-                        placement (--probe verifies by loading the model)
+  /num-ctx [N | --max-gpu [--probe] | --max-cpu N [--probe]]
+                        context window: N, the largest that keeps the GPU
+                        placement, or fill N% of the available DRAM
+                        (--probe verifies by loading the model)
   /gpu-layers [SPEC]    GPU layers: N, P%, +N/-N, all, cpu or auto
   /image PATH           attach an image to the next message
   /export [FILE]        export mid-session as md/json/html
@@ -188,7 +191,10 @@ sessions live in ~/etc/data/ollamarun; config in ~/etc/config_files/ollamarun.js
                         help="for embedding models: truncate inputs exceeding context "
                              "length (default: true). Set --truncate=false to error instead")
     ollama.add_argument("--verbose", action="store_true",
-                        help="show timings for response")
+                        help="obsolete: response timings are always shown on a "
+                             "terminal; pass this to also get them when the output "
+                             "is piped or redirected (--raw/--json never print them; "
+                             "config show_stats: false disables)")
 
     wrapper = parser.add_argument_group("wrapper flags")
     host_group = wrapper.add_mutually_exclusive_group()
@@ -213,14 +219,23 @@ sessions live in ~/etc/data/ollamarun; config in ~/etc/config_files/ollamarun.js
                          help="read the system prompt from a file")
     wrapper.add_argument("--option", action="append", metavar="KEY=VALUE",
                          help="model option, repeatable (e.g. -o temperature=0.7)")
-    wrapper.add_argument("--num-ctx", metavar="N|max-gpu",
+    wrapper.add_argument("--num-ctx", nargs="?", const="", default=None,
+                         metavar="N|max-gpu",
                          help="context window size; capped to the model's max "
                               "(from /api/show) with a warning. 'max-gpu' picks "
-                              "the largest context that still keeps the model "
-                              "on the GPU (see /num-ctx --help)")
-    wrapper.add_argument("--max-gpu-probe", action="store_true",
-                         help="verify --num-ctx max-gpu by loading the model at "
-                              "candidate contexts and reading /api/ps back")
+                              "the largest context that still keeps the model on "
+                              "the GPU; with --max-cpu N the context is raised "
+                              "until the model's host RAM fills N%% of the "
+                              "available DRAM (see /num-ctx --help)")
+    wrapper.add_argument("--max-cpu", metavar="N",
+                         help="with --num-ctx: fill N%% (1-100) of the DRAM "
+                              "available to the model")
+    wrapper.add_argument("--probe", dest="probe", action="store_true",
+                         help="with --num-ctx max-gpu or --num-ctx --max-cpu N: "
+                              "verify by loading the model at candidate contexts "
+                              "and reading /api/ps back")
+    wrapper.add_argument("--max-gpu-probe", dest="probe", action="store_true",
+                         help=argparse.SUPPRESS)
     wrapper.add_argument("--gpu-layers", metavar="SPEC",
                          help="GPU layers for the model: N (absolute), P%% of its "
                               "layers, +N/-N (adjust the current value), all, cpu "
@@ -612,13 +627,51 @@ def main(argv: Optional[list[str]] = None) -> int:
         except (ValueError, RuntimeError):
             gpu_layers_value = None
 
-    if args.max_gpu_probe and (args.num_ctx or "").strip().lower() not in {"max-gpu", "--max-gpu"}:
-        console.print("[err]--max-gpu-probe requires --num-ctx max-gpu[/err]")
+    num_ctx_arg = (args.num_ctx or "").strip()
+    if args.max_cpu is not None and args.num_ctx is None:
+        console.print("[err]--max-cpu requires --num-ctx[/err]")
         return 2
-    if args.num_ctx is not None:
+    if args.max_cpu is not None and num_ctx_arg:
+        console.print("[err]--max-cpu takes the mode: use --num-ctx --max-cpu N[/err]")
+        return 2
+    if args.max_cpu is None and args.num_ctx is not None and not num_ctx_arg:
+        console.print("[err]--num-ctx needs a value or --max-cpu N[/err]")
+        return 2
+    if num_ctx_arg.lower() in {"max-cpu", "--max-cpu"}:
+        console.print("[err]--num-ctx max-cpu takes a percentage: use "
+                      "--num-ctx --max-cpu N[/err]")
+        return 2
+    max_mode = bool(args.max_cpu is not None) or num_ctx_arg.lower() in {"max-gpu", "--max-gpu"}
+    if args.probe and not max_mode:
+        console.print("[err]--probe requires --num-ctx max-gpu or --num-ctx --max-cpu N[/err]")
+        return 2
+    if args.max_cpu is not None:
+        percent = parse_fill_percent(args.max_cpu)
+        if percent is None:
+            console.print("[err]--max-cpu takes a percentage between 1 and 100[/err]")
+            return 2
+        request = FitRequest(
+            client=client, model=model, config=config,
+            host_label=host_label, ssh_target=ssh_target,
+            ssh_user=config.get("remote_ssh_user"),
+            pinned_spec=session.gpu_layers,
+            num_gpu=(session.parameters or {}).get("num_gpu"),
+            base_options={key: val
+                          for key, val in (session.parameters or {}).items()
+                          if key != "num_ctx"},
+            keepalive=session.keepalive or args.keepalive,
+        )
+        ctx = max_cpu_context(request, percent=percent, probe=args.probe)
+        if ctx is None:
+            return 2
+        session.parameters["num_ctx"] = ctx
+        note = " [dim]· model is loaded at that context[/dim]" if args.probe else ""
+        console.print(f"[ok]num_ctx set to {ctx}[/ok]{note}")
+    elif args.num_ctx is not None:
         kind, value = parse_num_ctx_arg(args.num_ctx)
         if kind == "error":
-            console.print("[err]--num-ctx must be a positive integer or max-gpu[/err]")
+            console.print("[err]--num-ctx must be a positive integer, max-gpu, "
+                          "or --max-cpu N[/err]")
             return 2
         if kind == "max-gpu":
             request = FitRequest(
@@ -634,11 +687,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                 refresh_gpu=lambda: machine_state_for(client.base, ssh_target=ssh_target,
                                                       ssh_user=config.get("remote_ssh_user")),
             )
-            ctx = max_gpu_context(request, probe=args.max_gpu_probe)
+            ctx = max_gpu_context(request, probe=args.probe)
             if ctx is None:
                 return 2
             session.parameters["num_ctx"] = ctx
-            note = " [dim]· model is loaded at that context[/dim]" if args.max_gpu_probe else ""
+            note = " [dim]· model is loaded at that context[/dim]" if args.probe else ""
             console.print(f"[ok]num_ctx set to {ctx}[/ok]{note}")
         else:
             if int(value or 0) <= 0:
