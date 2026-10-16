@@ -212,9 +212,11 @@ a module's own docstring for what lives there before editing:
    GGUF metadata, per-layer `head_count_kv` arrays included),
    `machine_state_for()`/`probe_machine_gpu()` (free VRAM plus the ollama
    unit env, locally or over one ssh probe), `estimate_max_gpu_ctx()`
-   (weights from `/api/tags`, llama.cpp's fit margin, pinned
-   `/gpu-layers`), the `/api/ps`-verified bisection `probe_max_gpu_ctx()`
-   (`FitRequest`/`GpuFit`/`ProbeResult`), the rich reports and
+   (weights from `/api/tags`, llama.cpp's fit margin, resident models'
+   `/api/ps` VRAM credited back, pinned `/gpu-layers`), the `/api/ps`-verified
+   `probe_max_gpu_ctx()` that solves each next candidate from the measured
+   affine footprint line instead of bisecting (`FitRequest`/`GpuFit`/
+   `ProbeResult`), the rich reports and
    `max_gpu_context()`, which the REPL command and the CLI
    `--num-ctx max-gpu` flag both call. The probes themselves live in
    `helpers.py` (`local_gpu_probe`, `ssh_gpu_probe`, `host_is_self`).
