@@ -149,7 +149,9 @@ a module's own docstring for what lives there before editing:
    `model_message_panel`, full-width titled box for a model turn) and the
    tool panels -- `tool_call_panel()`/`tool_result_panel()`, both coloured
    by `constants.tool_color()` so every tool keeps one identity across the
-   live view and the transcript -- plus
+   live view and the transcript (`tool_result_panel` also takes a `note`
+   that lands in the title -- the speak tool's `optiplex → g3`, persisted
+   on the tool message as `tool_note`) -- plus
    `render_transcript()` (replays a saved session the way it looked live,
    used by `/show`/`--show`). This is the piece that talks to the terminal
    frame-by-frame; changes to streaming UX go here.
@@ -169,7 +171,10 @@ a module's own docstring for what lives there before editing:
    `format_fetch_response` maps a response onto model-readable text (never the
    site's error page), `run_web_search` wraps ddgs and `TOOL_ALIASES`/
    `resolve_tool_alias` map invented tool names (`search`, `curl`, ...) onto
-   the real ones. The agent loop that
+   the real ones. The speech half speaks through `run_tts_say()` (an older
+   `tts-remote` without `--json` is retried without it) and turns the
+   `say --json` plan into the shared `title_note` via `speech_hosts()`.
+   The agent loop that
    calls into it lives in `repl.py` (approve → execute → append a `role: tool`
    message → ask the model again), auto-speak lives in `Repl.speak_text`, and
    rendering of calls/results is `renderer.py`.
