@@ -477,11 +477,17 @@ class Repl:
                             nowordwrap=self.args.nowordwrap,
                             thinking_mode=self.thinking_mode,
                             tps_footer=self.tps_footer,
+                            context_used=self.context_used(),
                             show_stats=self.show_stats,
                             max_render_chars=self.max_render_chars,
                             pager=self.pager and not self.tui_mode,
                             model=self.session.model, after_tools=after_tools)
-        return renderer.with_sink(self.stream_sink)
+        renderer = renderer.with_sink(self.stream_sink)
+        if renderer.tps_footer and (renderer.live_render or renderer.sink_render):
+            # The footer's ctx share needs the window size: one cached
+            # /api/show per model, fetched only when the footer can show.
+            renderer.context_total = self.context_length()
+        return renderer
 
     def sync_live_renderer(self) -> None:
         """Push display knobs changed mid-turn (`/thinking`, `/tps`) to the
@@ -817,6 +823,11 @@ class Repl:
                 return rate
         return self._last_tps
 
+    def current_tps_avg(self) -> Optional[float]:
+        """Cumulative average of the running round (None when idle)."""
+        renderer = self.current_renderer
+        return renderer.estimator.average() if renderer is not None else None
+
     def context_length(self, *, refresh: bool = False) -> Optional[int]:
         """The model's context window (`num_ctx` when set), cached per model."""
         key = (self.session.model, self.session.parameters.get("num_ctx"))
@@ -827,6 +838,24 @@ class Repl:
                 show = {}
             self._context_totals[key] = model_context_length(show, self.session.parameters)
         return self._context_totals[key]
+
+    def _context_total(self) -> Optional[int]:
+        """The cached window size for the current model/num_ctx, if known."""
+        return self._context_totals.get(
+            (self.session.model, self.session.parameters.get("num_ctx")))
+
+    def live_context_used(self) -> Optional[int]:
+        """`context_used()` plus the chunks streamed in the running round.
+
+        The status bar (and the footer, through the renderer) count the live
+        stream on top of the last round's totals, so the ctx counter moves
+        with every token instead of stepping once per turn.
+        """
+        used = self.context_used()
+        renderer = self.current_renderer
+        if used is None or renderer is None:
+            return used
+        return used + renderer.estimator.tokens
 
     def status_snapshot(self) -> StatusSnapshot:
         tools = "off" if not self.tools_enabled else (
@@ -839,11 +868,11 @@ class Repl:
             thinking=self.thinking_mode,
             tools=tools,
             render=self.render_mode,
-            context_used=self.context_used(),
-            context_total=self._context_totals.get(
-                (self.session.model, self.session.parameters.get("num_ctx"))),
+            context_used=self.live_context_used(),
+            context_total=self._context_total(),
             queued=len(self.queue),
             tps=self.current_tps(),
+            tps_avg=self.current_tps_avg(),
             elapsed=self.turn_elapsed(),
         )
 

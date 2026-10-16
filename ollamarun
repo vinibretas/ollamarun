@@ -2,6 +2,23 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.35
+
+Summary of changes in this version:
+  - The streaming footer carries more: the 5s windowed rate, its
+    cumulative average, the streamed token count and a live context
+    counter -- `~24.0 tok/s (avg 21.4) · 45 tok · ctx 12.345k/32.768k
+    (38.123%)`. The ctx number is the last round's prompt + completion
+    plus the chunks this round has already streamed, so it moves with
+    every token (it starts on the second round, when there is a base to
+    count from); the TUI status bar shows the same rate/average and live
+    ctx. `/tps` and `--no-tps` still switch the whole thing off.
+  - Context counters scale dynamically: raw below 1000 and 3-decimal k
+    from 1k on (`845`, `12.345k`, `32.768k`), so a single token is
+    visible while streaming, and the share reads with 3 decimals
+    (`(38.123%)`). One shared formatter (`human_tokens`/
+    `format_context`) feeds both front ends.
+
 Version: 1.34
 
 Summary of changes in this version:
