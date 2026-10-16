@@ -861,18 +861,23 @@ def test_tps_estimator() -> int:
     for tick in range(10):
         estimator.add(1, now=float(tick))
     check("tps windowed rate", round(estimator.rate(now=9.0), 3), 1.0)
+    check("tps windowed helper", round(estimator.windowed(now=9.0), 3), 1.0)
+    check("tps average helper", round(estimator.average(now=9.0), 3), round(10 / 9, 3))
     check("tps token count", estimator.tokens, 10)
 
     early = orun.TpsEstimator(window=5.0)
     early.add(1, now=100.0)
     early.add(1, now=100.2)
     check("tps cumulative fallback", round(early.rate(now=100.2), 3), 10.0)
+    check("tps window too fresh is None", early.windowed(now=100.2), None)
+    check("tps average of a fresh window", round(early.average(now=100.2), 3), 10.0)
 
     stalling = orun.TpsEstimator(window=5.0)
     for tick in range(5):
         stalling.add(1, now=float(tick))
     check("tps stall falls back to cumulative",
           round(stalling.rate(now=30.0), 3), round(5 / 30, 3))
+    check("tps stall window is None", stalling.windowed(now=30.0), None)
     return failures
 
 
@@ -4142,17 +4147,17 @@ def test_status_format() -> int:
                                    remote=None, thinking="collapsed",
                                    tools="allowlist", render="markdown",
                                    context_used=12400, context_total=32768,
-                                   queued=2, tps=41.2, elapsed=3.2)
-    wide = orun.format_status(snapshot, frame="⠋", width=150)
+                                   queued=2, tps=41.2, tps_avg=38.5, elapsed=3.2)
+    wide = orun.format_status(snapshot, frame="⠋", width=155)
     plain = orun.strip_markup(wide)
     failures = _check(failures, "status shows state, model, mode and context",
                       "⠋ generating" in plain and "qwen3:8b" in plain
                       and "think:collapsed" in plain and "tools:allowlist" in plain
-                      and "12.4k/32.8k (37%)" in plain, plain)
-    failures = _check(failures, "status shows the queue and speed",
-                      "2 queued" in plain and "41.2 tok/s" in plain, plain)
+                      and "12.400k/32.768k (37.842%)" in plain, plain)
+    failures = _check(failures, "status shows the queue, speed and its average",
+                      "2 queued" in plain and "41.2 tok/s (avg 38.5)" in plain, plain)
     failures = _check(failures, "status fits the terminal width",
-                      len(plain) <= 150, str(len(plain)))
+                      len(plain) <= 155, str(len(plain)))
     narrow = orun.strip_markup(orun.format_status(snapshot, frame="⠋", width=46))
     failures = _check(failures, "narrow status keeps state, model and context",
                       "generating" in narrow and "qwen3:8b" in narrow
@@ -4168,12 +4173,14 @@ def test_status_format() -> int:
                                context_total=8192)
     plain = orun.strip_markup(orun.format_status(idle, frame="●", width=100))
     failures = _check(failures, "idle status shows an empty context as 0",
-                      "ctx 0/8.2k" in plain and "tools:off" in plain, plain)
+                      "ctx 0/8.192k" in plain and "tools:off" in plain, plain)
     done = orun.StatusSnapshot(state="done", detail="done in 3.2s", model="m",
-                               render="markdown")
+                               render="markdown", tps=41.2)
     plain = orun.strip_markup(orun.format_status(done, frame="✔", width=80))
     failures = _check(failures, "done status keeps its summary",
                       "✔ done" in plain and "done in 3.2s" in plain, plain)
+    failures = _check(failures, "done status has no average to show",
+                      "41.2 tok/s" in plain and "avg" not in plain, plain)
 
     failures = _check(failures, "spinner animates while busy",
                       orun.spinner_frame("generating", 0.0) != orun.spinner_frame(
@@ -4183,6 +4190,85 @@ def test_status_format() -> int:
                       and orun.spinner_frame("done", 0.5) == "✔")
     failures = _check(failures, "loading counts as busy",
                       orun.spinner_frame("loading", 0.05) in orun.SPINNER_FRAMES)
+    return failures
+
+
+def test_context_counter() -> int:
+    """The ctx counter: dynamic token formatting and the 3-decimal share."""
+    failures = 0
+    failures = _check(failures, "counts read raw below 1k",
+                      orun.human_tokens(845) == "845"
+                      and orun.human_tokens(0) == "0")
+    failures = _check(failures, "counts go 3-decimal k from 1k on",
+                      orun.human_tokens(1000) == "1.000k"
+                      and orun.human_tokens(12345) == "12.345k"
+                      and orun.human_tokens(32768) == "32.768k")
+    failures = _check(failures, "an unknown count reads ?",
+                      orun.human_tokens(None) == "?")
+    failures = _check(failures, "the ctx piece carries the 3-decimal share",
+                      orun.format_context(12345, 32768)
+                      == "ctx 12.345k/32.768k (37.674%)",
+                      orun.format_context(12345, 32768))
+    failures = _check(failures, "a small count stays raw inside the ctx piece",
+                      orun.format_context(845, 32768) == "ctx 845/32.768k (2.579%)",
+                      orun.format_context(845, 32768))
+    failures = _check(failures, "missing numbers degrade like the status bar",
+                      orun.format_context(None, None) == "ctx ?"
+                      and orun.format_context(0, 8192) == "ctx 0/8.192k"
+                      and orun.format_context(12345, None) == "ctx 12.345k")
+    return failures
+
+
+def test_tps_footer() -> int:
+    """The streaming footer and the snapshot: rate, average, tokens, live ctx."""
+    failures = 0
+    buffer = io.StringIO()
+    console = Console(file=buffer, width=200, force_terminal=False)
+
+    renderer = orun.Renderer(console, mode="plain", context_used=12000,
+                             context_total=32768)
+    failures = _check(failures, "no footer before any token",
+                      renderer._tps_text(now=0.0) is None)
+    for tick in range(10):
+        renderer.estimator.add(1, now=100.0 + tick)
+    text = renderer._tps_text(now=109.0).plain
+    failures = _check(failures, "footer shows the rate, its average and the count",
+                      "~1.0 tok/s" in text and "(avg 1.1)" in text
+                      and "10 tok" in text, text)
+    failures = _check(failures, "footer counts the live ctx with 3 decimals",
+                      "ctx 12.010k/32.768k (36.652%)" in text, text)
+
+    bare = orun.Renderer(console, mode="plain")
+    bare.estimator.add(1, now=0.0)
+    plain = bare._tps_text(now=0.5).plain
+    failures = _check(failures, "no ctx piece without a base to count from",
+                      "ctx" not in plain, plain)
+
+    quiet = orun.Renderer(console, mode="plain", tps_footer=False)
+    quiet.estimator.add(1, now=0.0)
+    failures = _check(failures, "the footer honours /tps off",
+                      quiet._tps_text(now=1.0) is None)
+
+    repl, client, _ = _test_repl()
+    repl.session.stats["last_prompt_tokens"] = 12000
+    repl.session.stats["last_completion_tokens"] = 0
+    repl._context_totals[("m1", None)] = 32768
+    streaming = orun.Renderer(console, mode="plain")
+    streaming.estimator.add(1, now=time.monotonic() - 0.5)
+    repl.current_renderer = streaming
+    snapshot = repl.status_snapshot()
+    failures = _check(failures, "the status bar adds the live stream to ctx",
+                      snapshot.context_used == 12001
+                      and snapshot.context_total == 32768
+                      and snapshot.context_text() == "ctx 12.001k/32.768k (36.624%)",
+                      snapshot.context_text())
+    failures = _check(failures, "the status bar carries the windowed average",
+                      snapshot.tps_avg is not None and snapshot.tps_avg > 1.0,
+                      str(snapshot.tps_avg))
+    repl.current_renderer = None
+    failures = _check(failures, "idle status falls back to the stored ctx",
+                      repl.status_snapshot().context_used == 12000
+                      and repl.status_snapshot().tps_avg is None)
     return failures
 
 
@@ -5266,6 +5352,7 @@ if __name__ == "__main__":
              + test_tts_command() + test_tts_auto_speak()
              + test_client_http() + test_cmd_image()
              + test_message_queue() + test_status_format() + test_cancel_token()
+             + test_context_counter() + test_tps_footer()
              + test_stream_cancel() + test_boundary_delivery()
              + test_cancel_stops_turn() + test_tui_app()
              + test_live_stream_final_frame_is_complete())
