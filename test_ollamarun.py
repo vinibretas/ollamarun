@@ -1900,6 +1900,32 @@ def test_ctxfit() -> int:
     failures += _fit_check("estimate needs KV metadata",
                        not no_kv.feasible and "KV cache" in no_kv.error)
 
+    credited = orun.estimate_max_gpu_ctx(CTX_SHOW, weights, machine,
+                                         residents=[("m1", 2_000_000_000)])
+    failures += _fit_check("estimate credits resident models' VRAM into the pool",
+                           credited.credited_bytes == 2_000_000_000
+                           and credited.usable_bytes == (12000 - 1024) * 2 ** 20
+                           + 2_000_000_000
+                           and any("crediting m1" in note for note in credited.notes),
+                           f"usable={credited.usable_bytes} notes={credited.notes}")
+
+    rescued = orun.estimate_max_gpu_ctx(CTX_SHOW, 2_000_000_000,
+                                        orun.MachineGpu(devices=[(4096, 1000)]),
+                                        residents=[("m1", 3_000_000_000)])
+    failures += _fit_check("a resident model can make an infeasible placement fit",
+                           rescued.feasible and rescued.ctx > 0,
+                           f"ctx={rescued.ctx} error={rescued.error}")
+
+    margin_only = orun.estimate_max_gpu_ctx(CTX_SHOW, 20_000_000,
+                                            orun.MachineGpu(devices=[(4096, 1000)]))
+    unc_budget = 1000 * 2 ** 20 - 20_000_000 - 256 * 2 ** 20
+    unc_expected = ((unc_budget // 12288) // 1024) * 1024
+    failures += _fit_check("estimate reports the no-margin context as a hint",
+                           not margin_only.feasible
+                           and margin_only.ctx_no_margin == unc_expected,
+                           f"ctx_no_margin={margin_only.ctx_no_margin} "
+                           f"expected={unc_expected}")
+
     # ── probe loop ──────────────────────────────────────────────────────────
     def run_probe(client, free_mb=3500, **request_kwargs):
         req_machine = orun.MachineGpu(devices=[(4096, free_mb)], env={}, source="local")
@@ -1914,8 +1940,16 @@ def test_ctxfit() -> int:
     chosen, out = run_probe(client)
     failures += _fit_check("--probe finds the true boundary exactly",
                        chosen == client.truth() == 48384 and len(client.load_ctxs) == 2
-                       and "100% GPU" in out,
+                       and client.load_ctxs[0] == 26624 and "100% GPU" in out,
                        f"chosen={chosen} truth={client.truth()} probes={client.load_ctxs}")
+
+    resident_probe = _CtxFitClient(capacity=6_000_000_000)
+    resident_probe.current = (65536, 2_800_000_000, 2_800_000_000)
+    chosen, out = run_probe(resident_probe)
+    failures += _fit_check("--probe starts from the estimate, not 4,096",
+                           resident_probe.load_ctxs
+                           and resident_probe.load_ctxs[0] == 253952,
+                           f"probes={resident_probe.load_ctxs}")
 
     hidden = _CtxFitClient(capacity=int((3500 - 1024) * 2 ** 20) - 300 * 2 ** 20)
     chosen, _ = run_probe(hidden)
@@ -1959,6 +1993,45 @@ def test_ctxfit() -> int:
                            chosen == expected and "estimate only" in out
                            and request.client.load_ctxs == [],
                            f"chosen={chosen}")
+
+    resident = _CtxFitClient()
+    resident.current = (65536, 2_800_000_000, 2_800_000_000)
+    request = orun.FitRequest(client=resident, model="m1", config={},
+                              machine=orun.MachineGpu(devices=[(4096, 1000)], env={}))
+    with orun.console.capture() as cap:
+        chosen = orun.max_gpu_context(request)
+    out = _plain(cap.get())
+    credited_budget = 2_800_000_000 - 2_000_000_000 - 256 * 2 ** 20
+    credited_expected = ((credited_budget // 12288) // 1024) * 1024
+    failures += _fit_check("max_gpu_context credits a resident model's VRAM",
+                           chosen == credited_expected and "resident" in out
+                           and resident.load_ctxs == [],
+                           f"chosen={chosen} expected={credited_expected}")
+
+    class _TwoResidents(_CtxFitClient):
+        def ps(self):
+            return [{"name": "m1", "model": "m1", "size": 2_000_000_000,
+                     "size_vram": 2_000_000_000, "context_length": 65536},
+                    {"name": "other:latest", "model": "other:latest",
+                     "size": 1_000_000_000, "size_vram": 1_000_000_000,
+                     "context_length": 8192}]
+
+    request = orun.FitRequest(client=_TwoResidents(), model="m1", config={},
+                              machine=orun.MachineGpu(devices=[(4096, 1000)], env={}))
+    with orun.console.capture() as cap:
+        chosen = orun.max_gpu_context(request)
+    failures += _fit_check("max_gpu_context credits every resident by default",
+                           chosen is not None and chosen > 0, f"chosen={chosen}")
+
+    request = orun.FitRequest(client=_TwoResidents(), model="m1",
+                              config={"max_gpu_credit_residents": False},
+                              machine=orun.MachineGpu(devices=[(4096, 1000)], env={}))
+    with orun.console.capture() as cap:
+        chosen = orun.max_gpu_context(request)
+    out = _plain(cap.get())
+    failures += _fit_check("max_gpu_credit_residents=false credits only the target",
+                           chosen is None and "not credited" in out,
+                           f"chosen={chosen} out={out[-200:]}")
 
     request = orun.FitRequest(client=_CtxFitClient(), model="m1",
                               config={"max_gpu_probes": 4},

@@ -78,10 +78,16 @@ NUM_CTX_HELP = """usage: /num-ctx N | --max-gpu [--probe]
              nvidia-smi probe, locally or over ssh for --remote hosts),
              minus llama.cpp's fit margin (LLAMA_ARG_FIT_TARGET, or
              max_gpu_margin_mb) and an overhead allowance
-             (max_gpu_overhead_mb). A pinned /gpu-layers is honoured.
-  --probe    verify by loading: the model is warmed at candidate contexts
-             and each real GPU split is read back from /api/ps until the
-             largest 100%-GPU context is bracketed (max_gpu_probes, default 8)."""
+             (max_gpu_overhead_mb). Models already resident are credited
+             back -- their VRAM is released when they reload at the new
+             context; max_gpu_credit_residents=false limits that credit to
+             the model being sized. A pinned /gpu-layers is honoured.
+  --probe    verify by loading: starting from that estimate, the model is
+             warmed at candidate contexts and each real GPU split is read
+             back from /api/ps; the next candidate is solved from the
+             measured bytes-per-token line (not a bisection midpoint) until
+             the largest 100%-GPU context is bracketed (max_gpu_probes,
+             default 8)."""
 
 
 # ── machine state (free VRAM + the ollama unit env) ─────────────────────────
@@ -248,6 +254,9 @@ class GpuFit:
     free_bytes: int = 0
     margin_bytes: int = 0           # per device
     overhead_bytes: int = 0
+    credited_bytes: int = 0         # resident models' VRAM credited back (size_vram sum)
+    residents: list[tuple[str, int]] = field(default_factory=list)
+    ctx_no_margin: Optional[int] = None     # what would fit without the margin
     model_max: Optional[int] = None
     capped_by_model: bool = False
     pinned_layers: Optional[int] = None
@@ -270,14 +279,25 @@ def _config_int(config: dict[str, Any], key: str, default: int) -> int:
 
 def estimate_max_gpu_ctx(show_data: dict[str, Any], weight_bytes: int,
                          machine: MachineGpu, *, pinned_layers: Optional[int] = None,
-                         config: Optional[dict[str, Any]] = None) -> GpuFit:
-    """Largest context that keeps the placement on the GPU (no loads, pure math)."""
+                         config: Optional[dict[str, Any]] = None,
+                         residents: Optional[list[tuple[str, int]]] = None) -> GpuFit:
+    """Largest context that keeps the placement on the GPU (no loads, pure math).
+
+    `residents` are the models already holding VRAM as (name, size_vram): the
+    free-VRAM reading then excludes what their own instances hold, but that
+    memory is released when they reload at the new context, so it is credited
+    back into the pool instead of being counted against the placement.
+    """
     config = config or {}
     fit = GpuFit(weights_total=max(0, int(weight_bytes or 0)),
                  devices=list(machine.devices), source=machine.source,
                  pinned_layers=pinned_layers,
                  total_layers=model_total_layers(show_data),
                  model_max=trained_context_length(show_data))
+    if residents:
+        fit.residents = [(str(name), int(size)) for name, size in residents
+                         if int(size or 0) > 0]
+        fit.credited_bytes = sum(size for _, size in fit.residents)
     if not machine.devices:
         fit.error = machine.error or "no GPU memory data"
         return fit
@@ -303,7 +323,10 @@ def estimate_max_gpu_ctx(show_data: dict[str, Any], weight_bytes: int,
                                      DEFAULT_OVERHEAD_MB) * MIB
     fit.free_bytes = sum(free for _, free in machine.devices) * MIB
     fit.usable_bytes = sum(max(0, free * MIB - fit.margin_bytes)
-                           for _, free in machine.devices)
+                           for _, free in machine.devices) + fit.credited_bytes
+    for name, size in fit.residents:
+        fit.notes.append(f"crediting {name} ({human_bytes(size)} on the GPU) — "
+                         f"it reloads at the new context and releases that memory")
 
     fit.kv_per_token = kv_bytes_per_token(show_data, parallel=fit.parallel,
                                           element_bytes=fit.element_bytes) or 0
@@ -336,8 +359,22 @@ def estimate_max_gpu_ctx(show_data: dict[str, Any], weight_bytes: int,
         ctx = (ctx // ESTIMATE_STEP) * ESTIMATE_STEP
     fit.ctx = max(0, int(ctx))
     fit.feasible = fit.ctx > 0
+    # What the same placement would fit with no margin at all: printed as a
+    # hint when the per-device reserve is the only thing making it infeasible.
+    usable_unc = (sum(max(0, free * MIB) for _, free in machine.devices)
+                  + fit.credited_bytes)
+    budget_unc = usable_unc - fit.weights_bytes - fit.overhead_bytes
+    unc = budget_unc // fit.kv_gpu_per_token if budget_unc > 0 else 0
+    if unc and fit.model_max and unc > fit.model_max:
+        unc = fit.model_max
+    if unc >= ESTIMATE_STEP:
+        unc = (unc // ESTIMATE_STEP) * ESTIMATE_STEP
+    fit.ctx_no_margin = int(unc) if unc else None
     if not fit.feasible:
         usable = human_bytes(fit.usable_bytes) if fit.usable_bytes else "0 B"
+        if fit.credited_bytes:
+            usable += (f" ({human_bytes(fit.free_bytes)} free + "
+                       f"{human_bytes(fit.credited_bytes)} resident)")
         fit.error = (f"the GPU placement does not fit: {human_bytes(fit.weights_bytes)} "
                      f"of weights plus {human_bytes(fit.overhead_bytes)} of buffers vs "
                      f"{usable} usable after the "
@@ -356,10 +393,13 @@ def print_fit_report(fit: GpuFit, *, model: str, host_label: Optional[str] = Non
     table.add_column("value")
     if len(fit.devices) > 1:
         each = ", ".join(f"{human_bytes(free * MIB)} free" for _, free in fit.devices)
-        table.add_row("gpu memory", f"{human_bytes(fit.free_bytes)} free "
-                                    f"({len(fit.devices)} GPUs: {each})")
+        memory = f"{human_bytes(fit.free_bytes)} free ({len(fit.devices)} GPUs: {each})"
     else:
-        table.add_row("gpu memory", f"{human_bytes(fit.free_bytes)} free")
+        memory = f"{human_bytes(fit.free_bytes)} free"
+    if fit.credited_bytes:
+        memory += (f" + {human_bytes(fit.credited_bytes)} resident → "
+                   f"{human_bytes(fit.free_bytes + fit.credited_bytes)} pool")
+    table.add_row("gpu memory", memory)
     table.add_row("margin", f"{human_bytes(fit.margin_bytes)} per device → "
                             f"{human_bytes(fit.usable_bytes)} usable")
     if fit.pinned_layers is None:
@@ -468,10 +508,12 @@ def probe_max_gpu_ctx(req: FitRequest, fit: GpuFit) -> ProbeResult:
     """Load the model at candidate contexts until the 100%-GPU boundary is bracketed.
 
     Candidates are placed in *footprint space*: the size a full offload would
-    report is affine in the context (`anchor + slope * Δctx` -- llama.cpp's
-    own fit interpolates exactly this way), so every 100% probe is a lower
-    bound on the GPU capacity and every partial-load or OOM probe an upper
-    bound, and the next candidate is their midpoint. Only the *sign* of a
+    report is affine in the context (llama.cpp's own fit interpolates exactly
+    this way), so every 100% probe pins the line to `footprint = a + b * ctx`
+    and every partial-load or OOM probe caps the capacity below that point's
+    footprint. The next candidate is *solved* from that line for the current
+    capacity ceiling -- not a bisection midpoint -- so a good first estimate
+    needs only a probe or two to bracket the boundary. Only the *sign* of a
     partial probe is trusted: with layers on the CPU the reported size
     double-counts buffers, so its byte counts would mislead the search.
     """
@@ -486,20 +528,53 @@ def probe_max_gpu_ctx(req: FitRequest, fit: GpuFit) -> ProbeResult:
     best: Optional[int] = None
     low_bad: Optional[int] = None
     # The capacity in footprint bytes: everything <= k_lo fit, nothing > k_hi did.
-    # Both bounds start empty and only measured, full-offload probes widen them --
+    # Both bounds start empty and only measured, full-offload probes move them --
     # the analytic sizes can overshoot the real footprint (vision projectors),
-    # which would poison a byte-space bisection.
+    # which would poison a byte-space solve.
     k_lo = 0.0
     k_hi: Optional[float] = None
-    k_hi_from_budget = False
-    anchor: Optional[tuple[int, int]] = None
+    good: list[tuple[int, int]] = []        # (ctx, measured total) of full-offload probes
     tested = 0
 
-    def footprint(at_ctx: int) -> Optional[float]:
-        if anchor is None:
+    def measured_line() -> Optional[tuple[float, float]]:
+        """(intercept, bytes per token) through the measured full-offload points.
+
+        llama.cpp's footprint is affine in num_ctx: one measured point pins the
+        line to the current slope, two or more are fitted exactly, and the next
+        candidate is then *solved* for the capacity rather than bisected toward.
+        """
+        if not good:
             return None
-        base_ctx, base_total = anchor
-        return base_total + slope * (at_ctx - base_ctx)
+        if len(good) >= 2:
+            mean_x = sum(at for at, _ in good) / len(good)
+            mean_y = sum(size for _, size in good) / len(good)
+            denom = sum((at - mean_x) ** 2 for at, _ in good)
+            if denom > 0:
+                factor = sum((at - mean_x) * (size - mean_y)
+                             for at, size in good) / denom
+                if factor > 0:
+                    return (mean_y - factor * mean_x, factor)
+        at, size = good[0]
+        return (size - slope * at, slope)
+
+    def footprint(at_ctx: int) -> Optional[float]:
+        fitted = measured_line()
+        return None if fitted is None else fitted[0] + fitted[1] * at_ctx
+
+    def solved_ctx(k_bytes: float) -> Optional[int]:
+        """The context whose predicted footprint hits `k_bytes`, or None."""
+        fitted = measured_line()
+        if fitted is None or fitted[1] <= 0:
+            return None
+        return _align_down(max(step, int((k_bytes - fitted[0]) / fitted[1])), step)
+
+    def tighten_ceiling(k_bytes: Optional[float] = None) -> None:
+        nonlocal k_hi
+        if k_bytes is not None and k_bytes > k_lo:
+            k_hi = k_bytes if k_hi is None else min(k_hi, k_bytes)
+        budget = _device_budget(req.machine, fit.margin_bytes)
+        if budget is not None and budget > k_lo:
+            k_hi = float(budget) if k_hi is None else min(k_hi, float(budget))
 
     while tested < probes_max:
         # Unload first so the free-VRAM reading is not taken while the model
@@ -520,9 +595,7 @@ def probe_max_gpu_ctx(req: FitRequest, fit: GpuFit) -> ProbeResult:
         except OllamaError as exc:
             result.probes.append(Probe(ctx=ctx, failed=str(exc)[:200]))
             low_bad = ctx if low_bad is None else min(low_bad, ctx)
-            extrapolated = footprint(ctx)
-            if extrapolated is not None:
-                k_hi = extrapolated if k_hi is None else min(k_hi, extrapolated)
+            tighten_ceiling(footprint(ctx))
             tested += 1
         else:
             entry = _wait_for_ps(req.client, req.model, ctx)
@@ -538,47 +611,42 @@ def probe_max_gpu_ctx(req: FitRequest, fit: GpuFit) -> ProbeResult:
             if pct >= 100:
                 if best is None or ctx > best:
                     best = ctx
-                anchor = (ctx, total)
+                good.append((ctx, total))
                 k_lo = max(k_lo, float(total))
-                if k_hi is None and not k_hi_from_budget:
-                    # Nothing failed yet: use the estimated ceiling (free VRAM
-                    # minus the fit margin) as the first bound and jump at it.
-                    budget = _device_budget(req.machine, fit.margin_bytes)
-                    if budget is not None and budget > k_lo:
-                        k_hi = float(budget)
-                        k_hi_from_budget = True
+                fitted = measured_line() if len(good) >= 2 else None
+                if fitted is not None and fitted[1] > 0:
+                    slope = fitted[1]
+                # Nothing failed yet? Use the estimated ceiling (free VRAM
+                # minus the fit margin) as the first bound and jump at it.
+                tighten_ceiling()
                 if fit.model_max and ctx >= fit.model_max:
                     result.capped_by_model = True
                     break
             else:
                 low_bad = ctx if low_bad is None else min(low_bad, ctx)
-                extrapolated = footprint(ctx)
-                if extrapolated is not None and extrapolated > k_lo:
-                    k_hi = extrapolated if k_hi is None else min(k_hi, extrapolated)
-            # Re-fit the slope between full-offload probes when possible.
-            good = [probe for probe in result.probes if not probe.failed and probe.pct >= 100]
-            if len(good) >= 2 and good[-1].ctx != good[-2].ctx:
-                measured = (good[-1].total - good[-2].total) / (good[-1].ctx - good[-2].ctx)
-                if measured > slope / 2:
-                    slope = measured
-        # ── next candidate ──────────────────────────────────────────────────
+                tighten_ceiling(footprint(ctx))
+        # ── next candidate: solve the measured line for the ceiling ─────────
         if best is not None and low_bad is not None and low_bad - best <= step:
             break
-        if k_hi is None:
-            if best is None:
-                nxt = _align_down(int(ctx * 0.7), step)   # no bounds at all
-            else:
-                nxt = ctx + step                          # no ceiling known
-        elif anchor is None:
-            nxt = _align_down(int(ctx * 0.7), step)       # nothing measured yet
+        if best is None:
+            nxt = _align_down(int(ctx * 0.7), step)       # nothing fit yet
+        elif k_hi is None:
+            nxt = ctx + step                              # no ceiling known
         else:
             if k_hi - k_lo <= slope * step:
-                break
-            k_next = k_hi if (k_hi_from_budget and low_bad is None and best is not None) \
-                else (k_lo + k_hi) / 2
-            k_hi_from_budget = False
-            nxt = anchor[0] + int((k_next - anchor[1]) / slope)
-            nxt = _align_down(nxt, step)
+                break                                     # converged in bytes
+            nxt = solved_ctx(k_hi)
+            if nxt is None or nxt == ctx \
+                    or (low_bad is not None and nxt >= low_bad - step):
+                # The ceiling is extrapolated past the known failure (or the
+                # solve stalled): halve the byte interval instead, which never
+                # fails to shrink the bracket.
+                nxt = solved_ctx((k_lo + k_hi) / 2)
+            if nxt is None or nxt == ctx:
+                nxt = _align_down(int((best + (low_bad or fit.model_max
+                                                or ctx + 2 * step)) / 2), step)
+        if nxt is None:
+            break
         if best is not None:
             nxt = max(nxt, best + step)
         if low_bad is not None:
@@ -678,6 +746,27 @@ def max_gpu_context(req: FitRequest, *, probe: bool = False) -> Optional[int]:
                       f"(/api/tags has no entry)[/err]")
         return None
 
+    # Models already resident hold VRAM that the free reading excludes but a
+    # reload releases: credit it back (always for the model being sized, other
+    # residents unless max_gpu_credit_residents is off).
+    credited: list[tuple[str, int]] = []
+    skipped_bytes = 0
+    credit_all = bool(req.config.get("max_gpu_credit_residents", True))
+    wanted = canonical_model_name(req.model)
+    try:
+        for entry in req.client.ps():
+            name = str(entry.get("name") or entry.get("model") or "")
+            vram = int(entry.get("size_vram") or 0)
+            if vram <= 0:
+                continue
+            if credit_all or canonical_model_name(name) == wanted:
+                credited.append((name or req.model, vram))
+            else:
+                skipped_bytes += vram
+    except (OllamaError, TypeError, ValueError):
+        credited = []
+        skipped_bytes = 0
+
     machine = req.machine
     if machine is None:
         machine = machine_state_for(getattr(req.client, "base", "") or "",
@@ -708,18 +797,26 @@ def max_gpu_context(req: FitRequest, *, probe: bool = False) -> Optional[int]:
         pinned = req.num_gpu
 
     fit = estimate_max_gpu_ctx(show_data, weight_bytes, machine,
-                               pinned_layers=pinned, config=req.config)
+                               pinned_layers=pinned, config=req.config,
+                               residents=credited)
+    if skipped_bytes:
+        fit.notes.append(f"other resident models hold {human_bytes(skipped_bytes)} "
+                         f"(not credited: max_gpu_credit_residents is off)")
     label = req.host_label
     if label and host_is_self(label):
         label = "this machine"
     print_fit_report(fit, model=req.model, host_label=label, probe=probe)
     if not fit.feasible:
         console.print(f"[err]{escape(fit.error)}[/err]")
+        if fit.ctx_no_margin:
+            console.print(f"[dim]· without the fit margin this would fit: "
+                          f"num_ctx {fit.ctx_no_margin:,} — lower max_gpu_margin_mb "
+                          f"(or LLAMA_ARG_FIT_TARGET) or use --probe[/dim]")
         if not probe:
             return None
         console.print("[dim]probing anyway — the estimate's buffers may be "
                       "conservative[/dim]")
-        fit.ctx = min(4096, fit.model_max or 4096)
+        fit.ctx = fit.ctx or fit.ctx_no_margin or min(4096, fit.model_max or 4096)
     if not probe:
         return fit.ctx
     result = probe_max_gpu_ctx(req, fit)
