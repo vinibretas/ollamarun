@@ -29,7 +29,8 @@ from rich.spinner import Spinner
 from rich.text import Text
 
 from .constants import CTRL_T, THINKING_MODES, tool_color
-from .helpers import CancelToken, human_chars, human_duration, short_stamp
+from .helpers import (CancelToken, format_context, human_chars, human_duration,
+                      short_stamp)
 from .mathrender import render_content, render_thinking
 
 if TYPE_CHECKING:
@@ -49,8 +50,9 @@ class GenerationResult:
 class TpsEstimator:
     """Live tokens/sec from streamed chunks (~1 chunk per generated token).
 
-    Uses a sliding window so the rate reacts to speed changes, falling back
-    to the cumulative average when the window is too fresh.
+    Uses a sliding window so the rate reacts to speed changes; `average()`
+    keeps the cumulative figure the footer shows next to the windowed one,
+    and `rate()` stays the display fallback (the window, else the average).
     """
 
     def __init__(self, window: float = 5.0):
@@ -65,22 +67,34 @@ class TpsEstimator:
             self.started_at = now
         self.tokens += count
         self.samples.append((now, self.tokens))
+        self._prune(now)
+
+    def _prune(self, now: float) -> None:
         horizon = now - self.window
         while len(self.samples) > 2 and self.samples[0][0] < horizon:
             self.samples.popleft()
 
-    def rate(self, now: Optional[float] = None) -> Optional[float]:
+    def windowed(self, now: Optional[float] = None) -> Optional[float]:
+        """The sliding-window rate, or None while the window is too fresh."""
         if self.started_at is None or self.tokens == 0:
             return None
         now = time.monotonic() if now is None else now
-        horizon = now - self.window
-        while len(self.samples) > 2 and self.samples[0][0] < horizon:
-            self.samples.popleft()
+        self._prune(now)
         base_time, base_tokens = self.samples[0]
         if len(self.samples) > 2 and now - base_time >= 1.0 and self.tokens > base_tokens:
             return (self.tokens - base_tokens) / (now - base_time)
+        return None
+
+    def average(self, now: Optional[float] = None) -> Optional[float]:
+        """The cumulative average since the first streamed chunk."""
+        if self.started_at is None or self.tokens == 0:
+            return None
+        now = time.monotonic() if now is None else now
         elapsed = now - self.started_at
         return self.tokens / elapsed if elapsed > 0 else None
+
+    def rate(self, now: Optional[float] = None) -> Optional[float]:
+        return self.windowed(now) or self.average(now)
 
 
 def stats_from_final(chunk: dict[str, Any]) -> dict[str, Any]:
@@ -225,7 +239,9 @@ class Renderer:
 
     def __init__(self, console: Console, *, mode: str = "markdown", math: bool = True,
                  nowordwrap: bool = False, thinking_mode: str = "collapsed",
-                 tps_footer: bool = True, show_stats: bool = False, verbose: bool = False,
+                 tps_footer: bool = True, context_used: Optional[int] = None,
+                 context_total: Optional[int] = None,
+                 show_stats: bool = False, verbose: bool = False,
                  max_render_chars: int = 12000, pager: bool = False, model: str = "",
                  after_tools: bool = False):
         self.console = console
@@ -237,6 +253,11 @@ class Renderer:
         self.nowordwrap = nowordwrap
         self.thinking_mode = thinking_mode if thinking_mode in THINKING_MODES else "collapsed"
         self.tps_footer = tps_footer
+        # Tokens the conversation already carried when this round started
+        # (prompt + completion of the last turn) and the model's window; the
+        # footer adds the round's streamed chunks on top for a live ctx count.
+        self.context_used = context_used
+        self.context_total = context_total
         self.estimator = TpsEstimator()
         self.show_stats = show_stats
         self.verbose = verbose
@@ -294,13 +315,29 @@ class Renderer:
             pass
         return changed
 
-    def _tps_text(self) -> Optional[Text]:
+    def _tps_text(self, now: Optional[float] = None) -> Optional[Text]:
+        """The speed footer: windowed rate, average, tokens and live ctx.
+
+        `ctx` counts what the next request will carry (the last round's
+        prompt + completion) plus this round's streamed chunks, so the
+        percentage moves with every token; it appears from the second
+        round on, when there is a base to count from.
+        """
         if not self.tps_footer:
             return None
-        rate = self.estimator.rate()
-        if not rate or not self.estimator.tokens:
+        estimator = self.estimator
+        rate = estimator.rate(now)
+        if not rate or not estimator.tokens:
             return None
-        return Text(f"~{rate:.1f} tok/s · {self.estimator.tokens} tok", style="dim")
+        bits = [f"~{rate:.1f} tok/s"]
+        average = estimator.average(now)
+        if average:
+            bits.append(f"(avg {average:.1f})")
+        bits.append(f"{estimator.tokens} tok")
+        if self.context_used is not None:
+            bits.append(format_context(self.context_used + estimator.tokens,
+                                       self.context_total))
+        return Text(" · ".join(bits), style="dim")
 
     def _thinking_preview_lines(self) -> int:
         height = getattr(self.console, "height", None) or 24

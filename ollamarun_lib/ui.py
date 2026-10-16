@@ -21,7 +21,7 @@ from rich.markup import escape
 from rich.prompt import Confirm, Prompt
 
 from .constants import console
-from .helpers import human_duration
+from .helpers import format_context, human_duration
 from .tools import ToolRule, rule_label
 
 
@@ -40,23 +40,12 @@ class StatusSnapshot:
     context_total: Optional[int] = None
     queued: int = 0
     tps: Optional[float] = None
+    tps_avg: Optional[float] = None
     elapsed: Optional[float] = None
     hint: str = ""
 
     def context_text(self) -> str:
-        used = self.context_used
-        total = self.context_total
-        if not used:
-            return "ctx ?" if not total else f"ctx 0/{_tokens(total)}"
-        if not total:
-            return f"ctx {_tokens(used)}"
-        return f"ctx {_tokens(used)}/{_tokens(total)} ({used * 100 // total}%)"
-
-
-def _tokens(value: int) -> str:
-    if value >= 1000:
-        return f"{value / 1000:.1f}k"
-    return str(value)
+        return format_context(self.context_used, self.context_total)
 
 
 STATE_GLYPH = {
@@ -97,7 +86,10 @@ def format_status(snapshot: StatusSnapshot, *, frame: str = "●", width: int = 
     if busy and snapshot.elapsed:
         timing.append(human_duration(snapshot.elapsed))
     if snapshot.tps and state in {"generating", "done"}:
-        timing.append(f"~{snapshot.tps:.1f} tok/s")
+        speed = f"~{snapshot.tps:.1f} tok/s"
+        if snapshot.tps_avg:
+            speed += f" (avg {snapshot.tps_avg:.1f})"
+        timing.append(speed)
     model = f"[key]{escape(snapshot.model or '?')}[/key]"
     if snapshot.remote:
         model += f" [dim]@{escape(snapshot.remote)}[/dim]"

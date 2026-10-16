@@ -115,7 +115,9 @@ a module's own docstring for what lives there before editing:
    bool/host/think coercion, `--remote` resolution (`resolve_remote`,
    `remote_node`, `tailscale_map`, `tailscale_peer_state`, `is_local_host`),
    disk-space probes (`local_free_disk`, `ssh_free_disk`), config load
-   (`load_config`), logging setup.
+   (`load_config`), logging setup, and the count formatters shared by both
+   front ends (`human_tokens`/`format_context` for the ctx counter,
+   `human_chars`, `human_duration`).
 3. **`mathrender.py`** — LaTeX → Unicode, combined in one module because the
    two halves call into each other: regex-level conversion for inline math
    (`convert_math`, `latex_to_unicode`) falls through to the 2D layout
@@ -141,7 +143,10 @@ a module's own docstring for what lives there before editing:
    incremental markdown re-render while tokens stream, the collapsible
    thinking panel (`render_thinking`, Ctrl+T expand/collapse in place;
    `/thinking full` prints the stored panel directly), and
-   `TpsEstimator` for the live `~tok/s` footer. `StreamSink` is the seam the
+   `TpsEstimator` (`windowed()`/`average()`/`rate()`) for the live footer:
+   windowed rate, cumulative average, streamed tokens and a ctx counter
+   that counts the round's chunks on top of the `context_used`/
+   `context_total` the REPL passes in. `StreamSink` is the seam the
    TUI uses: with a sink, `stream()` pushes the same frames to a widget
    instead of a `rich.Live`, so both front ends share one streaming loop
    (and `stream(cancel=…)` honors a `CancelToken`). Also has the chat-bubble
@@ -193,8 +198,9 @@ a module's own docstring for what lives there before editing:
    (`approval_entries`/`approval_lines`) and the numbered typed prompt
    `_prompt_approval` (moved here so the console prompt and the TUI modal are
    built from one list), and the status-bar model (`StatusSnapshot`,
-   `format_status()`, `spinner_frame()`): plain data plus a pure formatter,
-   unit-testable without a terminal.
+   `format_status()`, `spinner_frame()`): plain data plus a pure formatter
+   (context text via `format_context`, tps + `tps_avg`), unit-testable
+   without a terminal.
 12. **`interactive.py`** — `open_in_editor` (`$OLLAMA_EDITOR`),
    `pick_model`/`pick_session` (fuzzy pickers; `ui=` routes the question to
    the TUI front end), `model_context_length`
