@@ -102,7 +102,7 @@ except ImportError:  # pragma: no cover - fallback path
     TEXTUAL_VERSION = ""
     TextualApp = None
 
-VERSION = "1.38"
+VERSION = "1.39"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -173,6 +173,8 @@ TOOL_COLORS: dict[str, str] = {
     "search_sessions": "medium_turquoise",
     "list_models": "wheat1",
     "system_status": "steel_blue1",
+    "context_status": "light_cyan3",
+    "session_info": "medium_spring_green",
     "chem_search": "rosy_brown",
     "chem_container": "pale_turquoise4",
     "chem_locations": "plum2",

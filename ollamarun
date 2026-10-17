@@ -2,6 +2,20 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.39
+
+Summary of changes in this version:
+  - The model can see its own environment. `context_status` reports the
+    context budget: the window actually in use (a session `num_ctx`, else
+    the loaded runner's `/api/ps` window, else the model default — labeled
+    which), the tokens the last request carried, the free space and the
+    message counts, with a wrap-up note past 80% full. `session_info`
+    reports the current date and time, the session id and title, the model
+    with its size, quantization and capabilities, the server and working
+    directory, the active parameters, the thinking/render modes, the
+    system-prompt status, and the tool policy with the round budget. Both
+    are read-only.
+
 Version: 1.38
 
 Summary of changes in this version:

@@ -425,12 +425,13 @@ def test_tool_definitions() -> int:
     names = sorted(definition.name for definition in defs)
     failures = _check(failures, "the shipped tool definitions load",
                       names == ["chem_container", "chem_locations", "chem_search",
-                                "copy_file", "delete_file", "edit_file",
-                                "fetch_url", "list_dir", "list_models",
-                                "list_voices", "make_dir", "move_file",
-                                "read_file", "run_python", "run_shell",
-                                "search_sessions", "speak", "system_status",
-                                "web_search", "write_file"], str(names))
+                                "context_status", "copy_file", "delete_file",
+                                "edit_file", "fetch_url", "list_dir",
+                                "list_models", "list_voices", "make_dir",
+                                "move_file", "read_file", "run_python",
+                                "run_shell", "search_sessions", "session_info",
+                                "speak", "system_status", "web_search",
+                                "write_file"], str(names))
     failures = _check(failures, "every definition's handler resolves",
                       all(definition.handler in orun.HANDLERS
                           for definition in defs))
@@ -1966,6 +1967,126 @@ def test_context_usage() -> int:
         else:
             print(f"FAIL  loaded-window warning: {_plain(cap.get())!r}")
             failures += 1
+    return failures
+
+
+def test_environment_tools() -> int:
+    failures = 0
+    registry = orun.default_registry(tts=False)
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+        config = dict(orun.DEFAULT_CONFIG)
+        show = {"model_info": {"llama.context_length": 262144},
+                "details": {"parameter_size": "8.0B",
+                            "quantization_level": "Q4_K_M", "family": "llama"},
+                "capabilities": ["completion", "tools", "thinking"]}
+        client = _FakeClient(models=["m1"], show_data=show,
+                             ps_entries=[{"name": "m1", "context_length": 65536}])
+        session = orun.Session.create("m1", client.base, title="env test")
+        session.add_message("user", "hello")
+        session.add_message("assistant", "hi")
+        session.add_message("tool", "result", tool_name="run_shell")
+        session.stats["last_prompt_tokens"] = 11900
+        session.stats["last_completion_tokens"] = 445
+        repl = orun.Repl(args, config, client, store, session)
+        repl._tool_round = 2
+
+        report = repl.context_report()
+        failures = _check(failures, "context_report resolves the loaded window",
+                          report["window"] == 65536
+                          and report["source"] == "loaded runner"
+                          and report["model_max"] == 262144
+                          and report["used"] == 12345
+                          and report["messages"] == {"total": 3, "user": 1,
+                                                     "assistant": 1, "tool": 1},
+                          str(report))
+        repl.context_report()
+        failures = _check(failures, "the /api/show data is fetched once and cached",
+                          len(client.show_calls) == 1, str(client.show_calls))
+
+        outcome = orun.execute_tool(registry["context_status"], {}, repl.tool_ctx)
+        failures = _check(failures, "context_status formats the context budget",
+                          outcome.ok
+                          and "context window: 65536 tokens (loaded runner; "
+                              "model default 262144)" in outcome.text
+                          and "context used: 12345 tokens = last prompt 11900 "
+                              "+ last reply 445" in outcome.text
+                          and "free: 53191 tokens (18.8% used)" in outcome.text
+                          and "messages: 3 (assistant 1 · tool 1 · user 1)"
+                          in outcome.text,
+                          outcome.text)
+
+        outcome = orun.execute_tool(registry["session_info"], {}, repl.tool_ctx)
+        failures = _check(failures, "session_info reports identity and state",
+                          outcome.ok
+                          and 'session: ' in outcome.text
+                          and '"env test"' in outcome.text
+                          and "model: m1 · 8.0B · Q4_K_M · capabilities: "
+                              "completion, tools, thinking" in outcome.text
+                          and f"server: this machine ({client.base})" in outcome.text
+                          and "tools run on: " in outcome.text
+                          and "settings: keepalive default" in outcome.text
+                          and "modes: thinking collapsed · render plain · "
+                              "system prompt built-in default" in outcome.text
+                          and "tools: on · policy allowlist · round 2 of 8 · "
+                              "disabled: none" in outcome.text
+                          and "context window" not in outcome.text,
+                          outcome.text)
+
+        # A session num_ctx is what the next request asks for, so it wins.
+        ctx_session = orun.Session.create("m1", client.base, title="ctx")
+        ctx_session.parameters["num_ctx"] = 32768
+        ctx_repl = orun.Repl(args, config, client, store, ctx_session)
+        report = ctx_repl.context_report()
+        failures = _check(failures, "context_report labels a session num_ctx",
+                          report["window"] == 32768 and report["source"] == "num_ctx",
+                          str(report))
+
+        # Unloaded and no num_ctx: the show default is provisional.
+        bare_client = _FakeClient(models=["m1"], show_data=show)
+        bare_session = orun.Session.create("m1", bare_client.base, title="bare")
+        bare_repl = orun.Repl(args, config, bare_client, store, bare_session)
+        report = bare_repl.context_report()
+        failures = _check(failures, "context_report marks an unloaded default provisional",
+                          report["window"] == 262144
+                          and report["source"] == "model default (runner not loaded yet)",
+                          str(report))
+
+        # Nearly full: the result tells the model to wrap up.
+        tight_client = _FakeClient(models=["m1"], show_data=show,
+                                   ps_entries=[{"name": "m1", "context_length": 150}])
+        tight_session = orun.Session.create("m1", tight_client.base, title="tight")
+        tight_session.stats["last_prompt_tokens"] = 100
+        tight_session.stats["last_completion_tokens"] = 40
+        tight_repl = orun.Repl(args, config, tight_client, store, tight_session)
+        outcome = orun.execute_tool(registry["context_status"], {}, tight_repl.tool_ctx)
+        failures = _check(failures, "context_status warns when the window is nearly full",
+                          outcome.ok and "nearly full" in outcome.text, outcome.text)
+
+        # A fresh session has no measured request yet.
+        fresh = orun.Session.create("m1", client.base, title="fresh")
+        fresh_repl = orun.Repl(args, config, client, store, fresh)
+        outcome = orun.execute_tool(registry["context_status"], {}, fresh_repl.tool_ctx)
+        failures = _check(failures, "context_status handles a fresh session",
+                          outcome.ok and "nothing yet" in outcome.text, outcome.text)
+
+    bare_ctx = orun.ToolContext(cwd=".", timeout=10, max_output=4000)
+    for name in ("context_status", "session_info"):
+        outcome = orun.execute_tool(registry[name], {}, bare_ctx)
+        failures = _check(failures, f"{name} errors without a REPL report",
+                          not outcome.ok and "unavailable" in outcome.text, outcome.text)
+    failures = _check(failures, "the awareness tools run unattended (read-only)",
+                      orun.approval_decision(registry["context_status"], {},
+                                             policy="allowlist").allowed
+                      and orun.approval_decision(registry["session_info"], {},
+                                                 policy="allowlist").allowed)
+    failures = _check(failures, "context/whoami aliases resolve onto the new tools",
+                      orun.resolve_tool_alias("context") == "context_status"
+                      and orun.resolve_tool_alias("token_status") == "context_status"
+                      and orun.resolve_tool_alias("whoami") == "session_info"
+                      and orun.resolve_tool_alias("environment") == "session_info")
     return failures
 
 
@@ -6446,6 +6567,7 @@ if __name__ == "__main__":
              + test_tools_policy() + test_tool_execution() + test_web_tools()
              + test_file_tools() + test_session_model_tools()
              + test_system_status_tool() + test_chem_tools()
+             + test_environment_tools()
              + test_tool_loop() + test_tool_loop_separation()
              + test_tool_commands() + test_approval_rules()
              + test_tool_payloads() + test_tool_cli_flags()
