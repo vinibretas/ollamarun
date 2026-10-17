@@ -8,6 +8,7 @@ Run: python3 test_ollamarun.py
 """
 import base64
 import contextlib
+import importlib.util
 import inspect
 import io
 import json
@@ -21,6 +22,7 @@ import threading
 import time
 import zlib
 from pathlib import Path
+from typing import Any
 
 import requests
 from rich.color import Color, ColorParseError
@@ -6505,8 +6507,6 @@ def test_stream_cancel() -> int:
                       client.abort_stream() is False)
 
     # A cancel that lands between chunks stops without closing anything.
-    events = iter([{"message": {"content": "a"}}, {"message": {"content": "b"}},
-                   {"done": True}])
     client2 = orun.OllamaClient()
     client2.http = _FakeSession(lambda *a, **k: _FakeResponse(
         lines=[json.dumps(event).encode() for event in
@@ -6693,9 +6693,7 @@ async def _wait_until(pilot, predicate, timeout=8.0, step=0.05) -> bool:
 
 def test_tui_app() -> int:
     """The Textual front end: panes, queue, stop, send-now, approvals, quit."""
-    try:
-        import textual  # noqa: F401
-    except ImportError:  # pragma: no cover - textual is optional
+    if importlib.util.find_spec("textual") is None:  # pragma: no cover
         print("SKIP  TUI tests (textual is not installed)")
         return 0
     import asyncio
