@@ -43,3 +43,45 @@ a native agent turn keeps running — a disconnect is an unsubscribe
 and cancellation stays explicit.
 
 **Acceptance:** official OpenAI SDK works against a custom base URL for models, chat, streaming, and tool-call responses; hand-written `curl` matches; unsupported features fail explicitly.
+
+## Recorded implementation decisions
+
+- **Model turns live in the server, not in `AgentRuntime`.** The OpenAI layer
+  builds the Ollama payload and drives one `client.chat()`/`chat_once()`
+  call; the runtime stays agent-turn-only. This closes Phase 1b item 12 by
+  deviation: a stateless model turn has no session, tool loop, approvals or
+  subscribers, and passthrough history (assistant `tool_calls`,
+  `role: tool` + `tool_call_id`) must not go through the harness message
+  pipeline (`Session.message_payloads` filters tool history by harness
+  rules). `TurnSettings.mode`/`TurnRequest.mode` were removed as dead
+  fields (and `mode` dropped from `turn.started`). Chunk accumulation is
+  shared (`renderer.consume_chunk`/`stats_from_final`), so no inference
+  logic is duplicated.
+- **Request extension: top-level `system`.** Absent or `""` sends no system
+  prompt (the caller's messages pass through untouched); `"auto"` injects
+  the current built-in default (`default_system_prompt(with_tools=False)`,
+  since model turns have no harness tools); any other text becomes the
+  leading system message, and a client-sent system message still wins —
+  the same precedence `build_payload` gives the CLI.
+- **Modules and command.** `ollamarun_lib/server.py` (generic HTTP
+  plumbing: router, request/response model, body caps, sanitized error
+  envelopes, SSE writer with `: ping` heartbeat) and
+  `ollamarun_lib/openai_api.py` (the `/v1` mapping). `ollamarun serve
+  --bind 0.0.0.0 --port 11440 [--host HOST|--remote NAME]` is dispatched
+  from `cli.main()`; `--host`/`--remote` name the upstream Ollama while
+  `--bind`/`--port` name the API listener. Config keys `serve_bind` /
+  `serve_port` (defaults `0.0.0.0` / `11440`).
+- **Per-request `OllamaClient`.** `abort_stream()` has one active-stream
+  slot, so each HTTP request gets its own client instance; a disconnecting
+  SSE client cancels only its own upstream generation. Model-list and
+  capability lookups use short-TTL caches (5s / 60s) on the API object.
+- **Vision.** Image content parts must be `data:` URIs in this phase
+  (remote URLs land in Phase 5 with the size cap and SSRF note). Before
+  accepting images the server checks the model's `capabilities` and answers
+  `model_does_not_support_images` when `vision` is absent (an empty/missing
+  capability list passes through — older backends cannot be verified).
+- **`tool_choice`.** `"auto"` passes tools, `"none"` drops them, the object
+  form passes only the named function (Ollama cannot force a call);
+  `"required"` is rejected explicitly as unsupported. `reasoning_effort`
+  maps low/medium/high onto Ollama's `think`; anything else is rejected.
+- **`/v1/embeddings`** is not implemented (the phase marked it optional).
