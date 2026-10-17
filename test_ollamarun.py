@@ -6984,6 +6984,110 @@ def test_tool_cancellation() -> int:
     return failures
 
 
+def test_tool_support_warning() -> int:
+    """The capability warning fires once per model, after turn.started."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain", "--no-save"])
+        client = _FakeClient(models=["m1"], capabilities=["completion"],
+                             chat_script=[[{"message": {"content": "ok"},
+                                            "done": True}]])
+        session = orun.Session.create("m1", client.base)
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store, session)
+        repl._build_prompt_session = lambda: None
+        repl.headless = True
+        events = []
+        repl.event_sink = events.append
+        with orun.console.capture():
+            repl.send("one")
+        first = list(events)
+        events.clear()
+        with orun.console.capture():
+            repl.send("two")
+        second = list(events)
+        warnings = [event for event in first if event.type == "turn.warning"]
+        types = [event.type for event in first]
+        failures = _check(failures, "a tool-less model warns once per model",
+                          len(warnings) == 1
+                          and not any(event.type == "turn.warning"
+                                      for event in second),
+                          f"{len(warnings)} {[event.type for event in second]}")
+        failures = _check(failures, "turn.started precedes the warning",
+                          "turn.started" in types and "turn.warning" in types
+                          and types.index("turn.started") < types.index("turn.warning"),
+                          str(types))
+    return failures
+
+
+def test_quiet_tools_live() -> int:
+    """`/render raw` mid-turn silences tool panels from the next event on."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain", "--no-save"])
+        client = _FakeClient(models=["m1"], capabilities=["completion", "tools"])
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store,
+                         orun.Session.create("m1", client.base))
+        hooks = repl._turn_hooks()
+        failures = _check(failures, "quiet_tools follows the render mode",
+                          hooks.settings.quiet_tools() is False)
+        event = orun.RuntimeEvent(orun.TOOL_CALL,
+                                  {"name": "run_shell", "detail": "echo hi"})
+        with orun.console.capture() as cap:
+            hooks.on_event(event)
+        failures = _check(failures, "the tool panel prints in markdown mode",
+                          "running" in _plain(cap.get()), repr(cap.get()[:120]))
+        repl.render_mode = "raw"
+        failures = _check(failures, "quiet_tools re-reads the mode live",
+                          hooks.settings.quiet_tools() is True)
+        with orun.console.capture() as cap:
+            hooks.on_event(event)
+        failures = _check(failures, "the tool panel is silenced after /render raw",
+                          _plain(cap.get()).strip() == "", repr(cap.get()[:120]))
+    return failures
+
+
+def test_approval_event_contract() -> int:
+    """The approver emits approval.required; the runtime emits the rest."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain", "--no-save"])
+        client = _FakeClient(models=["m1"], capabilities=["completion", "tools"])
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store,
+                         orun.Session.create("m1", client.base))
+        repl.headless = True
+        events = []
+        repl.event_sink = events.append
+        hooks = repl._turn_hooks()
+
+        def approver(request):
+            hooks.on_event(orun.approval_notice(request, reason="test"))
+            return orun.ApprovalDecision(run=False, note="denied by test",
+                                         action="deny")
+
+        hooks.approver = approver
+        calls = [{"function": {"name": "run_shell",
+                               "arguments": {"command": "rm -rf /tmp/x"}}}]
+        interrupted = orun.AgentRuntime(hooks).execute_tool_calls(
+            calls, allow_prompt=True)
+        types = [event.type for event in events]
+        failures = _check(failures, "the approval contract order",
+                          types == ["tool.call", "approval.required",
+                                    "approval.resolved", "tool.result"]
+                          and interrupted is False, str(types))
+        results = [event for event in events if event.type == "tool.result"]
+        failures = _check(failures, "a denied call is marked on the result",
+                          bool(results) and results[0].data.get("ok") is False
+                          and results[0].data.get("denied") is True,
+                          str(results[0].data if results else None))
+    return failures
+
+
 def test_run_once_json() -> int:
     """`--json` runs the tool loop through the runtime and prints one response."""
     failures = 0
@@ -7073,7 +7177,9 @@ if __name__ == "__main__":
              + test_live_stream_final_frame_is_complete()
              + test_runtime_events() + test_headless_renderer()
              + test_session_store_lock() + test_ui_interactive()
-             + test_tool_cancellation() + test_run_once_json())
+             + test_tool_cancellation() + test_run_once_json()
+             + test_tool_support_warning() + test_quiet_tools_live()
+             + test_approval_event_contract())
     if total:
         print(f"\n{total} failure(s)")
         sys.exit(1)
