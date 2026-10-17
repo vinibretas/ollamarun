@@ -527,10 +527,43 @@ def call_detail(name: str, args: dict[str, Any]) -> str:
 #: Tool names models tend to invent for the web tools are mapped onto the
 #: real ones through each definition's `aliases` list (see the defs loader
 #: below); `tool_aliases()` builds that map, `resolve_tool_alias()` uses it.
+#: Tool-call ids and namespaces also leak into the function name itself
+#: (Ollama's `call_` ids, OpenAI's `functions.`/`tool.` styles), so an
+#: unknown name is retried once with that prefix stripped -- `call_fetch_url`
+#: still runs `fetch_url` instead of failing as an unknown tool.
+_TOOL_NAME_PREFIXES = ("call_", "call.", "tool_", "tool.",
+                       "functions.", "function.")
+
+
+def _strip_tool_name_prefix(key: str) -> str:
+    """The name left after one conventional tool-call prefix (else '')."""
+    for prefix in _TOOL_NAME_PREFIXES:
+        if key.startswith(prefix):
+            return key[len(prefix):]
+    return ""
+
+
 def resolve_tool_alias(name: str) -> str:
-    """The real tool for a name a model may have invented (identity otherwise)."""
+    """The real tool for a name a model may have invented (identity otherwise).
+
+    The alias map is tried first; on a miss the name is stripped of a
+    conventional id/namespace prefix and retried against the aliases and
+    the canonical definition names, so `call_fetch_url` -> `fetch_url` and
+    `tool_run_shell` -> `run_shell`.
+    """
     key = str(name or "").strip().lower().replace("-", "_")
-    return tool_aliases().get(key, name)
+    aliases = tool_aliases()
+    match = aliases.get(key)
+    if match:
+        return match
+    stripped = _strip_tool_name_prefix(key)
+    if stripped:
+        match = aliases.get(stripped)
+        if match:
+            return match
+        if stripped in {definition.name for definition in tool_definitions()}:
+            return stripped
+    return name
 
 
 def normalize_arguments(raw: Any) -> Optional[dict[str, Any]]:

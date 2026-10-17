@@ -2,6 +2,19 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.51
+
+Summary of changes in this version:
+  - Tool names that leak a call id or namespace into the function name
+    (`call_fetch_url`, `tool_curl`, `functions.web_search`) now resolve
+    onto the real tool: `resolve_tool_alias()` retries an unknown name once
+    with the prefix stripped, against both the alias map and the canonical
+    definition names, so the call runs instead of coming back as "unknown
+    or disabled tool" (issue #26). The default tool rules also state the
+    contract that a tool result is data, not a user turn: after a failed or
+    unrun call the model is told to fix the call or explain the failure,
+    never to reply to the tool output as if the user had written it.
+
 Version: 1.50
 
 Summary of changes in this version:
