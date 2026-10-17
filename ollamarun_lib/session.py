@@ -43,6 +43,10 @@ class Session:
     gpu_layers: Optional[str] = None
     messages: list[dict[str, Any]] = field(default_factory=list)
     stats: dict[str, Any] = field(default_factory=dict)
+    #: Artifact refs associated with this conversation, deduped by id
+    #: (`user` uploads referenced by a turn and `tool` outputs). Older
+    #: session files simply lack the key.
+    artifacts: list[dict[str, Any]] = field(default_factory=list)
     tool_allow: list[str] = field(default_factory=list)
     tool_rules: list[dict[str, Any]] = field(default_factory=list)
     tools_disabled: list[str] = field(default_factory=list)
@@ -83,6 +87,16 @@ class Session:
         self.messages.append(message)
         self.touch()
         return message
+
+    def add_artifacts(self, refs: list[dict[str, Any]]) -> None:
+        """Associate artifact refs with the conversation, deduped by id."""
+        seen = {str(ref.get("id") or "") for ref in self.artifacts}
+        for ref in refs or []:
+            artifact_id = str(ref.get("id") or "")
+            if artifact_id and artifact_id not in seen:
+                seen.add(artifact_id)
+                self.artifacts.append(ref)
+        self.touch()
 
     def message_payloads(self, *, with_tools: bool = False) -> list[dict[str, Any]]:
         """Messages as the API expects them.
