@@ -223,7 +223,9 @@ a module's own docstring for what lives there before editing:
    `defs/tools/` (`ToolDefinition`, `load_tool_definitions()`; `HANDLERS`
    maps the JSON's `handler` name onto the function, `requires` gates a tool
    on a capability, `tool_aliases()` is built from the `aliases` lists so
-   invented names like `search`/`curl` resolve onto the real tools; bad files
+   invented names like `search`/`curl` resolve onto the real tools, and
+   `resolve_tool_alias()` strips a call-id prefix (`call_fetch_url`) and
+   retries on a miss; bad files
    warn and are skipped). `ToolSpec` keeps each definition's `requires` and
    `aliases` (`REQUIREMENT_HINTS` words them for the help pages).
    `ToolContext` carries the runtime seams the REPL

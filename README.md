@@ -45,7 +45,8 @@ palette colour (remembered for the run) for anything unmapped, with config
 ok/failed green/red in its title, and the `speak` tool's box names where the
 voice is generated and where it will be heard (`optiplex → g3`, `(cached)` for
 a phrase served from disk). Invented tool names (`search`, `curl`, `mkdir`,
-...) resolve onto the real tools through per-tool alias lists.
+...) and call-id-prefixed ones (`call_fetch_url`) resolve onto the real
+tools through per-tool alias lists.
 
 ### Tools
 
@@ -427,9 +428,9 @@ The model-facing text lives in files, not code:
   model-invented `aliases` that resolve onto it, and the `handler` that runs
   it.
 - `ollamarun_lib/defs/prompts/` — `system.md` (the built-in default system
-  prompt), `system_tools.md` (the tool, web-search and math-in-code rules,
-  appended when tools are on), `title.md` and `summarize.md` (both take the
-  text to wrap as `{{content}}`).
+  prompt), `system_tools.md` (the tool, web-search, math-in-code and
+  tool-result rules, appended when tools are on), `title.md` and
+  `summarize.md` (both take the text to wrap as `{{content}}`).
 
 A same-named file under `~/etc/config_files/ollamarun-defs/` overrides the
 shipped one, so prompts and tool wording can be tuned without touching

@@ -469,6 +469,13 @@ def test_tool_definitions() -> int:
                       orun.resolve_tool_alias("google") == "web_search"
                       and orun.resolve_tool_alias("browse") == "fetch_url"
                       and orun.resolve_tool_alias("unheard_of") == "unheard_of")
+    failures = _check(failures, "tool-call id prefixes are stripped on a miss",
+                      orun.resolve_tool_alias("call_fetch_url") == "fetch_url"
+                      and orun.resolve_tool_alias("Call_Google") == "web_search"
+                      and orun.resolve_tool_alias("tool_curl") == "fetch_url"
+                      and orun.resolve_tool_alias("tool_run_shell") == "run_shell"
+                      and orun.resolve_tool_alias("functions.web_search") == "web_search"
+                      and orun.resolve_tool_alias("call_whatever") == "call_whatever")
 
     with tempfile.TemporaryDirectory() as tmp:
         base = Path(tmp) / "tools"
@@ -525,6 +532,10 @@ def test_prompts() -> int:
                       "run_python" in with_tools
                       and "never work arithmetic out in your head" in with_tools
                       and "run_python" not in base, with_tools)
+    failures = _check(failures, "the tool rules say a result is not a user turn",
+                      "not user messages" in with_tools
+                      and "fix the call and retry" in with_tools
+                      and "never reply to the error" in with_tools, with_tools)
     title = orun.title_prompt("the first message")
     failures = _check(failures, "the title prompt substitutes its content",
                       title is not None and "the first message" in title
@@ -5320,6 +5331,25 @@ def test_web_tools() -> int:
                           and "is called 'web_search' here" in message.get("content", "")
                           and "searched pi" in message.get("content", ""),
                           str(message))
+        with orun.console.capture():
+            repl._execute_tool_calls([{"function": {"name": "call_web_search",
+                                                    "arguments": {"query": "pi"}}}],
+                                     quiet=True)
+        message = repl.session.messages[-1]
+        failures = _check(failures, "a call_ prefixed call runs the aliased tool",
+                          message.get("tool_name") == "web_search"
+                          and "'call_web_search' is called 'web_search' here"
+                          in message.get("content", "")
+                          and "searched pi" in message.get("content", ""),
+                          str(message))
+        with orun.console.capture():
+            repl._execute_tool_calls([{"function": {"name": "call_whatever",
+                                                    "arguments": {}}}],
+                                     quiet=True)
+        message = repl.session.messages[-1]
+        failures = _check(failures, "an unknown call_ name stays unknown",
+                          "unknown or disabled tool: call_whatever"
+                          in message.get("content", ""), str(message))
         repl.session.tools_disabled = ["web_search"]
         with orun.console.capture():
             repl._execute_tool_calls([{"function": {"name": "search",
@@ -5422,6 +5452,39 @@ def test_tool_loop() -> int:
         allowed_text = repl3.session.messages[2].get("content", "")
         failures = _check(failures, "remembered fingerprints run unattended",
                           allowed_text.startswith("exit"), allowed_text)
+
+        # A model that leaks the call id into the function name (issue #26):
+        # the prefixed call must run the real tool, not die as unknown.
+        script4 = [
+            {"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "call_run_shell",
+                              "arguments": {"command": "echo from-prefix"}}}]},
+             "done": False},
+            {"message": {"role": "assistant", "content": ""}, "done": True},
+        ]
+        script5 = [{"message": {"role": "assistant", "content": "recovered"},
+                    "done": True}]
+        client4 = _FakeClient(models=["m1"], capabilities=["completion", "tools"],
+                              chat_script=[script4, script5])
+        repl4 = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client4, store,
+                          orun.Session.create("m1", client4.base))
+        repl4._build_prompt_session = lambda: None
+        repl4.session.add_message("user", "run something")
+        with orun.console.capture():
+            result4 = repl4._generate()
+        recovered = repl4.session.messages[2]
+        failures = _check(failures, "a call_ prefixed name runs the real tool",
+                          recovered.get("tool_name") == "run_shell"
+                          and "from-prefix" in recovered.get("content", "")
+                          and "'call_run_shell' is called 'run_shell' here"
+                          in recovered.get("content", "")
+                          and "unknown" not in recovered.get("content", ""),
+                          str(recovered))
+        failures = _check(failures, "the prefixed round reaches the model again",
+                          result4.content == "recovered"
+                          and any(m.get("role") == "tool"
+                                  for m in client4.chat_payloads[1]["messages"]),
+                          result4.content)
     return failures
 
 
