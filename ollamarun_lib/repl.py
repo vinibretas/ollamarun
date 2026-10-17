@@ -45,7 +45,6 @@ from .constants import (
 from .files import expand_file_mentions
 from .helpers import (
     CancelToken,
-    canonical_model_name,
     coerce_value,
     human_bytes,
     human_chars,
@@ -92,8 +91,18 @@ from .interactive import (
     resolve_gpu_layers,
     sort_models,
 )
-from .renderer import (GenerationResult, Renderer, StreamSink, thinking_panel,
-                       tool_call_panel, tool_result_panel, user_message_box)
+from .events import TOOL_CALL, TOOL_RESULT, TURN_ERROR, TURN_WARNING, RuntimeEvent
+from .renderer import (GenerationResult, HeadlessRenderer, Renderer, StreamSink,
+                       thinking_panel, tool_call_panel, tool_result_panel,
+                       user_message_box)
+from .runtime import (AgentRuntime, ApprovalDecision, ApprovalRequest, TurnHooks,
+                      TurnSettings, approval_notice, build_payload,
+                      context_length as resolve_context_length,
+                      context_report as build_context_report,
+                      context_used as session_context_used,
+                      model_show as read_model_show,
+                      resident_context_length,
+                      session_report as build_session_report)
 from .session import Session, SessionStore, export_html, export_json, export_markdown
 from .tools import (
     DEFAULT_SHELL_ALLOW,
@@ -109,7 +118,6 @@ from .tools import (
     execute_tool,
     find_tts_remote,
     matching_rule,
-    normalize_arguments,
     resolve_tool_alias,
     rule_label,
     run_tts_say,
@@ -118,7 +126,8 @@ from .tools import (
     tool_definitions,
     tool_schemas as build_tool_schemas,
 )
-from .ui import (ConsoleUi, StatusSnapshot, Ui, _prompt_approval)
+from .ui import (ConsoleUi, StatusSnapshot, Ui,
+                 _prompt_approval)  # noqa: F401  (compatibility re-export)
 
 
 COMMAND_INFO: dict[str, tuple[str, str]] = {
@@ -496,6 +505,11 @@ class Repl:
         # REPL leaves both alone (rich.Live keeps rendering the stream).
         self.tui_mode = False
         self.stream_sink: Optional[StreamSink] = None
+        # The serve front end sets `headless` + `event_sink`: rendering turns
+        # event-only (no Live, no stdout, no terminal prompts) so a turn can
+        # run with no terminal at all.
+        self.headless = False
+        self.event_sink: Optional[Callable[[RuntimeEvent], None]] = None
 
     # ── prompt plumbing ─────────────────────────────────────────────────────
 
@@ -564,7 +578,13 @@ class Repl:
 
     # ── rendering ───────────────────────────────────────────────────────────
 
-    def _renderer(self, *, after_tools: bool = False) -> Renderer:
+    def _renderer(self, *, after_tools: bool = False) -> Any:
+        if self.headless:
+            renderer = HeadlessRenderer(on_event=self.event_sink,
+                                        thinking_mode=self.thinking_mode,
+                                        after_tools=after_tools)
+            renderer.context_used = self.context_used()
+            return renderer
         mode = self.render_mode
         if mode == "auto":
             mode = "markdown" if console.is_terminal else "plain"
@@ -705,18 +725,11 @@ class Repl:
         if with_tools:
             tools = build_tool_schemas(self.tool_registry,
                                        set(self.session.tools_disabled)) or None
-        messages = list(messages)
-        system = self.effective_system()
-        if system and (not messages or messages[0].get("role") != "system"):
-            messages.insert(0, {"role": "system", "content": system})
-        options = dict(self.session.parameters)
-        gpu_layers = self.gpu_layers_value()
-        if gpu_layers is not None:
-            options["num_gpu"] = gpu_layers
-        return build_chat_payload(self.session.model, messages, stream=stream,
-                                  fmt=self.session.format, think=self.effective_think(),
-                                  keepalive=self.session.keepalive or self.args.keepalive,
-                                  options=options, tools=tools)
+        return build_payload(self.session, messages, stream=stream, tools=tools,
+                             system=self.effective_system(),
+                             think=self.effective_think(),
+                             keepalive=self.session.keepalive or self.args.keepalive,
+                             gpu_layers=self.gpu_layers_value())
 
     # ── tool harness ────────────────────────────────────────────────────────
 
@@ -734,8 +747,11 @@ class Repl:
         except Exception:  # capability probing must never break a turn
             return
         if capabilities and "tools" not in capabilities:
-            console.print(f"[warn]{escape(self.session.model)} does not advertise tool "
-                          f"support — tool calls may not work[/warn]")
+            message = (f"{self.session.model} does not advertise tool support — "
+                       "tool calls may not work")
+            self._emit_event(RuntimeEvent(TURN_WARNING, {"message": message}))
+            if not self.headless:
+                console.print(f"[warn]{escape(message)}[/warn]")
 
     def _session_rules(self) -> list[ToolRule]:
         rules: list[ToolRule] = []
@@ -760,17 +776,25 @@ class Repl:
                              cwd=self.tool_ctx.cwd, shell_allow=self.shell_allow)
         if rule is not None:
             label = rule_label(rule)
-            console.print(f"[dim]allowed by rule[/dim] [key]{escape(label)}[/key]")
+            if not self.headless:
+                console.print(f"[dim]allowed by rule[/dim] [key]{escape(label)}[/key]")
             return True, f"rule: {label}"
-        if not (allow_prompt and console.is_terminal):
+        if not (allow_prompt and self.ui.interactive):
             return False, f"not auto-approved ({decision.reason}) and this run is unattended"
-        color = tool_color(spec.name)
-        console.print(f"[{color}]{escape(spec.name)}[/{color}][warn] needs "
-                      f"confirmation: {escape(decision.reason)}[/warn]")
+        suggestions = suggest_rules(spec.name, args, cwd=self.tool_ctx.cwd)
+        detail = call_detail(spec.name, args)
+        self._emit_event(approval_notice(
+            ApprovalRequest(spec=spec, args=args, fingerprint=fingerprint,
+                            detail=detail, allow_prompt=allow_prompt),
+            reason=decision.reason, suggestions=suggestions))
+        if not self.headless:
+            color = tool_color(spec.name)
+            console.print(f"[{color}]{escape(spec.name)}[/{color}][warn] needs "
+                          f"confirmation: {escape(decision.reason)}[/warn]")
         self.set_state("approval", spec.name)
         action, rule = self.ui.approval(
-            suggest_rules(spec.name, args, cwd=self.tool_ctx.cwd),
-            name=spec.name, detail=call_detail(spec.name, args),
+            suggestions,
+            name=spec.name, detail=detail,
             reason=decision.reason)
         if action == "auto":
             self.auto_approve = True
@@ -781,103 +805,25 @@ class Repl:
         if action == "remember":
             self.session.tool_allow = list(self.session.tool_allow or []) + [fingerprint]
             self.session.touch()
-            console.print("[dim]stored rule:[/dim] exactly this call")
+            if not self.headless:
+                console.print("[dim]stored rule:[/dim] exactly this call")
             return True, "allowed (remembered)"
         if action == "rule" and rule is not None:
             self.session.tool_rules = list(self.session.tool_rules or []) + [rule.to_dict()]
             self.session.touch()
-            console.print(f"[dim]stored rule:[/dim] {escape(rule_label(rule))}")
+            if not self.headless:
+                console.print(f"[dim]stored rule:[/dim] {escape(rule_label(rule))}")
             return True, "allowed (remembered)"
         return True, "confirmed"
 
     def _execute_tool_calls(self, calls: list[dict[str, Any]], *, quiet: bool = False,
                             allow_prompt: bool = True) -> bool:
-        """Run the model's tool calls; returns True when interrupted."""
-        disabled = set(self.session.tools_disabled)
-        available = sorted(set(self.tool_registry) - disabled)
-        interrupted = False
-        cancel = self.cancel_token
-        for call in calls:
-            function = (call.get("function") or {}) if isinstance(call, dict) else {}
-            name = str(function.get("name") or "?")
-            if interrupted or cancel.cancelled:
-                # A tool that is already running is never killed: it keeps
-                # running in the background and its result is still recorded,
-                # the model just is not asked to react to it after a stop.
-                interrupted = True
-                self.session.add_message("tool", "interrupted by user", tool_name=name)
-                continue
-            args = normalize_arguments(function.get("arguments"))
-            if args is None:
-                text = ("invalid tool arguments (not a JSON object): "
-                        + str(function.get("arguments"))[:200])
-                self.session.add_message("tool", text, tool_name=name)
-                if not quiet:
-                    console.print(tool_result_panel(name, text=text, ok=False))
-                continue
-            spec = self.tool_registry.get(name) if name not in disabled else None
-            alias_note = ""
-            if spec is None:
-                alias = resolve_tool_alias(name)
-                if alias != name and alias not in disabled:
-                    spec = self.tool_registry.get(alias)
-                    if spec is not None:
-                        alias_note = f"(note: {name!r} is called {alias!r} here)\n"
-                        name = alias
-            if spec is None:
-                text = f"unknown or disabled tool: {name}"
-                if available:
-                    text += "; available: " + ", ".join(available)
-                self.session.add_message("tool", text, tool_name=name)
-                if not quiet:
-                    console.print(tool_result_panel(name, text=text, ok=False))
-                continue
-            fingerprint = call_fingerprint(name, args)
-            detail = call_detail(name, args)
-            try:
-                run, note = self._approve_tool_call(spec, args, fingerprint,
-                                                    allow_prompt=allow_prompt)
-            except KeyboardInterrupt:
-                run, note = False, "interrupted by user"
-                interrupted = True
-            if not run:
-                text = alias_note + f"tool not run: {note}"
-                self.session.add_message("tool", text, tool_name=name)
-                if not quiet:
-                    console.print(tool_result_panel(name, detail=detail, text=text,
-                                                    ok=False))
-                continue
-            color = tool_color(name)
-            if not quiet:
-                console.print(f"[dim]running[/dim] [{color}]{escape(name)}[/{color}]"
-                              f"[dim]…[/dim]")
-            self.set_state("tool", detail or name)
-            self.ui.notify("tool_start", name=name, detail=detail)
-            started = time.monotonic()
-            try:
-                outcome = execute_tool(spec, args, self.tool_ctx)
-            except KeyboardInterrupt:
-                text = "interrupted by user"
-                self.session.add_message("tool", text, tool_name=name)
-                if not quiet:
-                    console.print(tool_result_panel(name, detail=detail, text=text,
-                                                    ok=False))
-                interrupted = True
-                continue
-            self.ui.notify("tool_done", name=name, ok=outcome.ok,
-                           duration=outcome.duration
-                           if outcome.duration else time.monotonic() - started)
-            self.session.add_message("tool", alias_note + outcome.text,
-                                     tool_name=name,
-                                     tool_note=outcome.title_note or None)
-            if not quiet:
-                console.print(tool_result_panel(name, detail=detail,
-                                                text=alias_note + outcome.text,
-                                                ok=outcome.ok, duration=outcome.duration,
-                                                note=outcome.title_note))
-        if not self.no_save:
-            self.store.save(self.session)
-        return interrupted
+        """Run the model's tool calls (thin wrapper over `AgentRuntime`)."""
+        hooks = self._turn_hooks(allow_prompt=allow_prompt, quiet_tools=quiet)
+        runtime = AgentRuntime(hooks)
+        runtime.tool_round = self._tool_round
+        return runtime.execute_tool_calls(calls, quiet=quiet,
+                                          allow_prompt=allow_prompt)
 
     # ── tts ─────────────────────────────────────────────────────────────────
 
@@ -934,29 +880,8 @@ class Repl:
         return renderer.estimator.average() if renderer is not None else None
 
     def _resident_context_length(self) -> Optional[int]:
-        """The window the loaded runner actually uses, from `/api/ps`.
-
-        `/api/show` reports the model's architectural maximum (262144 for a
-        qwen3.5); the runner may be loaded with far less -- ollama's own
-        default when nothing set `num_ctx`, or whatever another client asked
-        for -- and `/api/ps` reports the live window as `context_length`.
-        """
-        model = self.session.model
-        if not model:
-            return None
-        try:
-            entries = self.client.ps()
-        except OllamaError:
-            return None
-        wanted = canonical_model_name(model)
-        for entry in entries:
-            name = str(entry.get("name") or entry.get("model") or "")
-            if canonical_model_name(name) != wanted:
-                continue
-            ctx = entry.get("context_length")
-            if isinstance(ctx, int) and ctx > 0:
-                return ctx
-        return None
+        """The window the loaded runner actually uses, from `/api/ps`."""
+        return resident_context_length(self.client, self.session)
 
     def model_show(self, model: Optional[str] = None) -> dict[str, Any]:
         """Raw `/api/show` for a model, cached per (host, model) for the run.
@@ -965,14 +890,7 @@ class Repl:
         `session_report()` all read from this one cache, so a burst of calls
         makes a single request; a failure is cached as `{}`.
         """
-        name = model or self.session.model
-        key = (self.client.base, name)
-        if key not in self._show_cache:
-            try:
-                self._show_cache[key] = self.client.show(name)
-            except OllamaError:
-                self._show_cache[key] = {}
-        return self._show_cache[key]
+        return read_model_show(self.client, self.session, self._show_cache, model)
 
     def context_length(self, *, refresh: bool = False) -> Optional[int]:
         """The window the model actually runs with, cached per model/num_ctx.
@@ -984,30 +902,9 @@ class Repl:
         first asks -- so it is re-checked against `/api/ps` until the loaded
         window shows up.
         """
-        key = (self.session.model, self.session.parameters.get("num_ctx"))
-        if refresh or key not in self._context_totals:
-            if refresh:
-                self._show_cache.pop((self.client.base, self.session.model), None)
-            total = model_context_length(self.model_show(self.session.model),
-                                         self.session.parameters)
-            provisional = False
-            if not isinstance(self.session.parameters.get("num_ctx"), int):
-                resident = self._resident_context_length()
-                if resident is not None:
-                    total = resident
-                else:
-                    provisional = True
-            self._context_totals[key] = total
-            if provisional:
-                self._context_provisional.add(key)
-            else:
-                self._context_provisional.discard(key)
-        elif key in self._context_provisional:
-            resident = self._resident_context_length()
-            if resident is not None:
-                self._context_totals[key] = resident
-                self._context_provisional.discard(key)
-        return self._context_totals[key]
+        return resolve_context_length(self.client, self.session, self._show_cache,
+                                      self._context_totals, self._context_provisional,
+                                      refresh=refresh)
 
     def _context_total(self) -> Optional[int]:
         """The cached window size for the current model/num_ctx, if known."""
@@ -1015,92 +912,21 @@ class Repl:
             (self.session.model, self.session.parameters.get("num_ctx")))
 
     def context_report(self) -> dict[str, Any]:
-        """Plain data for the `context_status` tool (window + usage).
-
-        `window` is the effective window `context_length()` resolves (a
-        session `num_ctx`, else the loaded runner's, else the model default),
-        `source` names which of the three won, and `model_max` is the
-        architectural maximum from `/api/show` for contrast.
-        """
-        parameters = self.session.parameters or {}
-        num_ctx = parameters.get("num_ctx")
-        key = (self.session.model, num_ctx)
-        window = self.context_length()
-        model_max = model_context_length(self.model_show(self.session.model), {})
-        provisional = key in self._context_provisional
-        if window is None:
-            source = "unknown"
-        elif isinstance(num_ctx, int) and window == num_ctx:
-            source = "num_ctx"
-        elif provisional:
-            source = "model default (runner not loaded yet)"
-        elif model_max is not None and window == model_max:
-            source = "model default"
-        else:
-            source = "loaded runner"
-        roles: dict[str, int] = {}
-        for message in self.session.messages:
-            role = str(message.get("role") or "?")
-            roles[role] = roles.get(role, 0) + 1
-        return {
-            "model": self.session.model,
-            "base": self.client.base,
-            "remote": self.session.remote,
-            "window": window,
-            "source": source,
-            "model_max": model_max,
-            "num_ctx": num_ctx,
-            "prompt": self.session.stats.get("last_prompt_tokens"),
-            "completion": self.session.stats.get("last_completion_tokens"),
-            "used": self.context_used(),
-            "messages": {"total": len(self.session.messages), **roles},
-        }
+        """Plain data for the `context_status` tool (window + usage)."""
+        return build_context_report(self.client, self.session, self._show_cache,
+                                    self._context_totals, self._context_provisional)
 
     def session_report(self) -> dict[str, Any]:
         """Plain data for the `session_info` tool (identity, settings, tools)."""
-        session = self.session
-        show = self.model_show()
-        details = show.get("details") or {}
-        if not self.tools_enabled:
-            policy = "off"
-        elif self.auto_approve:
-            policy = "auto (all calls allowed)"
-        else:
-            policy = self.tools_policy
-        return {
-            "session": {
-                "id": session.id,
-                "title": session.display_title(),
-                "created_at": session.created_at,
-                "updated_at": session.updated_at,
-                "messages": len(session.messages),
-                "turns": session.stats.get("turns", 0),
-            },
-            "model": session.model,
-            "details": {
-                "parameter_size": details.get("parameter_size"),
-                "quantization_level": details.get("quantization_level"),
-                "family": details.get("family"),
-                "capabilities": list(show.get("capabilities") or []),
-            },
-            "base": self.client.base,
-            "remote": session.remote,
-            "cwd": self.tool_ctx.cwd,
-            "parameters": dict(session.parameters or {}),
-            "keepalive": session.keepalive or getattr(self.args, "keepalive", None),
-            "gpu_layers": self.gpu_layers_summary(),
-            "thinking": self.thinking_mode,
-            "render": self.render_mode,
-            "system_prompt": ("off" if session.system == "" else
-                              "custom" if session.system else "built-in default"),
-            "tools": {
-                "enabled": self.tools_enabled,
-                "policy": policy,
-                "round": self._tool_round,
-                "max_rounds": self.tools_max_rounds,
-                "disabled": sorted(session.tools_disabled or []),
-            },
-        }
+        return build_session_report(
+            session=self.session, show=self.model_show(), base=self.client.base,
+            cwd=self.tool_ctx.cwd,
+            keepalive=self.session.keepalive or getattr(self.args, "keepalive", None),
+            gpu_layers=self.gpu_layers_summary(),
+            thinking=self.thinking_mode, render=self.render_mode,
+            tools_enabled=self.tools_enabled, auto_approve=self.auto_approve,
+            tools_policy=self.tools_policy, tool_round=self._tool_round,
+            tools_max_rounds=self.tools_max_rounds)
 
     def live_context_used(self) -> Optional[int]:
         """`context_used()` plus the chunks streamed in the running round.
@@ -1165,119 +991,198 @@ class Repl:
     # ── generation ──────────────────────────────────────────────────────────
 
     def _generate(self) -> GenerationResult:
+        """Run one turn through `AgentRuntime` (the loop lives in runtime.py)."""
         if self._preload_thread is not None and self._preload_thread.is_alive():
             # The user sent a message before the background preload finished;
             # wait for our own load call to land (chat() would otherwise
             # trigger a redundant concurrent load) so ollama ps -- printed
             # right as the preload thread finishes -- shows up immediately
             # instead of only after this response is fully generated.
-            if console.is_terminal:
+            if console.is_terminal and not self.headless:
                 console.print(f"[dim]waiting for {escape(self.session.model)} "
                               f"to finish loading…[/dim]")
             self._preload_thread.join()
-            if console.is_terminal:
+            if console.is_terminal and not self.headless:
                 self._maybe_show_ps()
         self._check_tool_support()
-        result = GenerationResult()
-        tool_rounds = 0
-        self._tool_round = 0
-        cancel = self.cancel_token
         self._turn_started = time.monotonic()
         self.set_state("generating")
         self.ui.notify("turn_start")
         try:
-            while True:
-                # Sub-task boundary: anything queued while the model worked is
-                # handed over here (before a fresh request), so it lands in the
-                # same turn instead of replacing it.
-                self.drain_boundary_messages()
-                if cancel.cancelled:
-                    break
-                renderer = self._renderer(after_tools=bool(tool_rounds))
-                self.current_renderer = renderer
-                marker = f"[ai]{escape(self.session.model)} ›[/ai]"
-                if renderer.mode != "raw" and not renderer.render_frames:
-                    console.print(marker)
-                with_tools = self.tools_enabled and tool_rounds < self.tools_max_rounds
-                try:
-                    result = renderer.stream(self.client.chat(
-                        self._payload(self.session.message_payloads(with_tools=with_tools),
-                                      with_tools=with_tools),
-                        timeout=self.timeout, cancel=cancel), cancel=cancel,
-                        sink=self.stream_sink)
-                except OllamaError as exc:
-                    result = GenerationResult(error=str(exc))
-                    console.print(f"[err]{escape(str(exc))}[/err]")
-                self._last_tps = renderer.estimator.rate() or self._last_tps
-                self.current_renderer = None
-                if result.content or result.tool_calls:
-                    self.session.add_message("assistant", result.content,
-                                             thinking=result.thinking or None,
-                                             cancelled=True if result.cancelled else None,
-                                             tool_calls=result.tool_calls or None)
-                elif result.cancelled:
-                    self.session.add_message("assistant", "", cancelled=True)
-                if result.stats:
-                    self.session.record_turn(result.stats, count_turn=(tool_rounds == 0))
-                    self.session.stats["last_prompt_tokens"] = result.stats.get("prompt_tokens")
-                    self.session.stats["last_completion_tokens"] = result.stats.get("completion_tokens")
-                if not self.no_save:
-                    self.store.save(self.session)
-                if result.error or result.cancelled or not self.tools_enabled:
-                    break
-                if not result.tool_calls:
-                    # No tools asked for: only keep going when the user typed
-                    # something while this answer streamed (delivered at the
-                    # top of the next round).
-                    if self.queue.has_messages():
-                        continue
-                    break
-                tool_rounds += 1
-                if tool_rounds > self.tools_max_rounds:
-                    console.print(f"[warn]tool-call limit reached "
-                                  f"({self.tools_max_rounds}) — not running more tools[/warn]")
-                    for call in result.tool_calls:
-                        function = (call.get("function") or {}) if isinstance(call, dict) else {}
-                        self.session.add_message(
-                            "tool", "not executed: tool-call limit reached",
-                            tool_name=str(function.get("name") or "?"))
-                    if not self.no_save:
-                        self.store.save(self.session)
-                    break
-                self._tool_round = tool_rounds
-                if self._execute_tool_calls(result.tool_calls,
-                                            quiet=(self.render_mode == "raw")):
-                    console.print("[warn]tool execution interrupted; stopping this turn[/warn]")
-                    break
+            result = AgentRuntime(self._turn_hooks()).run()
         finally:
             self._turn_started = None
             self.current_renderer = None
         if self.tts_auto and result.content and not result.cancelled and not result.error:
             self.speak_text(result.content)
-        if console.is_terminal and not result.error:
+        if console.is_terminal and not self.headless and not result.error:
             self._maybe_show_ps()
         return result
 
+    def _present_round(self, payload: dict[str, Any], after_tools: bool,
+                       cancel: Optional[CancelToken]) -> GenerationResult:
+        """Stream one round: build a renderer, print the marker, consume chunks."""
+        renderer = self._renderer(after_tools=after_tools)
+        self.current_renderer = renderer
+        marker = f"[ai]{escape(self.session.model)} ›[/ai]"
+        if not self.headless and renderer.mode != "raw" and not renderer.render_frames:
+            console.print(marker)
+        try:
+            result = renderer.stream(
+                self.client.chat(payload, timeout=self.timeout, cancel=cancel),
+                cancel=cancel, sink=self.stream_sink)
+        except OllamaError as exc:
+            result = GenerationResult(error=str(exc))
+        finally:
+            self._last_tps = renderer.estimator.rate() or self._last_tps
+            self.current_renderer = None
+        return result
+
+    # ── runtime seam ────────────────────────────────────────────────────────
+
+    def _set_tool_round(self, round_number: int) -> None:
+        self._tool_round = round_number
+
+    def _emit_event(self, event: RuntimeEvent) -> None:
+        """Hand one runtime event to the front end, when one is listening."""
+        if self.event_sink is not None:
+            self.event_sink(event)
+
+    def _turn_hooks(self, *, presenter: Optional[Callable[..., GenerationResult]] = None,
+                    allow_prompt: bool = True,
+                    quiet_tools: Optional[bool] = None) -> TurnHooks:
+        """Build the per-turn seam from the REPL's live state.
+
+        Built fresh for every turn (and for every direct `_execute_tool_calls`
+        call) so a test or front end that swaps `client`/`ui`/`stream_sink`
+        between turns is honoured, and so mid-turn `/tools` changes are still
+        read on the next round through the callables below.
+        """
+        quiet = (self.headless or self.render_mode == "raw") \
+            if quiet_tools is None else bool(quiet_tools)
+        settings = TurnSettings(
+            mode="agent",
+            no_save=self.no_save,
+            timeout=self.timeout,
+            allow_prompt=allow_prompt,
+            quiet_tools=quiet,
+            tools_enabled=lambda: self.tools_enabled,
+            tools_max_rounds=lambda: self.tools_max_rounds,
+        )
+        return TurnHooks(
+            client=self.client,
+            store=self.store,
+            session=self.session,
+            registry=self.tool_registry,
+            tool_ctx=self.tool_ctx,
+            settings=settings,
+            cancel=self.cancel_token,
+            payload_for=lambda messages, with_tools: self._payload(
+                messages, with_tools=with_tools),
+            present_round=presenter or self._present_round,
+            approver=self._approve_request,
+            execute_tools=self._execute_tool_calls,
+            on_event=self._event_printer(quiet=quiet),
+            on_warning=self._warning_printer(),
+            drain_boundary=self.drain_boundary_messages,
+            has_queued=lambda: self.queue.has_messages(),
+            set_tool_round=self._set_tool_round,
+            set_state=self.set_state,
+            notify=self.ui.notify,
+        )
+
+    def _event_printer(self, *, quiet: bool) -> Callable[[RuntimeEvent], None]:
+        """Forward every event to the sink, and print the console panels.
+
+        The panels are exactly the ones the pre-runtime loop printed: the
+        "running…" line, tool-result panels (skipping the silent
+        interrupted-tool notices), and the one-line error.
+        """
+        def handle(event: RuntimeEvent) -> None:
+            if self.event_sink is not None:
+                self.event_sink(event)
+            if quiet:
+                return
+            data = event.data
+            name = str(data.get("name") or "tool")
+            if event.type == TOOL_CALL:
+                color = tool_color(name)
+                console.print(f"[dim]running[/dim] [{color}]{escape(name)}[/{color}]"
+                              f"[dim]…[/dim]")
+            elif event.type == TOOL_RESULT and not data.get("silent"):
+                if data.get("detail") is not None:
+                    console.print(tool_result_panel(
+                        name, detail=str(data.get("detail") or ""),
+                        text=str(data.get("text") or ""),
+                        ok=bool(data.get("ok")),
+                        duration=data.get("duration") or None,
+                        note=str(data.get("note") or "")))
+                else:
+                    console.print(tool_result_panel(
+                        name, text=str(data.get("text") or ""),
+                        ok=bool(data.get("ok"))))
+            elif event.type == TURN_ERROR and not self.headless:
+                console.print(f"[err]{escape(str(data.get('message') or ''))}[/err]")
+        return handle
+
+    def _warning_printer(self) -> Callable[[str], None]:
+        def warn(message: str) -> None:
+            if not self.headless:
+                console.print(f"[warn]{escape(message)}[/warn]")
+        return warn
+
+    def _approve_request(self, request: ApprovalRequest) -> ApprovalDecision:
+        """Adapter: the runtime asks, `_approve_tool_call` answers."""
+        run, note = self._approve_tool_call(request.spec, request.args,
+                                            request.fingerprint,
+                                            allow_prompt=request.allow_prompt)
+        return ApprovalDecision(run=run, note=note,
+                                action=self._approval_action(note))
+
+    @staticmethod
+    def _approval_action(note: str) -> str:
+        note = note or ""
+        if note.startswith("auto"):
+            return "auto"
+        if note.startswith("denied") or note.startswith("not auto-approved"):
+            return "deny"
+        if note.startswith("interrupted"):
+            return "interrupt"
+        if note.startswith("allowed (remembered)"):
+            return "remember"
+        if note.startswith("rule:"):
+            return "rule"
+        return "run"
+
     def _add_user_message(self, text: str) -> None:
         """Record a user turn: bubble, `@file` expansion, session save, title."""
-        if console.is_terminal:
+        if console.is_terminal and not self.headless:
             console.print(user_message_box(text, console))
-        augmented, included, warnings = expand_file_mentions(text, max_kb=self.max_file_kb)
+        if self.headless:
+            # A remote turn must not probe/inline local files through `@path`
+            # mentions or spend an extra model call on an auto title.
+            included: list[str] = []
+            warnings: list[str] = []
+        else:
+            _expanded, included, warnings = expand_file_mentions(
+                text, max_kb=self.max_file_kb)
         for warning in warnings:
-            console.print(f"[warn]{escape(warning)}[/warn]")
+            if not self.headless:
+                console.print(f"[warn]{escape(warning)}[/warn]")
         images = self.pending_images
         self.pending_images = []
         self.session.add_message("user", text, images=images or None,
                                  files=included or None)
         if not self.no_save:
             self.store.save(self.session)
-        if not self.session.title:
+        if not self.session.title and not self.headless:
             self._maybe_title(text)
 
     def send(self, text: str) -> GenerationResult:
         text = text.strip()
         if not text and not self.pending_images:
             return GenerationResult()
+        self.cancel_token.reset()
         self._add_user_message(text)
         return self._generate()
 
@@ -1366,11 +1271,7 @@ class Repl:
         """Tokens that the next request will carry: the last prompt plus the
         output just generated (both are re-sent; `prompt_eval_count` alone
         omits the assistant reply that was appended after it was counted)."""
-        prompt = self.session.stats.get("last_prompt_tokens")
-        completion = self.session.stats.get("last_completion_tokens")
-        if prompt is None and completion is None:
-            return None
-        return (prompt or 0) + (completion or 0)
+        return session_context_used(self.session)
 
     def _context_warning(self) -> None:
         if not self.session.messages:

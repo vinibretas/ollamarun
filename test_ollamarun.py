@@ -1752,8 +1752,10 @@ def test_tool_colors() -> int:
         real_console = orun.repl.console
         # the approval prompt itself lives in ui.py now (the front-end seam)
         real_prompt = orun.ui._prompt_approval
+        real_interactive = repl.ui.interactive
         orun.repl.console = terminal_console
         orun.ui._prompt_approval = lambda suggestions: ("deny", None)
+        repl.ui.interactive = True  # the gate is the Ui's, not the console's
         try:
             orun.cmd_tools(repl, "")
             repl._approve_tool_call(repl.tool_registry["write_file"],
@@ -1761,6 +1763,7 @@ def test_tool_colors() -> int:
         finally:
             orun.repl.console = real_console
             orun.ui._prompt_approval = real_prompt
+            repl.ui.interactive = real_interactive
         styled = recorded.getvalue()
 
     cyan, orange = ansi("cyan"), ansi("orange1")  # run_shell / write_file
@@ -5518,6 +5521,7 @@ def test_approval_rules() -> int:
             shell_spec = repl2.tool_registry["run_shell"]
             original_console = repl_module.console
             repl_module.console = _TerminalConsole()
+            repl2.ui.interactive = True  # the gate is the Ui's, not the console's
             try:
                 deny_args = {"command": "rm /tmp/approval-b/x"}
                 _StubPrompt.answer = "n"
@@ -6810,6 +6814,220 @@ def test_client_http() -> int:
     return failures
 
 
+def test_runtime_events() -> int:
+    """Phase 1: a headless turn through AgentRuntime emits the whole vocabulary."""
+    failures = 0
+    script = [
+        [{"message": {"content": "checking", "tool_calls": [
+            {"function": {"name": "run_shell",
+                          "arguments": {"command": "echo hi"}}}]}}],
+        [{"message": {"content": "done"}, "done": True,
+         "prompt_eval_count": 7, "eval_count": 2,
+         "prompt_eval_duration": 1_000_000_000, "eval_duration": 1_000_000_000}],
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain", "--no-save"])
+        client = _FakeClient(models=["m1"], capabilities=["completion", "tools"],
+                             chat_script=script)
+        session = orun.Session.create("m1", client.base)
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store, session)
+        repl._build_prompt_session = lambda: None
+        repl.headless = True
+        repl.auto_approve = True
+        events = []
+        repl.event_sink = events.append
+        with orun.console.capture() as cap:
+            result = repl.send("check")
+        out = _plain(cap.get())
+        types = [event.type for event in events]
+        failures = _check(failures, "headless turn returns the final answer",
+                          result.content == "done", result.content)
+        failures = _check(failures, "headless turn writes nothing to stdout",
+                          out.strip() == "", repr(out[:120]))
+        for wanted in ("turn.started", "message.delta", "message.completed",
+                       "tool.call", "approval.resolved", "tool.result",
+                       "turn.completed"):
+            failures = _check(failures, f"event {wanted}", wanted in types, str(types))
+        deltas = [event.data.get("text") for event in events
+                  if event.type == "message.delta"]
+        failures = _check(failures, "message.delta carries the streamed text",
+                          "".join(deltas) == "checkingdone", str(deltas))
+        roles = [message.get("role") for message in session.messages]
+        failures = _check(failures, "the tool round is recorded in the session",
+                          roles == ["user", "assistant", "tool", "assistant"]
+                          and session.messages[2]["tool_name"] == "run_shell",
+                          str(roles))
+        failures = _check(failures, "turn.completed carries the stats",
+                          any(event.type == "turn.completed"
+                              and event.data.get("stats") for event in events))
+    return failures
+
+
+def test_headless_renderer() -> int:
+    failures = 0
+    events = []
+    renderer = orun.HeadlessRenderer(on_event=events.append)
+    with orun.console.capture() as cap:
+        result = renderer.stream(iter([
+            {"message": {"thinking": "hmm"}},
+            {"message": {"content": "Hi"}},
+            {"message": {"content": " there"}},
+            {"done": True, "eval_count": 5, "eval_duration": 1_000_000_000,
+             "prompt_eval_count": 3, "prompt_eval_duration": 1_000_000_000},
+        ]))
+    text = _plain(cap.get())
+    failures = _check(failures, "headless renderer accumulates content",
+                      result.content == "Hi there" and result.thinking == "hmm",
+                      f"{result.content!r} {result.thinking!r}")
+    failures = _check(failures, "headless renderer prints nothing",
+                      text.strip() == "", repr(text[:120]))
+    failures = _check(failures, "headless renderer emits channel deltas",
+                      [event.data.get("channel") for event in events]
+                      == ["thinking", "content", "content"]
+                      and [event.data.get("text") for event in events]
+                      == ["hmm", "Hi", " there"],
+                      str([event.to_dict() for event in events]))
+    failures = _check(failures, "headless renderer keeps the stats",
+                      result.stats.get("prompt_tokens") == 3
+                      and result.stats.get("completion_tokens") == 5,
+                      str(result.stats))
+    return failures
+
+
+def test_session_store_lock() -> int:
+    """Concurrent session saves (serve threads) must not lose index entries."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        sessions = [orun.Session.create(f"m{i}", "http://h", title=f"t{i}")
+                    for i in range(8)]
+
+        def save(session):
+            for _ in range(5):
+                store.save(session)
+
+        threads = [threading.Thread(target=save, args=(session,))
+                   for session in sessions]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        ids = {entry["id"] for entry in store.entries()}
+        failures = _check(failures, "every concurrent save lands in the index",
+                          ids == {session.id for session in sessions},
+                          f"{len(ids)} of {len(sessions)}")
+    return failures
+
+
+def test_ui_interactive() -> int:
+    failures = 0
+    failures = _check(failures, "Ui defaults to non-interactive",
+                      orun.Ui.interactive is False and not orun.Ui().interactive)
+    console_ui = orun.ConsoleUi()
+    failures = _check(failures, "ConsoleUi follows the console",
+                      console_ui.interactive == orun.console.is_terminal)
+    if orun.HAS_TEXTUAL:
+        class _App:
+            def call_from_thread(self, fn, *args, **kwargs):
+                return fn(*args, **kwargs)
+
+        failures = _check(failures, "TuiUi is always interactive",
+                          orun.TuiUi(_App()).interactive)
+    return failures
+
+
+def test_tool_cancellation() -> int:
+    failures = 0
+    ran = []
+    spec = orun.ToolSpec(name="run_shell", description="", parameters={},
+                         handler=lambda args, ctx: ran.append(1) or "ran")
+    token = orun.CancelToken()
+    token.cancel()
+    ctx = orun.ToolContext(cwd=".", timeout=10, cancel=token)
+    outcome = orun.ToolRunner().run(spec, {}, ctx)
+    failures = _check(failures, "a cancelled turn never starts the tool",
+                      outcome.cancelled and not ran, f"{outcome.cancelled} {ran}")
+
+    slow = orun.ToolSpec(name="fetch_url", description="", parameters={},
+                         handler=lambda args, ctx: (time.sleep(5), "late")[1])
+    token2 = orun.CancelToken()
+    ctx2 = orun.ToolContext(cwd=".", timeout=10, cancel=token2)
+    timer = threading.Timer(0.2, token2.cancel)
+    started = time.monotonic()
+    timer.start()
+    try:
+        outcome = orun.ToolRunner(poll=0.02).run(slow, {}, ctx2)
+    finally:
+        timer.cancel()
+    elapsed = time.monotonic() - started
+    failures = _check(failures, "an abandoned network tool returns without waiting",
+                      outcome.cancelled and elapsed < 2.0, f"{elapsed:.2f}s")
+
+    token3 = orun.CancelToken()
+    ctx3 = orun.ToolContext(cwd=".", timeout=30, cancel=token3)
+    shell = orun.ToolSpec(name="run_shell", description="", parameters={},
+                          handler=orun.HANDLERS["shell"])
+    timer = threading.Timer(0.3, token3.cancel)
+    started = time.monotonic()
+    timer.start()
+    try:
+        outcome = orun.ToolRunner().run(shell, {"command": "sleep 30"}, ctx3)
+    finally:
+        timer.cancel()
+    elapsed = time.monotonic() - started
+    failures = _check(failures, "a cancelled shell command dies with its process group",
+                      outcome.cancelled and elapsed < 3.0,
+                      f"{elapsed:.2f}s {outcome.text!r}")
+    return failures
+
+
+def test_run_once_json() -> int:
+    """`--json` runs the tool loop through the runtime and prints one response."""
+    failures = 0
+    from ollamarun_lib.run import _run_once_json
+
+    class _JsonClient(_FakeClient):
+        def chat_once(self, payload, timeout=None):
+            self.chat_once_payloads.append(payload)
+            if len(self.chat_once_payloads) == 1:
+                return {"message": {"content": "", "tool_calls": [
+                            {"function": {"name": "run_shell",
+                                          "arguments": {"command": "echo hi"}}}]},
+                        "done": True, "prompt_eval_count": 5, "eval_count": 2}
+            return {"message": {"content": "final"}, "done": True,
+                    "prompt_eval_count": 9, "eval_count": 1}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--json", "--yes", "--no-save"])
+        client = _JsonClient(models=["m1"], capabilities=["completion", "tools"])
+        session = orun.Session.create("m1", client.base)
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store, session)
+        session.add_message("user", "hi")
+        with orun.console.capture() as cap:
+            code = _run_once_json(args, client, store, session, repl)
+        printed = _plain(cap.get()).strip()
+        failures = _check(failures, "the --json run exits 0 after the tool loop",
+                          code == 0 and len(client.chat_once_payloads) == 2,
+                          f"{code} {len(client.chat_once_payloads)}")
+        roles = [message.get("role") for message in session.messages]
+        failures = _check(failures, "the tool round reaches the session",
+                          roles == ["user", "assistant", "tool", "assistant"],
+                          str(roles))
+        try:
+            payload = json.loads(printed)
+            ok = payload.get("message", {}).get("content") == "final"
+        except ValueError:
+            ok, payload = False, printed
+        failures = _check(failures, "the final response is printed as JSON", ok,
+                          str(payload)[:160])
+    return failures
+
+
 if __name__ == "__main__":
     total = (test_math() + test_parsing_helpers() + test_stats_helpers()
              + test_resolve_show_stats()
@@ -6852,7 +7070,10 @@ if __name__ == "__main__":
              + test_context_counter() + test_tps_footer()
              + test_stream_cancel() + test_boundary_delivery()
              + test_cancel_stops_turn() + test_tui_app()
-             + test_live_stream_final_frame_is_complete())
+             + test_live_stream_final_frame_is_complete()
+             + test_runtime_events() + test_headless_renderer()
+             + test_session_store_lock() + test_ui_interactive()
+             + test_tool_cancellation() + test_run_once_json())
     if total:
         print(f"\n{total} failure(s)")
         sys.exit(1)

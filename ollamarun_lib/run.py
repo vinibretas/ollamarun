@@ -17,8 +17,9 @@ from rich.table import Table
 from .client import OllamaClient, OllamaError
 from .constants import console
 from .files import expand_file_mentions
-from .renderer import stats_from_final, user_message_box
+from .renderer import GenerationResult, stats_from_final, user_message_box
 from .repl import Repl
+from .runtime import AgentRuntime
 from .session import Session, SessionStore
 
 
@@ -57,40 +58,29 @@ def run_embed(client: OllamaClient, model: str, prompt: str, *,
 def _run_once_json(args: argparse.Namespace, client: OllamaClient, store: SessionStore,
                    session: Session, repl: Repl) -> int:
     """`--json`: one final API response, with or without tool rounds."""
-    with_tools = repl.tools_enabled and not session.format
-    rounds = 0
-    response: dict[str, Any] = {}
-    while True:
-        payload = repl._payload(session.message_payloads(with_tools=with_tools),
-                                stream=False, with_tools=with_tools)
-        try:
-            response = client.chat_once(payload)
-        except OllamaError as exc:
-            console.print(f"[err]{escape(str(exc))}[/err]")
-            return 1
+    final: dict[str, Any] = {}
+
+    def present_once(payload: dict[str, Any], after_tools: bool,
+                     cancel: Any) -> GenerationResult:
+        response = client.chat_once(payload)
+        final.clear()
+        final.update(response)
         message = response.get("message") or {}
-        tool_calls = message.get("tool_calls") or []
-        session.add_message("assistant", message.get("content", ""),
-                            thinking=message.get("thinking") or None,
-                            tool_calls=tool_calls or None)
-        json_stats = stats_from_final(response)
-        session.record_turn(json_stats, count_turn=(rounds == 0))
-        session.stats["last_prompt_tokens"] = json_stats.get("prompt_tokens")
-        session.stats["last_completion_tokens"] = json_stats.get("completion_tokens")
-        if not args.no_save:
-            store.save(session)
-        if not tool_calls or not with_tools:
-            break
-        rounds += 1
-        if rounds > repl.tools_max_rounds:
-            for call in tool_calls:
-                function = (call.get("function") or {}) if isinstance(call, dict) else {}
-                session.add_message("tool", "not executed: tool-call limit reached",
-                                    tool_name=str(function.get("name") or "?"))
-            break
-        repl._tool_round = rounds
-        repl._execute_tool_calls(tool_calls, quiet=True, allow_prompt=False)
-    console.print(json.dumps(response, indent=2), markup=False, highlight=False)
+        return GenerationResult(content=message.get("content", ""),
+                                thinking=message.get("thinking") or "",
+                                tool_calls=message.get("tool_calls") or [],
+                                stats=stats_from_final(response))
+
+    hooks = repl._turn_hooks(presenter=present_once, allow_prompt=False,
+                             quiet_tools=True)
+    # `--json --format json` never sends tools (the format wins), exactly as
+    # the hand-written loop this replaced did.
+    hooks.settings.tools_enabled = lambda: repl.tools_enabled and not session.format
+    result = AgentRuntime(hooks).run()
+    if result.error:
+        console.print(f"[err]{escape(str(result.error))}[/err]")
+        return 1
+    console.print(json.dumps(final, indent=2), markup=False, highlight=False)
     return 0
 
 
