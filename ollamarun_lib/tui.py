@@ -388,6 +388,9 @@ class TuiStreamSink(StreamSink):
 class TuiUi(Ui):
     """`Ui` implementation backed by the app's modal screens."""
 
+    #: The TUI can always run its modal screens, whatever the terminal says.
+    interactive = True
+
     def __init__(self, app: "OllamarunTui"):
         self.app = app
 

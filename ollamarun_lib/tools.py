@@ -27,13 +27,16 @@ import fnmatch
 import io
 import json
 import os
+import queue
 import re
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 from dataclasses import dataclass, field
@@ -183,6 +186,10 @@ class ToolError(Exception):
     """A tool could not run; the message goes back to the model as-is."""
 
 
+class ToolCancelled(ToolError):
+    """The turn was cancelled while this tool was running."""
+
+
 @dataclass
 class ToolContext:
     """Runtime settings shared by every handler of one session."""
@@ -215,6 +222,10 @@ class ToolContext:
     #: tool sets `optiplex → g3` there); execute_tool() moves it onto the
     #: ToolOutcome, so callers never read this directly.
     title_note: str = ""
+    #: The turn's `CancelToken`, when one exists. Subprocess handlers pass it
+    #: to `run_cancellable()` so a stop kills the child's process group; the
+    #: ToolRunner abandons network calls on it. None outside a turn.
+    cancel: Optional[Any] = None
 
 
 @dataclass
@@ -225,6 +236,9 @@ class ToolOutcome:
     error: Optional[str] = None
     #: Extra title text for the result panel (empty for most tools).
     title_note: str = ""
+    #: True when the turn was stopped while this call was queued or running;
+    #: `text` says whether it was interrupted or abandoned.
+    cancelled: bool = False
 
 
 @dataclass
@@ -1364,9 +1378,9 @@ def _handler_shell(args: dict[str, Any], ctx: ToolContext) -> str:
     timeout = _clamp_timeout(args.get("timeout"), ctx.timeout)
     environment = {**os.environ, "BASH_ENV": os.devnull}
     try:
-        proc = subprocess.run(["bash", "-c", command], cwd=str(cwd),
-                              capture_output=True, text=True, timeout=timeout,
-                              errors="replace", env=environment)
+        proc = run_cancellable(["bash", "-c", command], cwd=str(cwd),
+                               env=environment, timeout=timeout,
+                               cancel=getattr(ctx, "cancel", None))
     except subprocess.TimeoutExpired:
         raise ToolError(f"command timed out after {timeout:.0f}s") from None
     except OSError as exc:
@@ -1380,9 +1394,9 @@ def _handler_python(args: dict[str, Any], ctx: ToolContext) -> str:
         raise ToolError("missing 'code'")
     timeout = _clamp_timeout(args.get("timeout"), ctx.timeout)
     try:
-        proc = subprocess.run([sys.executable, "-I", "-"], input=code,
-                              capture_output=True, text=True, timeout=timeout,
-                              errors="replace", cwd=ctx.cwd)
+        proc = run_cancellable([sys.executable, "-I", "-"], input_text=code,
+                               cwd=ctx.cwd, timeout=timeout,
+                               cancel=getattr(ctx, "cancel", None))
     except subprocess.TimeoutExpired:
         raise ToolError(f"python timed out after {timeout:.0f}s") from None
     except OSError as exc:
@@ -2467,9 +2481,19 @@ def execute_tool(spec: ToolSpec, args: dict[str, Any],
     started = time.monotonic()
     outcome = ToolOutcome()
     ctx.title_note = ""
+    cancel = getattr(ctx, "cancel", None)
+    if cancel is not None and cancel.cancelled:
+        outcome.text = f"{spec.name} not run: the turn was stopped"
+        outcome.error = "cancelled"
+        outcome.cancelled = True
+        return outcome
     try:
         outcome.text = spec.handler(args, ctx)
         outcome.ok = True
+    except ToolCancelled as exc:
+        outcome.text = str(exc)
+        outcome.error = "cancelled"
+        outcome.cancelled = True
     except ToolError as exc:
         outcome.text = str(exc)
         outcome.error = str(exc)
@@ -2485,3 +2509,114 @@ def execute_tool(spec: ToolSpec, args: dict[str, Any],
     outcome.text = truncate_output(outcome.text, ctx.max_output)
     outcome.title_note = ctx.title_note
     return outcome
+
+
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    """Kill a Popen'd command and everything it spawned (never raises)."""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+def run_cancellable(argv: list[str], *, input_text: Optional[str] = None,
+                    cwd: Optional[str] = None, env: Optional[dict[str, str]] = None,
+                    timeout: float = 120.0, cancel: Optional[Any] = None
+                    ) -> subprocess.CompletedProcess:
+    """`subprocess.run()` that a cancel token can actually stop.
+
+    Without a token this is exactly `subprocess.run(...)`. With one, the child
+    runs in its own session and a cancel (or the timeout) kills the whole
+    process group, so a `sleep` or a spawned pipeline does not outlive the
+    turn.
+    """
+    if cancel is None:
+        return subprocess.run(argv, input=input_text, capture_output=True,
+                              text=True, timeout=timeout, errors="replace",
+                              cwd=cwd, env=env)
+    proc = subprocess.Popen(argv,
+                            stdin=subprocess.PIPE if input_text is not None else None,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, errors="replace",
+                            cwd=cwd, env=env, start_new_session=True)
+    if input_text is not None and proc.stdin is not None:
+        try:
+            proc.stdin.write(input_text)
+        except (BrokenPipeError, OSError):
+            pass
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
+        # communicate() would flush a closed stdin and die with "I/O operation
+        # on closed file"; dropping the handle keeps the retry loop below alive.
+        proc.stdin = None
+    deadline = time.monotonic() + max(0.1, timeout)
+    while True:
+        try:
+            stdout, stderr = proc.communicate(timeout=0.1)
+            break
+        except subprocess.TimeoutExpired:
+            if cancel is not None and cancel.cancelled:
+                _kill_process_group(proc)
+                proc.communicate()
+                raise ToolCancelled("cancelled by user; the process was killed")
+            if time.monotonic() >= deadline:
+                _kill_process_group(proc)
+                proc.communicate()
+                raise subprocess.TimeoutExpired(argv, timeout)
+    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+
+
+#: Tools whose handlers block on network I/O. The runner moves them to a
+#: daemon worker so a stopped turn abandons the wait instead of hanging on it;
+#: the result is simply discarded.
+ABANDON_ON_CANCEL = frozenset({"fetch_url", "web_search"})
+
+
+def _cancelled_outcome(name: str) -> ToolOutcome:
+    return ToolOutcome(text=f"{name} cancelled: the turn was stopped; result discarded",
+                       error="cancelled", cancelled=True)
+
+
+class ToolRunner:
+    """Runs one tool call, honouring the turn's cancel token.
+
+    Subprocess tools kill their process group (through `run_cancellable()`);
+    network tools run in a daemon worker and are *abandoned* on cancel -- the
+    work finishes on its own and its result is dropped, nothing waits for it.
+    """
+
+    def __init__(self, poll: float = 0.05) -> None:
+        self.poll = poll
+
+    def run(self, spec: ToolSpec, args: dict[str, Any],
+            ctx: ToolContext) -> ToolOutcome:
+        cancel = getattr(ctx, "cancel", None)
+        if cancel is not None and cancel.cancelled:
+            return _cancelled_outcome(spec.name)
+        if cancel is not None and spec.name in ABANDON_ON_CANCEL:
+            return self._run_abandonable(spec, args, ctx)
+        return execute_tool(spec, args, ctx)
+
+    def _run_abandonable(self, spec: ToolSpec, args: dict[str, Any],
+                         ctx: ToolContext) -> ToolOutcome:
+        box: "queue.Queue[ToolOutcome]" = queue.Queue(maxsize=1)
+
+        def work() -> None:
+            try:
+                box.put(execute_tool(spec, args, ctx))
+            except BaseException:  # pragma: no cover - execute_tool never raises
+                pass
+
+        worker = threading.Thread(target=work, name=f"tool-{spec.name}", daemon=True)
+        worker.start()
+        while True:
+            try:
+                return box.get(timeout=self.poll)
+            except queue.Empty:
+                if ctx.cancel is not None and ctx.cancel.cancelled:
+                    return _cancelled_outcome(spec.name)
