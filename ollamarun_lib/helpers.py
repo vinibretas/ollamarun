@@ -116,6 +116,31 @@ class CommandCancelled(RuntimeError):
     """The user cancelled the turn while this command was running."""
 
 
+class ModelTracker:
+    """The distinct models one `serve` process actually used.
+
+    Unload-on-exit reads this: only models this server touched are
+    unloaded, so a parallel CLI session's model is never evicted.
+    Embedding models are also skipped by the caller (they stay resident by
+    house rule). Thread-safe: both API surfaces note from their workers.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._models: set[str] = set()
+
+    def note(self, model: str) -> None:
+        name = str(model or "").strip()
+        if not name:
+            return
+        with self._lock:
+            self._models.add(name)
+
+    def models(self) -> list[str]:
+        with self._lock:
+            return sorted(self._models)
+
+
 def _kill_process_group(proc: subprocess.Popen) -> None:
     """Kill a Popen'd command and everything it spawned (never raises)."""
     try:

@@ -251,6 +251,45 @@ class _ThreadedServer(ThreadingHTTPServer):
     ping_interval: float
     request_timeout: float
 
+    def __init__(self, address: tuple[str, int],
+                 handler: type[BaseHTTPRequestHandler], **kwargs: Any):
+        super().__init__(address, handler, **kwargs)
+        #: In-flight handler threads: shutdown drains these (bounded).
+        self._active = 0
+        self._active_cv = threading.Condition()
+
+    def process_request_thread(self, request: Any,
+                               client_address: Any) -> None:
+        with self._active_cv:
+            self._active += 1
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            with self._active_cv:
+                self._active -= 1
+                self._active_cv.notify_all()
+
+    @property
+    def active_handlers(self) -> int:
+        with self._active_cv:
+            return self._active
+
+    def drain(self, timeout: float) -> bool:
+        """Wait up to `timeout` seconds for in-flight handlers to finish.
+
+        Returns True when none are left. Handler threads are daemons, so a
+        stalled client (or an idle keep-alive connection) at the deadline
+        never blocks process exit — it just ends the wait.
+        """
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        with self._active_cv:
+            while self._active > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._active_cv.wait(remaining)
+        return True
+
 
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -528,6 +567,14 @@ class HttpServer:
 
     def shutdown(self) -> None:
         self._httpd.shutdown()
+
+    def drain(self, timeout: float) -> bool:
+        """Wait for in-flight handlers (bounded); see `_ThreadedServer.drain`."""
+        return self._httpd.drain(timeout)
+
+    @property
+    def active_handlers(self) -> int:
+        return self._httpd.active_handlers
 
     def close(self) -> None:
         try:
