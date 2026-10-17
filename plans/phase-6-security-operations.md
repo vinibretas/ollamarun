@@ -7,6 +7,9 @@ Network exposure is a privileged control surface. **Locked: LAN-accessible, no a
 - **Tool authorization is not network authorization.** Unauthenticated API access must not silently change the configured tool execution policy. Serve still defaults to `tools_policy=allowlist` even if the CLI config says `auto`; the agent API uses interactive approvals only when the client asks for them; `--yes` is the only auto path.
 - `@file` expansion off; no implicit filesystem references from remote input.
 - Request size caps, message length caps, image/file caps, model parameter ranges, `serve_max_active_turns`, one turn per session, turn/approval/SSE timeouts.
+- Chunked request bodies (`Transfer-Encoding: chunked`) are decoded with the
+  byte cap enforced during the read, replacing the current 411, so proxies
+  and streaming uploaders interoperate.
 - Path jail for artifacts and tool cwd; opaque IDs; no filesystem paths in responses.
 - Sanitized errors; no message content in logs by default; `--debug` opts into detail.
 - `serve_models` allowlist (optional), `serve_agent=false` for a pure inference server.

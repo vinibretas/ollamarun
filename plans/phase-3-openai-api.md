@@ -85,3 +85,49 @@ and cancellation stays explicit.
   `"required"` is rejected explicitly as unsupported. `reasoning_effort`
   maps low/medium/high onto Ollama's `think`; anything else is rejected.
 - **`/v1/embeddings`** is not implemented (the phase marked it optional).
+
+## Post-review fixes (v1.48)
+
+The review of the first landing confirmed six defects; all were fixed with
+regressions before Phase 4, and every remaining non-supported item moved
+into a plan (nothing stays a README "gap"):
+
+- **Malformed messages.** `_messages_from()` inspected
+  `messages[0].get("role")` before validating the element, so a malformed
+  first message plus the `system` extension raised `AttributeError` (500).
+  Every element is validated before any role or field inspection; exact
+  envelopes are pinned in the test matrix.
+- **Error sanitization.** `translate_error()` and the streaming error path
+  returned raw upstream text (backend URLs, internal detail, merely
+  truncated). They now return stable messages/codes — `model_not_found`,
+  `backend_unreachable`, `backend_error` — and log the raw text to the
+  `--debug` log only.
+- **Socket timeout wiring.** `HttpServer(request_timeout=…)` was dead (the
+  handler used its class default). `_Handler.setup()` applies it to the
+  accepted socket. It is a per-operation timeout, not a deadline: a stream
+  that outlives it still completes, a stalled body gets a structured 408.
+- **Strict validation.** `n` must be the integer `1` (not `True`/`1.0`),
+  `include_usage` must be a JSON boolean, `tool_choice` without `tools` is
+  rejected, unknown keys in tool/function/`tool_choice` objects are
+  rejected, `strict: true` tool schemas are rejected as unsupported
+  (`false` is a no-op), and `response_format.json_schema` validates its
+  wrapper (`name`/`description`/`strict`/`schema`; only `schema` is
+  forwarded upstream).
+- **Image cap.** One decoded image is capped at 10 MiB
+  (`413 image_too_large`); the declared media type is accepted and decode
+  support stays with the backend (content validation is Phase 5).
+- **Single-flight caches.** Concurrent cold requests share one upstream
+  model-list/capability fetch instead of stampeding.
+
+Tests added: the malformed-request matrix (exact envelopes), real-socket
+lifecycle (stalled body 408, stream outliving the timeout, shutdown
+mid-stream, two-stream disconnect isolation), cache concurrency, SDK
+negative paths plus the verified `openai.APIError` on a mid-stream backend
+failure, and an opt-in `--live` real-backend smoke test.
+
+Dispositions: chunked request decoding is implemented in
+`phase-6-security-operations.md`; `/v1/embeddings`, `n > 1`,
+`parallel_tool_calls` and remote image URLs are implemented via
+`phase-5-artifacts.md` / `plans/phase-9-compatibility.md`, alongside the
+recorded closures for features the backend cannot provide (`logprobs`,
+`logit_bias`, `audio`, `tool_choice: "required"`, `strict` tool schemas).
