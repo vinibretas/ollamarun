@@ -1,0 +1,15 @@
+{
+  "name": "move_file",
+  "description": "Move or rename a file or directory. Refuses to replace an existing destination unless overwrite is true.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "source": {"type": "string", "description": "what to move"},
+      "destination": {"type": "string", "description": "where to move it"},
+      "overwrite": {"type": "boolean", "description": "replace an existing destination file (default: false)"}
+    },
+    "required": ["source", "destination"]
+  },
+  "handler": "move_file",
+  "aliases": ["move", "rename", "mv"]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "edit_file",
+  "description": "Edit an existing text file by replacing an exact fragment. old_string must match the file exactly and, unless replace_all is true, exactly once — read the file first and copy the text verbatim. Prefer this over write_file for changes; the edit is shown as a diff before it runs.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {"type": "string", "description": "file path"},
+      "old_string": {"type": "string", "description": "the exact text to replace"},
+      "new_string": {"type": "string", "description": "the replacement text"},
+      "replace_all": {"type": "boolean", "description": "replace every occurrence (default: the match must be unique)"}
+    },
+    "required": ["path", "old_string", "new_string"]
+  },
+  "handler": "edit_file",
+  "aliases": ["edit", "patch", "str_replace", "replace_in_file", "apply_edit"]
+}

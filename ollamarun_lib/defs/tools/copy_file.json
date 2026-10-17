@@ -1,0 +1,15 @@
+{
+  "name": "copy_file",
+  "description": "Copy a file or directory. Refuses to replace an existing destination unless overwrite is true.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "source": {"type": "string", "description": "what to copy"},
+      "destination": {"type": "string", "description": "where to copy it"},
+      "overwrite": {"type": "boolean", "description": "replace an existing destination file (default: false)"}
+    },
+    "required": ["source", "destination"]
+  },
+  "handler": "copy_file",
+  "aliases": ["copy", "cp"]
+}

@@ -2,6 +2,18 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.37
+
+Summary of changes in this version:
+  - The model can edit files instead of only rewriting them whole.
+    `edit_file` replaces one exact text fragment (unique match unless
+    `replace_all` is set), writes atomically and keeps the file mode; the
+    call panel shows a coloured diff before the edit is approved. The rest
+    of the file chores get small tools too: `make_dir` (mkdir -p),
+    `move_file`/`copy_file` (refuse an existing destination unless
+    `overwrite=true`) and `delete_file` (trash-put only, never a permanent
+    unlink). Path approval rules cover edit_file/make_dir/delete_file.
+
 Version: 1.36
 
 Summary of changes in this version:

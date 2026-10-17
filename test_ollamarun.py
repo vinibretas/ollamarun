@@ -424,9 +424,11 @@ def test_tool_definitions() -> int:
     defs = orun.tool_definitions()
     names = sorted(definition.name for definition in defs)
     failures = _check(failures, "the shipped tool definitions load",
-                      names == ["fetch_url", "list_dir", "list_voices", "read_file",
-                                "run_python", "run_shell", "speak", "web_search",
-                                "write_file"], str(names))
+                      names == ["copy_file", "delete_file", "edit_file",
+                                "fetch_url", "list_dir", "list_voices",
+                                "make_dir", "move_file", "read_file",
+                                "run_python", "run_shell", "speak",
+                                "web_search", "write_file"], str(names))
     failures = _check(failures, "every definition's handler resolves",
                       all(definition.handler in orun.HANDLERS
                           for definition in defs))
@@ -3888,6 +3890,132 @@ def test_tool_execution() -> int:
     return failures
 
 
+def test_file_tools() -> int:
+    failures = 0
+    registry = orun.default_registry(tts=False)
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = orun.ToolContext(cwd=tmp, timeout=30, max_output=4000)
+        source = Path(tmp) / "notes.txt"
+        source.write_text("alpha\nbeta\ngamma\n")
+
+        # edit_file: unique replacement, in the result and on disk
+        outcome = orun.execute_tool(
+            registry["edit_file"],
+            {"path": str(source), "old_string": "beta", "new_string": "BETA"}, ctx)
+        failures = _check(failures, "edit_file replaces a unique fragment",
+                          outcome.ok and "-beta" in outcome.text
+                          and "+BETA" in outcome.text
+                          and source.read_text() == "alpha\nBETA\ngamma\n", outcome.text)
+
+        # edit_file refuses a missing or ambiguous fragment
+        miss = orun.execute_tool(
+            registry["edit_file"],
+            {"path": str(source), "old_string": "nope", "new_string": "x"}, ctx)
+        failures = _check(failures, "edit_file reports a missing fragment",
+                          not miss.ok and "not found" in miss.text, miss.text)
+        source.write_text("x\nx\n")
+        ambiguous = orun.execute_tool(
+            registry["edit_file"],
+            {"path": str(source), "old_string": "x", "new_string": "y"}, ctx)
+        failures = _check(failures, "edit_file refuses an ambiguous fragment",
+                          not ambiguous.ok and "2 times" in ambiguous.text, ambiguous.text)
+        everything = orun.execute_tool(
+            registry["edit_file"],
+            {"path": str(source), "old_string": "x", "new_string": "y",
+             "replace_all": True}, ctx)
+        failures = _check(failures, "edit_file replace_all replaces every match",
+                          everything.ok and source.read_text() == "y\ny\n",
+                          everything.text)
+
+        # edit_file leaves no temp file behind and keeps the mode
+        leftovers = [entry.name for entry in Path(tmp).iterdir()
+                     if entry.name.endswith(".tmp")]
+        failures = _check(failures, "edit_file leaves no temp file behind",
+                          leftovers == [], str(leftovers))
+
+        # the approval/call panel renders the diff for edit_file
+        with orun.console.capture() as cap:
+            orun.console.print(orun.tool_call_panel(
+                "edit_file", {"path": "a.py", "old_string": "old line",
+                              "new_string": "new line"}))
+        panel = _plain(cap.get())
+        failures = _check(failures, "the edit call panel previews the diff",
+                          "-old line" in panel and "+new line" in panel
+                          and "old_string" not in panel, panel)
+        failures = _check(failures, "call_detail summarizes an edit",
+                          orun.call_detail("edit_file", {"path": "a.py",
+                                                         "old_string": "a\nb",
+                                                         "new_string": "c"})
+                          == "a.py (2 → 1 lines)",
+                          orun.call_detail("edit_file", {"path": "a.py",
+                                                         "old_string": "a\nb",
+                                                         "new_string": "c"}))
+
+        # make_dir creates parents and tolerates an existing directory
+        nested = Path(tmp) / "one" / "two"
+        made = orun.execute_tool(registry["make_dir"], {"path": str(nested)}, ctx)
+        again = orun.execute_tool(registry["make_dir"], {"path": str(nested)}, ctx)
+        failures = _check(failures, "make_dir creates parent directories",
+                          made.ok and nested.is_dir() and "already exists" in again.text,
+                          f"{made.text} / {again.text}")
+
+        # move/copy refuse an existing destination unless overwrite=true
+        target = Path(tmp) / "moved.txt"
+        moved = orun.execute_tool(registry["move_file"],
+                                  {"source": str(source), "destination": str(target)}, ctx)
+        refused = orun.execute_tool(registry["move_file"],
+                                    {"source": str(target), "destination": str(target)}, ctx)
+        failures = _check(failures, "move_file moves and refuses an existing destination",
+                          moved.ok and target.is_file() and not source.exists()
+                          and not refused.ok and "destination exists" in refused.text,
+                          f"{moved.text} / {refused.text}")
+        copied = orun.execute_tool(registry["copy_file"],
+                                   {"source": str(target),
+                                    "destination": str(Path(tmp) / "copy.txt")}, ctx)
+        forced = orun.execute_tool(registry["copy_file"],
+                                   {"source": str(target),
+                                    "destination": str(Path(tmp) / "copy.txt"),
+                                    "overwrite": True}, ctx)
+        failures = _check(failures, "copy_file copies and overwrite=true is accepted",
+                          copied.ok and forced.ok, f"{copied.text} / {forced.text}")
+
+        # delete_file goes through trash-put (a fake one on PATH)
+        bindir = Path(tmp) / "bin"
+        bindir.mkdir()
+        trash = bindir / "trash-put"
+        trash.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$1\" > {tmp}/trashed.txt\n")
+        trash.chmod(0o755)
+        old_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = f"{bindir}{os.pathsep}{old_path}"
+        try:
+            outcome = orun.execute_tool(registry["delete_file"],
+                                        {"path": str(target)}, ctx)
+        finally:
+            os.environ["PATH"] = old_path
+        failures = _check(failures, "delete_file moves the path to the trash",
+                          outcome.ok and "moved to trash" in outcome.text
+                          and (Path(tmp) / "trashed.txt").read_text().strip() == str(target),
+                          outcome.text)
+
+        # path rules cover the new file tools
+        edit_spec = registry["edit_file"]
+        failures = _check(failures, "edit_file is a path-rule tool",
+                          edit_spec.name in orun.PATH_RULE_TOOLS
+                          and "make_dir" in orun.PATH_RULE_TOOLS
+                          and "delete_file" in orun.PATH_RULE_TOOLS)
+        suggestion = orun.suggest_rules(
+            "edit_file", {"path": str(Path(tmp) / "x.py")}, cwd=tmp)
+        failures = _check(failures, "edit_file suggests a path rule",
+                          any(rule.kind == "path" for rule in suggestion),
+                          str(suggestion))
+    failures = _check(failures, "file tools need confirmation under allowlist",
+                      not orun.approval_decision(
+                          registry["edit_file"], {"path": "x", "old_string": "a",
+                                                  "new_string": "b"},
+                          policy="allowlist").allowed)
+    return failures
+
+
 _MINIMAL_PDF = b"""%PDF-1.4
 1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
 2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
@@ -5993,6 +6121,7 @@ if __name__ == "__main__":
              + test_model_command_sort() + test_sort_flag()
              + test_gpu_layers() + test_slash_completer()
              + test_tools_policy() + test_tool_execution() + test_web_tools()
+             + test_file_tools()
              + test_tool_loop() + test_tool_loop_separation()
              + test_tool_commands() + test_approval_rules()
              + test_tool_payloads() + test_tool_cli_flags()

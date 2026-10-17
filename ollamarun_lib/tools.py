@@ -32,6 +32,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 from dataclasses import dataclass, field
@@ -43,7 +44,7 @@ from typing import Any, Callable, Optional
 import requests
 
 from .constants import DEFS_DIR, DEFS_OVERRIDE_DIR, console
-from .helpers import now_iso, short_stamp
+from .helpers import diff_preview, now_iso, short_stamp
 
 FETCH_TIMEOUT = 30.0
 MAX_LIST_ENTRIES = 200
@@ -126,7 +127,8 @@ SHELL_INTERPRETERS = {"sh", "bash", "zsh", "dash", "ksh", "fish",
                       "python", "python3", "node", "perl", "ruby"}
 
 #: Tools whose `path` argument can back a `path` approval rule.
-PATH_RULE_TOOLS = {"read_file", "write_file", "list_dir"}
+PATH_RULE_TOOLS = {"read_file", "write_file", "list_dir", "edit_file",
+                   "make_dir", "delete_file"}
 
 #: `git` subcommands that only read the repository.
 GIT_READONLY = {
@@ -444,6 +446,15 @@ def call_detail(name: str, args: dict[str, Any]) -> str:
         text = f"{args.get('path')} ({len(str(args.get('content') or ''))} chars)"
     elif name in {"read_file", "list_dir"}:
         text = str(args.get("path") or ".")
+    elif name == "edit_file":
+        old = str(args.get("old_string") or "")
+        new = str(args.get("new_string") or "")
+        text = (f"{args.get('path')} ({len(old.splitlines())} → "
+                f"{len(new.splitlines())} lines)")
+    elif name in {"make_dir", "delete_file"}:
+        text = str(args.get("path") or "")
+    elif name in {"move_file", "copy_file"}:
+        text = f"{args.get('source')} → {args.get('destination')}"
     elif name == "fetch_url":
         text = str(args.get("url") or "")
     elif name == "web_search":
@@ -1413,6 +1424,141 @@ def _handler_list_dir(args: dict[str, Any], ctx: ToolContext) -> str:
     return "\n".join(lines)
 
 
+def _handler_edit_file(args: dict[str, Any], ctx: ToolContext) -> str:
+    path = Path(str(args.get("path") or "")).expanduser()
+    old = args.get("old_string")
+    new = args.get("new_string")
+    if not str(path) or str(path) == ".":
+        raise ToolError("missing 'path'")
+    if not isinstance(old, str) or not old:
+        raise ToolError("missing 'old_string' (must be a non-empty exact fragment)")
+    if not isinstance(new, str):
+        raise ToolError("missing 'new_string'")
+    if not path.is_file():
+        raise ToolError(f"not a file: {path}")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ToolError(f"not a utf-8 text file: {path}") from exc
+    except OSError as exc:
+        raise ToolError(f"could not read {path}: {exc}") from exc
+    count = text.count(old)
+    if count == 0:
+        raise ToolError(f"old_string not found in {path} — read the file first and "
+                        f"copy the exact text to replace")
+    replace_all = bool(args.get("replace_all"))
+    if count > 1 and not replace_all:
+        raise ToolError(f"old_string appears {count} times in {path}; include more "
+                        f"surrounding context or pass replace_all=true")
+    updated = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+    try:
+        mode = path.stat().st_mode
+        fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp",
+                                        dir=str(path.parent))
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(updated)
+        os.chmod(tmp_name, mode & 0o7777)
+        os.replace(tmp_name, path)
+    except OSError as exc:
+        raise ToolError(f"could not write {path}: {exc}") from exc
+    replaced = count if replace_all else 1
+    if replaced == 1:
+        first = text[:text.find(old)].count("\n") + 1
+        where = f" at line {first}"
+    else:
+        where = ""
+    diff = diff_preview(old, new, limit=30)
+    result = f"edited {path}: replaced {replaced} occurrence(s){where}"
+    return f"{result}\n{diff}" if diff else result
+
+
+def _handler_make_dir(args: dict[str, Any], ctx: ToolContext) -> str:
+    raw = str(args.get("path") or "").strip()
+    if not raw:
+        raise ToolError("missing 'path'")
+    path = Path(raw).expanduser()
+    if path.is_dir():
+        return f"directory already exists: {path}"
+    if path.exists():
+        raise ToolError(f"a file exists at {path}")
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ToolError(f"could not create {path}: {exc}") from exc
+    return f"created directory {path}"
+
+
+def _transfer_paths(args: dict[str, Any]) -> tuple[Path, Path, bool]:
+    source = str(args.get("source") or "").strip()
+    destination = str(args.get("destination") or "").strip()
+    if not source:
+        raise ToolError("missing 'source'")
+    if not destination:
+        raise ToolError("missing 'destination'")
+    return Path(source).expanduser(), Path(destination).expanduser(), \
+        bool(args.get("overwrite"))
+
+
+def _handler_move_file(args: dict[str, Any], ctx: ToolContext) -> str:
+    source, destination, overwrite = _transfer_paths(args)
+    if not source.exists() and not source.is_symlink():
+        raise ToolError(f"source does not exist: {source}")
+    if destination.exists() or destination.is_symlink():
+        if destination.is_dir():
+            raise ToolError(f"destination is an existing directory: {destination}")
+        if not overwrite:
+            raise ToolError(f"destination exists: {destination} (pass overwrite=true "
+                            f"to replace it)")
+    try:
+        shutil.move(str(source), str(destination))
+    except (OSError, shutil.Error) as exc:
+        raise ToolError(f"could not move {source} to {destination}: {exc}") from exc
+    return f"moved {source} → {destination}"
+
+
+def _handler_copy_file(args: dict[str, Any], ctx: ToolContext) -> str:
+    source, destination, overwrite = _transfer_paths(args)
+    if not source.exists() and not source.is_symlink():
+        raise ToolError(f"source does not exist: {source}")
+    if destination.exists() or destination.is_symlink():
+        if not overwrite:
+            raise ToolError(f"destination exists: {destination} (pass overwrite=true "
+                            f"to replace it)")
+        if destination.is_dir():
+            raise ToolError(f"destination is an existing directory: {destination}")
+    try:
+        if source.is_dir():
+            shutil.copytree(str(source), str(destination))
+        else:
+            shutil.copy2(str(source), str(destination))
+    except (OSError, shutil.Error) as exc:
+        raise ToolError(f"could not copy {source} to {destination}: {exc}") from exc
+    return f"copied {source} → {destination}"
+
+
+def _handler_delete_file(args: dict[str, Any], ctx: ToolContext) -> str:
+    raw = str(args.get("path") or "").strip()
+    if not raw:
+        raise ToolError("missing 'path'")
+    path = Path(raw).expanduser()
+    if not path.exists() and not path.is_symlink():
+        raise ToolError(f"no such file or directory: {path}")
+    trash = shutil.which("trash-put")
+    if not trash:
+        raise ToolError("trash-put not found; refusing to delete without a trash")
+    try:
+        proc = subprocess.run([trash, str(path)], capture_output=True, text=True,
+                              timeout=ctx.timeout)
+    except subprocess.TimeoutExpired:
+        raise ToolError("trash-put timed out") from None
+    except OSError as exc:
+        raise ToolError(f"could not run trash-put: {exc}") from exc
+    if proc.returncode != 0:
+        raise ToolError(f"trash-put failed: "
+                        f"{(proc.stderr or proc.stdout).strip() or 'unknown error'}")
+    return f"moved to trash: {path}"
+
+
 def _handler_fetch_url(args: dict[str, Any], ctx: ToolContext) -> str:
     url = str(args.get("url") or "").strip()
     parsed = urllib.parse.urlsplit(url)
@@ -1644,6 +1790,11 @@ HANDLERS: dict[str, Callable[[dict[str, Any], ToolContext], str]] = {
     "python": _handler_python,
     "read_file": _handler_read_file,
     "write_file": _handler_write_file,
+    "edit_file": _handler_edit_file,
+    "make_dir": _handler_make_dir,
+    "move_file": _handler_move_file,
+    "copy_file": _handler_copy_file,
+    "delete_file": _handler_delete_file,
     "list_dir": _handler_list_dir,
     "web_search": _handler_web_search,
     "fetch_url": _handler_fetch_url,
