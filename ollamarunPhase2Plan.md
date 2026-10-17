@@ -6,13 +6,8 @@ event envelopes** on top of that emission API — still no HTTP server.
 Phase 3 maps this onto `/v1`; Phase 4 exposes the agent endpoints. This
 plan follows the merged API plan
 (`ollamarun-api-layer-merged-plan.md`) and the Phase 1b closure table
-(`ollamarunPhase1bPlan.md`); it can be copied into the repo at
-implementation time.
-
-Workflow (as agreed): fresh worktree off the merged `origin/main`,
-incremental commits with tests, each pushed, then PR → mergeability
-check → merge. The CLI/TUI must keep working; `python3
-test_ollamarun.py` stays green after every commit.
+(`ollamarunPhase1bPlan.md`). The CLI/TUI must keep working and
+`python3 test_ollamarun.py` stays green at every step.
 
 ## Constraints
 
@@ -245,15 +240,12 @@ handle = manager.submit(session_id=repl.session.id, work=work,
 - One active turn per session and the global cap enforced with typed
   errors.
 
-## Commit plan
+## Implementation order
 
 1. `events.py`: `stream.gap` + the `TurnEvent` envelope (exact tests).
 2. `turns.py`: registry, worker, buffers, subscribe/replay, cancel, TTL,
    typed errors (the bulk of the tests).
 3. Context decoration + the three `serve_*` config keys + the end-to-end
    headless closure test.
-4. Version bump 1.45 + changelog entry.
-5. Docs (AGENTS/CLAUDE numbering and notes) and the plan status.
-
-Then: PR → mergeability check (resolve conflicts if any) → merge, same
-as Phase 1b.
+4. Version bump 1.46 + changelog entry.
+5. Docs (AGENTS/CLAUDE numbering and notes).
