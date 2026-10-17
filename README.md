@@ -327,8 +327,9 @@ function), `stream`, `stream_options.include_usage`, and the extension
 `system` (`"auto"` = the built-in default prompt, text = replace it, absent
 = none; a client-sent system message always wins). `user` and `metadata`
 are accepted and ignored (tracking hints), and `parallel_tool_calls` is
-accepted but ignored for now — a `false` still passes through until the
-compatibility phase honors it by returning a single call.
+accepted but ignored for now — it must be a boolean, and a `false` still
+passes through until the compatibility phase honors it by returning a
+single call.
 
 Request validation is strict, and every rejection is a structured error
 rather than a silent ignore: unknown fields anywhere (top level, tools,
@@ -388,7 +389,9 @@ ephemeral). The event stream carries `turn.started`, `message.delta`,
 `turn.cancelled`, each with a deterministic `<turn_id>:<seq>` id — a
 reconnecting client resumes with `Last-Event-ID`, a truncated buffer is
 reported as `stream.gap`, and the turn status endpoint is the recovery path
-afterwards.
+afterwards. A subscription without `?after=`/`Last-Event-ID` is live-only —
+nothing is replayed, so a finished turn yields an empty stream; catching-up
+clients pass `after=0` or read the status snapshot instead.
 
 **Approvals.** `settings.approval` decides who answers:
 

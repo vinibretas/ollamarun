@@ -96,7 +96,7 @@ class TurnRequest:
 
 @dataclass
 class TurnResult:
-    """The terminal summary of a turn (Phase 2 builds the HTTP shape on it)."""
+    """The terminal summary of a turn (the API layer builds the HTTP shape on it)."""
 
     id: str = ""
     session_id: str = ""
