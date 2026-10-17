@@ -30,6 +30,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -37,7 +38,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from .artifacts import ArtifactStore, require_vision, resolve_content_parts
+from .artifacts import (ArtifactStore, InputBudget, input_limits,
+                        require_vision, resolve_content_parts)
 from .client import OllamaError
 from .ctxfit import (CtxCalibrationStore, FitRequest, fit_context,
                      machine_state_for)
@@ -83,7 +85,7 @@ _APPROVAL_ACTIONS = frozenset({"run", "remember", "rule", "auto", "deny"})
 
 #: Fields `PATCH /v1/sessions/{id}` accepts.
 _SESSION_PATCH_FIELDS = frozenset({"title", "model", "system", "tags",
-                                   "num_ctx", "gpu_layers"})
+                                   "num_ctx", "gpu_layers", "parameters"})
 
 
 @dataclass
@@ -142,12 +144,147 @@ def _optional_string(value: Any, name: str) -> str:
     return value
 
 
-def _valid_option(value: Any) -> bool:
-    if isinstance(value, (bool, int, float, str)):
-        return True
+#: Known Ollama options and their ranges: the OpenAI mapper enforces the
+#: same ones where they overlap. An unknown option name is still forwarded
+#: (forward compatibility with new Ollama options) but bounded to
+#: scalars/lists of scalars — never a way around the limits.
+_OPTION_FLOAT_RANGES: dict[str, Any] = {
+    "temperature": (0.0, 2.0),
+    "top_p": (0.0, 1.0),
+    "min_p": (0.0, 1.0),
+    "typical_p": (0.0, 1.0),
+    "tfs_z": (None, None),
+    "repeat_penalty": (None, None),
+    "presence_penalty": (-2.0, 2.0),
+    "frequency_penalty": (-2.0, 2.0),
+    "mirostat_eta": (None, None),
+    "mirostat_tau": (None, None),
+}
+_OPTION_POSITIVE = frozenset({"tfs_z", "repeat_penalty", "mirostat_eta",
+                              "mirostat_tau"})
+_OPTION_INT_MIN: dict[str, Optional[int]] = {
+    "top_k": 0,
+    "repeat_last_n": -1,
+    "seed": None,
+    "num_predict": -1,
+    "num_ctx": 1,
+    "num_gpu": 0,
+    "main_gpu": 0,
+    "num_thread": 1,
+    "num_batch": 1,
+    "num_keep": 0,
+}
+_OPTION_ENUMS: dict[str, frozenset] = {"mirostat": frozenset({0, 1, 2})}
+_OPTION_BOOLS = frozenset({"use_mmap", "use_mlock"})
+_OPTION_STRING_OR_LIST = frozenset({"stop"})
+#: Bounds for one option value (known and unknown alike).
+_OPTION_STRING_MAX = 4096
+_OPTION_LIST_MAX = 64
+_OPTION_DICT_MAX_BYTES = 64 * 1024
+
+
+def _validate_option_float(key: str, value: Any, at: str) -> None:
+    low, high = _OPTION_FLOAT_RANGES[key]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise _invalid(f"{at} must be a number", param=at,
+                       code="unsupported_value")
+    number = float(value)
+    if not math.isfinite(number):
+        raise _invalid(f"{at} must be a finite number", param=at,
+                       code="unsupported_value")
+    if key in _OPTION_POSITIVE and number <= 0:
+        raise _invalid(f"{at} must be > 0", param=at, code="unsupported_value")
+    if low is not None and number < low:
+        raise _invalid(f"{at} must be >= {low:g}", param=at,
+                       code="unsupported_value")
+    if high is not None and number > high:
+        raise _invalid(f"{at} must be <= {high:g}", param=at,
+                       code="unsupported_value")
+
+
+def _validate_option_int(key: str, value: Any, at: str) -> None:
+    minimum = _OPTION_INT_MIN[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise _invalid(f"{at} must be an integer", param=at,
+                       code="unsupported_value")
+    if minimum is not None and value < minimum:
+        raise _invalid(f"{at} must be >= {minimum}", param=at,
+                       code="unsupported_value")
+
+
+def _validate_option_unknown(value: Any, at: str) -> None:
+    if isinstance(value, bool) or isinstance(value, int):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise _invalid(f"{at} must be a finite number", param=at,
+                           code="unsupported_value")
+        return
+    if isinstance(value, str):
+        if len(value) > _OPTION_STRING_MAX:
+            raise _invalid(f"{at} is too long ({_OPTION_STRING_MAX} "
+                           "characters max)", param=at,
+                           code="unsupported_value")
+        return
     if isinstance(value, list):
-        return all(isinstance(item, (bool, int, float, str)) for item in value)
-    return False
+        if len(value) > _OPTION_LIST_MAX:
+            raise _invalid(f"{at} has too many items ({_OPTION_LIST_MAX} max)",
+                           param=at, code="unsupported_value")
+        for item in value:
+            if isinstance(item, (dict, list, tuple)):
+                raise _invalid(f"{at} items must be scalars", param=at,
+                               code="unsupported_value")
+            _validate_option_unknown(item, at)
+        return
+    raise _invalid(f"{at} must be a scalar or a list of scalars", param=at,
+                   code="unsupported_value")
+
+
+def validate_settings_parameters(parameters: dict[str, Any], *,
+                                 where: str = "settings.parameters"
+                                 ) -> dict[str, Any]:
+    """Validate native Ollama options with bounded pass-through.
+
+    Known options get their type and range checked (the same ranges the
+    OpenAI mapper enforces where they overlap); an unknown option name is
+    forwarded for forward compatibility, but bounded to scalars or lists of
+    scalars — strings max 4 KiB, lists max 64 items, the whole object max
+    64 KiB. Non-finite numbers are never valid.
+    """
+    serialized = len(json.dumps(parameters, default=str).encode("utf-8"))
+    if serialized > _OPTION_DICT_MAX_BYTES:
+        raise _invalid(f"{where} is too large "
+                       f"({_OPTION_DICT_MAX_BYTES // 1024} KiB max)",
+                       param=where, code="unsupported_value")
+    for key, value in parameters.items():
+        if not isinstance(key, str) or not key.strip():
+            raise _invalid(f"{where} keys must be non-empty strings",
+                           param=where, code="unsupported_value")
+        at = f"{where}.{key}"
+        if key in _OPTION_BOOLS:
+            if not isinstance(value, bool):
+                raise _invalid(f"{at} must be a boolean", param=at,
+                               code="unsupported_value")
+        elif key in _OPTION_ENUMS:
+            options = _OPTION_ENUMS[key]
+            if isinstance(value, bool) or not isinstance(value, int) \
+                    or value not in options:
+                allowed = "/".join(str(item) for item in sorted(options))
+                raise _invalid(f"{at} must be {allowed}", param=at,
+                               code="unsupported_value")
+        elif key in _OPTION_STRING_OR_LIST:
+            items = [value] if isinstance(value, str) else value
+            if not isinstance(items, list) \
+                    or not all(isinstance(item, str) for item in items):
+                raise _invalid(f"{at} must be a string or a list of strings",
+                               param=at, code="unsupported_value")
+        elif key in _OPTION_FLOAT_RANGES:
+            _validate_option_float(key, value, at)
+        elif key in _OPTION_INT_MIN:
+            _validate_option_int(key, value, at)
+        else:
+            _validate_option_unknown(value, at)
+    return dict(parameters)
 
 
 def _show_data(client: Any, model: str) -> Optional[dict[str, Any]]:
@@ -322,14 +459,8 @@ def parse_agent_turn(body: Any, *, default_max_rounds: int = 8
     if not isinstance(parameters, dict):
         raise _invalid("settings.parameters must be an object",
                        param="settings.parameters")
-    for key, value in parameters.items():
-        if not isinstance(key, str) or not key:
-            raise _invalid("settings.parameters keys must be non-empty strings",
-                           param="settings.parameters")
-        if not _valid_option(value):
-            raise _invalid(
-                f"settings.parameters.{key} must be a scalar or a list of scalars",
-                param=f"settings.parameters.{key}")
+    parameters = validate_settings_parameters(parameters,
+                                              where="settings.parameters")
     cancel_on_disconnect = settings.get("cancel_on_disconnect", False)
     _require_bool(cancel_on_disconnect, "settings.cancel_on_disconnect")
 
@@ -531,6 +662,9 @@ class AgentApi:
             str(item) for item in (self._config.get("tools_shell_allow") or [])
             if item}
         self._cwd = str(cwd or os.getcwd())
+        #: Aggregate resolved-input caps (`serve_max_*`): shared with the
+        #: OpenAI surface through the same budget accounting.
+        self._limits = input_limits(self._config)
         self._lock = threading.Lock()
         self._turns: dict[str, AgentTurnState] = {}
         self._approvals: dict[str, PendingApproval] = {}
@@ -661,10 +795,12 @@ class AgentApi:
         # all decided here, so the client gets a structured 4xx synchronously.
         resolved_messages: list[dict[str, Any]] = []
         has_images = False
+        budget = InputBudget(self._limits)
+        budget.note_messages(len(spec.messages))
         for index, message in enumerate(spec.messages):
             resolved = resolve_content_parts(
                 message.get("content"), where=f"messages[{index}].content",
-                store=self._artifacts)
+                store=self._artifacts, budget=budget)
             payload: dict[str, Any] = {"role": message["role"],
                                        "content": resolved.text}
             if resolved.images:
@@ -1457,6 +1593,8 @@ class AgentApi:
         parameters = body.get("parameters", {})
         if not isinstance(parameters, dict):
             raise _invalid("parameters must be an object", param="parameters")
+        parameters = validate_settings_parameters(parameters,
+                                                  where="parameters")
         client = self._client_factory()
         if model:
             self._ensure_model(client, model)
@@ -1534,6 +1672,14 @@ class AgentApi:
                     or not all(isinstance(tag, str) for tag in tags):
                 raise _invalid("tags must be an array of strings", param="tags")
             session.tags = list(tags)
+        if "parameters" in body:
+            incoming = body["parameters"]
+            if not isinstance(incoming, dict):
+                raise _invalid("parameters must be an object",
+                               param="parameters")
+            incoming = validate_settings_parameters(incoming,
+                                                    where="parameters")
+            session.parameters = {**(session.parameters or {}), **incoming}
         session.touch()
         self._store.save(session)
         return Response.json(session_body(
