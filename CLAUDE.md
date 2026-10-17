@@ -99,7 +99,7 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"1.44"` — keep this
+  constant in `ollamarun_lib/constants.py`, currently `"1.46"` — keep this
   line current when you bump it) and prepend a new bullet list under
   `Summary of changes in this version:` in the top-level `ollamarun` entry
   script's module docstring — read the existing entries there before adding
@@ -330,7 +330,18 @@ a module's own docstring for what lives there before editing:
    terminal at all. The runtime owns the tool-support capability check
    (once per model, after `turn.started`, warned as a `turn.warning`), and
    `quiet_tools` is read live so `/render raw` mid-turn takes effect.
-17. **`repl.py`** — `SlashCompleter`/`completion_candidates` (completion for
+17. **`turns.py`** — the turn manager: `TurnEvent` envelopes (turn id,
+   1-based `seq`, ISO timestamp, deterministic `id`), `TurnManager`
+   (a worker thread per turn, one active turn per session, a global
+   cap, per-turn buffers, replay with `stream.gap`, TTL retention,
+   cancellation, shutdown), `TurnHandle`/`Subscription`/
+   `TurnSnapshot`, and the typed errors (`SessionBusy`/`TooManyTurns`/
+   `UnknownTurn`/`TurnExpired`) the HTTP layer maps to 409/429/404/410.
+   It imports no front end: a host closure runs the runtime and
+   returns a `TurnResult`; `wait()` joins a worker for tests and
+   shutdown, and a subscriber that falls behind is closed, never
+   stalling the turn.
+18. **`repl.py`** — `SlashCompleter`/`completion_candidates` (completion for
    `/commands`, session ids, models, `@files`, shared with the TUI input),
    the `Repl` class (the CLI adapter over `runtime.AgentRuntime`:
    `_generate` and `_execute_tool_calls` are thin wrappers that build the
@@ -383,7 +394,7 @@ a module's own docstring for what lives there before editing:
    `cmd_num_ctx` are their only callers (`resolve_num_ctx` is reused by
    `main()` in `cli.py` for `--num-ctx`). `ApprovalPicker` and its runners are
    re-exported from `ui.py` for compatibility.
-18. **`tui.py`** — the optional Textual front end (`--ui tui`): the app
+19. **`tui.py`** — the optional Textual front end (`--ui tui`): the app
    (transcript pane / rule / status bar / always-on `PromptInput`),
    `TuiStreamSink` (the `StreamSink` that paints the streaming answer),
    `TranscriptWriter` (a file-like sink capturing everything printed through
@@ -393,11 +404,11 @@ a module's own docstring for what lives there before editing:
    workers that marshal widget updates back with `call_from_thread`;
    `run_tui()` is the entry point. Textual is optional — `cli.py`'s
    `wants_tui()` checks it and falls back to the inline REPL with a note.
-19. **`run.py`** — `run_once()` (non-REPL path, built on an
+20. **`run.py`** — `run_once()` (non-REPL path, built on an
    already-constructed `Repl`; its `--json` branch runs the tool loop
    through `AgentRuntime` directly) and `run_embed()` (routes
    embedding-capable models to `/api/embed` instead of chat).
-20. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
+21. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
    every `ollama run` flag), `resolve_model`/`resolve_session` (figuring out
    what model/session a given invocation means, including the `-c`/`-r`/
    `--session` disambiguation in `normalize_argv`), `ui_mode()`/`wants_tui()`
@@ -484,4 +495,12 @@ contract and the 3.10 syntax guard. The audit guards
 pin the event vocabulary/serialization and terminal-event contract, the
 approval order with its interrupt/stopped paths, the cancel token actually
 reaching a production turn's tool, the store flock gating another process,
-and the destructive-tool refusal after a stop.
+and the destructive-tool refusal after a stop. The Phase 2 tests
+(`test_turn_event_envelope`, `test_turn_manager_lifecycle`,
+`test_turn_manager_synthesized_terminal`, `test_turn_buffer_truncation`,
+`test_turn_expired`, `test_turn_manager_session_busy`,
+`test_turn_manager_max_active`, `test_turn_manager_cancel`,
+`test_turn_subscriber_overflow`, `test_turn_manager_shutdown`,
+`test_turn_manager_context`, `test_turn_manager_headless_turn`) cover
+envelopes, lifecycle, replay/gap/truncation, session exclusivity, the
+active cap, cancellation, overflow and shutdown.

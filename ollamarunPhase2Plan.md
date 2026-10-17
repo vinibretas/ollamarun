@@ -14,6 +14,15 @@ incremental commits with tests, each pushed, then PR → mergeability
 check → merge. The CLI/TUI must keep working; `python3
 test_ollamarun.py` stays green after every commit.
 
+## Status
+
+All Phase 2 work landed on branch `phase-2-event-model`, one commit
+per concern, and is green. Mid-branch the Phase 1 cancel-wiring fix
+landed on `main` as version 1.45 (PRs #23/#24); the branch was rebased
+onto it and its own bump renumbered to 1.46, so `main` keeps its 1.45
+entry. The PR is open; the merge waits for the user's explicit
+go-ahead (this round does not merge on its own).
+
 ## Constraints
 
 - **No TUI/Textual work in this plan.** The `--ui tui` front end is
@@ -252,7 +261,8 @@ handle = manager.submit(session_id=repl.session.id, work=work,
    typed errors (the bulk of the tests).
 3. Context decoration + the three `serve_*` config keys + the end-to-end
    headless closure test.
-4. Version bump 1.45 + changelog entry.
+4. Version bump 1.46 + changelog entry (Phase 1's 1.45 fix
+   landed mid-branch; the renumber keeps both entries).
 5. Docs (AGENTS/CLAUDE numbering and notes) and the plan status.
 
 Then: PR → mergeability check (resolve conflicts if any) → **stop and
