@@ -124,7 +124,7 @@ except ImportError:  # pragma: no cover - fallback path
     TEXTUAL_VERSION = ""
     TextualApp = None
 
-VERSION = "1.55"
+VERSION = "1.56"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -150,6 +150,20 @@ DEFAULT_TIMEOUT = 600
 #: authentication is the locked contract; `--bind` narrows it.
 DEFAULT_SERVE_BIND = "0.0.0.0"
 DEFAULT_SERVE_PORT = 11440
+#: `ollamarun serve` transport and input limits (`helpers.serve_settings`):
+#: the body cap bounds the JSON request; the aggregate input caps bound what
+#: resolving content parts (remote images, artifact inlines) may produce on
+#: top of it. All are validated at startup — see the README matrix.
+DEFAULT_SERVE_BODY_LIMIT = 32 * 1024 * 1024
+DEFAULT_SERVE_REQUEST_TIMEOUT = 30.0
+DEFAULT_SERVE_PING_INTERVAL = 15.0
+DEFAULT_SERVE_SHUTDOWN_TIMEOUT = 10.0
+DEFAULT_SERVE_MAX_MESSAGES = 16384
+DEFAULT_SERVE_MAX_CONTENT_PARTS = 4096
+DEFAULT_SERVE_MAX_MESSAGE_BYTES = 8 * 1024 * 1024
+DEFAULT_SERVE_MAX_TEXT_BYTES = 32 * 1024 * 1024
+DEFAULT_SERVE_MAX_IMAGES = 64
+DEFAULT_SERVE_MAX_IMAGE_BYTES = 64 * 1024 * 1024
 #: Artifacts (`artifacts.py`): one snapshot cap, one store quota and one
 #: retention TTL. The per-file cap must fit base64-in-JSON under the
 #: request body cap (32 MiB), which leaves ~24 MiB of binary headroom.
@@ -321,9 +335,30 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "serve_turn_event_buffer": 10000,
     "serve_turn_event_ttl": 86400,
     # `ollamarun serve`: the API listener (LAN, no authentication; the
-    # trusted-network boundary is the bind address).
+    # trusted-network boundary is the bind address). `serve_agent` switches
+    # the native agent routes; `serve_models` is an optional fnmatch
+    # allowlist ([] = every installed model); `serve_workspace` jails the
+    # API tool context to a directory (unset = the startup cwd).
     "serve_bind": DEFAULT_SERVE_BIND,
     "serve_port": DEFAULT_SERVE_PORT,
+    "serve_agent": True,
+    "serve_models": [],
+    "serve_workspace": None,
+    # Transport (`server.py`) and aggregate input limits (`artifacts.py`).
+    # `helpers.serve_settings()` validates every serve key at startup: an
+    # omitted (null) key uses the default, a provided value is validated,
+    # and a zero only means what the key defines (see the README matrix).
+    "serve_body_limit": DEFAULT_SERVE_BODY_LIMIT,
+    "serve_request_timeout": DEFAULT_SERVE_REQUEST_TIMEOUT,
+    "serve_sse_ping_interval": DEFAULT_SERVE_PING_INTERVAL,
+    "serve_shutdown_timeout": DEFAULT_SERVE_SHUTDOWN_TIMEOUT,
+    "serve_unload_on_exit": True,
+    "serve_max_messages": DEFAULT_SERVE_MAX_MESSAGES,
+    "serve_max_content_parts": DEFAULT_SERVE_MAX_CONTENT_PARTS,
+    "serve_max_message_bytes": DEFAULT_SERVE_MAX_MESSAGE_BYTES,
+    "serve_max_text_bytes": DEFAULT_SERVE_MAX_TEXT_BYTES,
+    "serve_max_images": DEFAULT_SERVE_MAX_IMAGES,
+    "serve_max_image_bytes": DEFAULT_SERVE_MAX_IMAGE_BYTES,
     # Native agent turns (`agent_api.py`): how long an interactive approval
     # may stay pending before it resolves as denied, and a wall-clock cap on
     # one turn (0 = no cap).

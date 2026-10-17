@@ -288,7 +288,7 @@ separate from the upstream `--host` / `--remote`, which pick the Ollama
 machine:
 
 ```console
-$ ollamarun serve [--bind IP] [--port N] [--host HOST | --remote NAME]
+$ ollamarun serve [--bind IP] [--port N] [--host HOST | --remote NAME] [--keep-loaded]
 ```
 
 | Endpoint | What it does |
@@ -357,6 +357,33 @@ before parsing, and responses never carry tracebacks or internal paths —
 `--debug` logs requests, upstream detail and tracebacks to
 `~/etc/logs/ollamarun.log`.
 
+**Limits.** The JSON body cap is `serve_body_limit` (default 32 MiB), and
+it applies to `Content-Length` and chunked bodies alike: a chunked upload
+is decoded with the cumulative decoded size checked before each chunk is
+read, `Transfer-Encoding` together with `Content-Length` is an ambiguity
+error, and malformed framing (bad sizes, missing CRLF, truncation, a
+missing terminal chunk, a non-chunked coding) is a structured 400.
+Resolving content parts is bounded separately, because a small body can
+name many large inputs: `serve_max_messages`, `serve_max_content_parts`,
+`serve_max_message_bytes`, `serve_max_text_bytes`, `serve_max_images` and
+`serve_max_image_bytes` (cumulative after resolving data URIs, remote
+fetches and file inlines; counts fail before any fetch). Violations are
+`413 input_too_large` naming the limit.
+`serve_request_timeout` (default 30 s) is a per-operation socket timeout —
+a streaming response that keeps writing (heartbeats included) is never cut
+off by it — and `serve_sse_ping_interval` (default 15 s) is the SSE
+heartbeat.
+
+**Model allowlist.** `serve_models` (default: empty) restricts which
+models the API exposes and accepts: names or fnmatch patterns matched
+against the installed models after tag normalization (`qwen3` matches
+`qwen3:latest`; `qwen3*` matches every tag). The list applies everywhere a
+model is selected, listed or used — the model list, lookup, chat
+completions, session creation and model edits, agent turns (a stored
+session whose model fell out of the list is refused before it runs) and
+the fit endpoints — and a model outside it answers exactly like an unknown
+one (`404 model_not_found`).
+
 ## Agent API (turns, events, approvals, sessions)
 
 The same `ollamarun serve` process also exposes ollamarun's own endpoints:
@@ -378,7 +405,7 @@ follows it over Server-Sent Events.
 | `POST` `/v1/agent/fits` | start an asynchronous probe job (202 + warnings) |
 | `GET /v1/agent/fits/{id}` / `POST .../cancel` | job status, progress and result / cancel |
 | `GET`/`POST /v1/sessions` | list / create sessions |
-| `GET`/`PATCH`/`DELETE /v1/sessions/{id}` | inspect, edit (title/model/system/tags/`num_ctx`/`gpu_layers`) or trash a session; edits and deletes are refused (409 `session_busy`) while a turn or fit runs |
+| `GET`/`PATCH`/`DELETE /v1/sessions/{id}` | inspect, edit (title/model/system/tags/parameters/`num_ctx`/`gpu_layers`) or trash a session; edits and deletes are refused (409 `session_busy`) while a turn or fit runs |
 
 ```json
 POST /v1/agent/turns
@@ -397,7 +424,12 @@ POST /v1/agent/turns
 
 For an existing session (`session_id`) the messages are the delta; for a new
 one they seed the history. Turns persist by default (`persist: false` runs
-ephemeral). The event stream carries `turn.started`, `message.delta`,
+ephemeral). `settings.parameters` — and the sessions' `parameters` field,
+including the PATCH merge — is validated: known Ollama options get their
+type and range checked (the same ranges the OpenAI mapper enforces),
+unknown names pass through but are bounded to scalars and small lists with
+size caps, and non-finite numbers or nested structures are refused with a
+400. The event stream carries `turn.started`, `message.delta`,
 `tool.call`/`tool.result`, `approval.required`/`approval.resolved`,
 `turn.warning` and the terminal `turn.completed`/`turn.error`/
 `turn.cancelled`, each with a deterministic `<turn_id>:<seq>` id — a
@@ -427,7 +459,29 @@ unsubscribe — the turn keeps running (its results land in the session)
 unless it asked for `"cancel_on_disconnect": true`. `POST .../cancel`
 cancels explicitly: it aborts the in-flight generation, kills cancellable
 subprocesses, resolves a waiting approval as cancelled and persists the
-terminal state; a shutdown does the same for every active turn.
+terminal state. Shutdown is an ordered lifecycle: the listener stops
+accepting, new turns and fits are refused (`503 server_shutting_down`),
+parked approvals resolve as cancelled, in-flight HTTP handlers drain
+within `serve_shutdown_timeout`, and `serve_unload_on_exit` (default true)
+unloads only the models this server actually used — embedding models stay
+resident and a parallel CLI session's models are never touched
+(`--keep-loaded` disables it).
+
+**Tool workspace.** Serve runs its tool context jailed to
+`serve_workspace` (default: the directory serve started in, printed in the
+banner): relative paths in the file tools resolve under it, resolved
+escapes — symlinks included — are refused, and the `run_shell`/`run_python`
+working directories follow the same rule. This is an argument and
+default-working-directory policy, **not** subprocess confinement: an
+approved command can still reach whatever the process user can. The CLI
+keeps its previous behavior.
+
+**Feature switches.** `serve_agent: false` runs the process as an
+inference server: the native routes (turns, approvals, sessions, fits) are
+not registered at all (404), while models, chat completions and the
+`/v1/files` + `/v1/artifacts/*` endpoints keep serving — the OpenAI
+surface can still send `file` parts. One model policy applies to every
+route: see `serve_models` above.
 
 Turn records live in memory — a restart loses live turns (404/410), while
 session history stays under `~/etc/data/ollamarun/sessions/`. One active
@@ -451,7 +505,10 @@ agent-turn content arrays and in OpenAI messages alike; a missing or
 expired id is a structured `404 artifact_not_found` before inference.
 Artifacts are **immutable snapshots** (the hash and size come from the
 stored bytes), live under `~/etc/data/ollamarun/artifacts/` (opaque ids,
-index-driven lookup, sanitized display names only) and expire after
+index-driven lookup, sanitized display names only, and a resolved-root
+containment invariant: every index/manifest path must resolve inside the
+store root, so a symlinked directory under it can never redirect a read or
+a sweep) and expire after
 config `serve_artifact_ttl` (default 7 days; the sweep also reaps stale
 reservations and debris at startup). The per-file cap is
 `serve_artifact_max_bytes` (default 16 MiB — the base64-in-JSON request
@@ -600,13 +657,42 @@ Selected config keys: `render`, `math`, `thinking`, `ui`, `show_stats`,
 `tps_footer`, `max_render_chars`, `pager`, `auto_title`, `auto_compact`,
 `image_storage`, `max_file_kb`, `options`, `unload_on_exit`, `gpu_layers`,
 `tools*`, `tool_colors`, `tts*`, `chem_*`, `remote*`, `max_gpu_*`,
-`max_cpu_*`, `serve_bind`, `serve_port`, `serve_approval_timeout`,
-`serve_turn_timeout`, `serve_artifact_*` (`root`, `max_bytes`,
-`quota_bytes`, `ttl`), `serve_fit*` (`serve_fit`, `serve_max_active_fits`,
-`serve_fit_ttl`), `timeout`, plus the turn-manager keys
-(`serve_max_active_turns`, `serve_turn_event_buffer`, `serve_turn_event_ttl`)
-for the agent endpoints. See `DEFAULT_CONFIG` in
-`ollamarun_lib/constants.py` for the full set.
+`max_cpu_*`, `timeout`, plus the `serve_*` matrix below. See
+`DEFAULT_CONFIG` in `ollamarun_lib/constants.py` for the full set.
+
+`ollamarun serve` validates every `serve_*` key at startup: an invalid
+value names itself and exits 2, an omitted key uses the default, and a `0`
+means exactly what the row says.
+
+| Key | Default | Meaning / zero |
+| --- | --- | --- |
+| `serve_bind`, `serve_port` | `0.0.0.0`, 11440 | listener; port 0 = ephemeral |
+| `serve_agent` | `true` | native agent routes; `false` = inference + files only |
+| `serve_models` | `[]` | allowlist names/globs; empty = every model |
+| `serve_workspace` | startup cwd | tool path-jail root |
+| `serve_body_limit` | 32 MiB | request body cap (chunked included) |
+| `serve_request_timeout` | 30 s | per-operation socket timeout |
+| `serve_sse_ping_interval` | 15 s | SSE heartbeat |
+| `serve_shutdown_timeout` | 10 s | bounds each shutdown stage |
+| `serve_unload_on_exit` | `true` | unload the used models on exit |
+| `serve_max_messages` | 16384 | messages per request |
+| `serve_max_content_parts` | 4096 | content parts per request |
+| `serve_max_message_bytes` | 8 MiB | one message's UTF-8 bytes |
+| `serve_max_text_bytes` | 32 MiB | total resolved text per request |
+| `serve_max_images` | 64 | images per request |
+| `serve_max_image_bytes` | 64 MiB | cumulative decoded image bytes |
+| `serve_max_active_turns` | 4 | concurrent turns (429 past it) |
+| `serve_turn_event_buffer` | 10000 | per-turn event ring |
+| `serve_turn_event_ttl` | 86400 s | completed-turn retention; 0 = keep |
+| `serve_approval_timeout` | 300 s | parked approval deadline; 0 = wait forever |
+| `serve_turn_timeout` | 0 | wall-clock turn cap; 0 = no cap |
+| `serve_artifact_root` | `~/etc/data/ollamarun/artifacts/` | store root |
+| `serve_artifact_max_bytes` | 16 MiB | per-file cap; 0 = unlimited |
+| `serve_artifact_quota_bytes` | 2 GiB | store quota; 0 = unlimited |
+| `serve_artifact_ttl` | 7 days | retention; 0 = keep forever |
+| `serve_fit` | `probe` | `off` / `estimate` / `probe` |
+| `serve_max_active_fits` | 2 | concurrent fits (429 past it) |
+| `serve_fit_ttl` | 86400 s | completed-fit retention; 0 = keep |
 
 ## Layout
 

@@ -30,14 +30,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Optional, Union
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from .constants import VERSION
+from .constants import (VERSION, DEFAULT_SERVE_BODY_LIMIT,
+                        DEFAULT_SERVE_PING_INTERVAL,
+                        DEFAULT_SERVE_REQUEST_TIMEOUT)
 
 #: Cap on one request body, checked before the body is read.
-DEFAULT_BODY_LIMIT = 32 * 1024 * 1024
+DEFAULT_BODY_LIMIT = DEFAULT_SERVE_BODY_LIMIT
 #: How long an SSE stream may stay silent before a `: ping` comment goes out.
-DEFAULT_PING_INTERVAL = 15.0
+DEFAULT_PING_INTERVAL = DEFAULT_SERVE_PING_INTERVAL
 #: Socket timeout for one request (a stalled client is dropped, not queued).
-DEFAULT_REQUEST_TIMEOUT = 30.0
+DEFAULT_REQUEST_TIMEOUT = DEFAULT_SERVE_REQUEST_TIMEOUT
 
 logger = logging.getLogger("ollamarun.server")
 
@@ -249,6 +251,45 @@ class _ThreadedServer(ThreadingHTTPServer):
     ping_interval: float
     request_timeout: float
 
+    def __init__(self, address: tuple[str, int],
+                 handler: type[BaseHTTPRequestHandler], **kwargs: Any):
+        super().__init__(address, handler, **kwargs)
+        #: In-flight handler threads: shutdown drains these (bounded).
+        self._active = 0
+        self._active_cv = threading.Condition()
+
+    def process_request_thread(self, request: Any,
+                               client_address: Any) -> None:
+        with self._active_cv:
+            self._active += 1
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            with self._active_cv:
+                self._active -= 1
+                self._active_cv.notify_all()
+
+    @property
+    def active_handlers(self) -> int:
+        with self._active_cv:
+            return self._active
+
+    def drain(self, timeout: float) -> bool:
+        """Wait up to `timeout` seconds for in-flight handlers to finish.
+
+        Returns True when none are left. Handler threads are daemons, so a
+        stalled client (or an idle keep-alive connection) at the deadline
+        never blocks process exit — it just ends the wait.
+        """
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        with self._active_cv:
+            while self._active > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._active_cv.wait(remaining)
+        return True
+
 
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -342,11 +383,22 @@ class _Handler(BaseHTTPRequestHandler):
                                code="invalid_json")
         return request
 
+    _CHUNK_HEX = b"0123456789abcdefABCDEF"
+
     def _read_body(self) -> bytes:
-        transfer = (self.headers.get("Transfer-Encoding") or "").lower()
-        if "chunked" in transfer:
-            raise ApiError(411, "chunked request bodies are not supported",
-                           code="length_required")
+        raw_transfer = (self.headers.get("Transfer-Encoding") or "").strip()
+        if raw_transfer:
+            codings = [coding.strip().lower()
+                       for coding in raw_transfer.split(",") if coding.strip()]
+            if codings != ["chunked"]:
+                raise ApiError(400,
+                               f"unsupported Transfer-Encoding: {raw_transfer}",
+                               code="unsupported_value")
+            if self.headers.get("Content-Length") is not None:
+                raise ApiError(
+                    400, "ambiguous framing: both Transfer-Encoding and "
+                         "Content-Length are present", code="invalid_header")
+            return self._read_chunked_body()
         raw_length = self.headers.get("Content-Length")
         if raw_length is None:
             return b""
@@ -370,6 +422,58 @@ class _Handler(BaseHTTPRequestHandler):
                            code="invalid_body")
         return data
 
+    def _read_chunk_line(self, what: str) -> bytes:
+        line = self.rfile.readline(8192)
+        if not line.endswith(b"\n"):
+            raise ApiError(400, f"malformed chunked body ({what})",
+                           code="invalid_body")
+        return line.rstrip(b"\r\n")
+
+    def _read_chunked_body(self) -> bytes:
+        """Decode `Transfer-Encoding: chunked` under the same body cap.
+
+        The cap applies to the cumulative decoded size and is enforced
+        before each chunk is read, so an oversized upload is rejected
+        without buffering it. Malformed framing fails predictably: the
+        connection closes with the error (`_send_json_error`), so leftover
+        bytes can never be parsed as the next request.
+        """
+        limit = self.server.body_limit
+        data = bytearray()
+        while True:
+            size_text = self._read_chunk_line("chunk size").split(b";", 1)[0]
+            size_text = size_text.strip()
+            if not size_text or any(byte not in self._CHUNK_HEX
+                                    for byte in size_text):
+                raise ApiError(400, "malformed chunked body (invalid chunk size)",
+                               code="invalid_body")
+            size = int(size_text, 16)
+            if size == 0:
+                break
+            if len(data) + size > limit:
+                raise ApiError(413, f"request body exceeds the {limit} byte "
+                                    "limit", code="body_too_large")
+            chunk = self.rfile.read(size)
+            if len(chunk) < size:
+                raise ApiError(400, "request body was truncated",
+                               code="invalid_body")
+            data.extend(chunk)
+            if self.rfile.read(2) != b"\r\n":
+                raise ApiError(400, "malformed chunked body (missing CRLF)",
+                               code="invalid_body")
+        # Trailers are drained to the blank line, bounded and ignored.
+        trailer_bytes = 0
+        while True:
+            trailer = self._read_chunk_line("trailer")
+            if not trailer:
+                break
+            trailer_bytes += len(trailer)
+            if trailer_bytes > 8192:
+                raise ApiError(400, "malformed chunked body "
+                                    "(oversized trailers)",
+                               code="invalid_body")
+        return bytes(data)
+
     def _send(self, response: Response, request: Optional[Request] = None) -> None:
         self.send_response(response.status)
         self.send_header("Content-Type", response.media_type)
@@ -386,7 +490,11 @@ class _Handler(BaseHTTPRequestHandler):
         # The request body may not have been read (oversize, truncated, ...):
         # close the connection instead of parsing leftover bytes as a request.
         self.close_connection = True
-        self._send(Response.json(error.to_dict(), status=error.status), request)
+        try:
+            self._send(Response.json(error.to_dict(), status=error.status),
+                       request)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # the client vanished; there is nobody to tell
 
     def _send_stream(self, request: Request, stream: StreamResponse) -> None:
         self.close_connection = True
@@ -459,6 +567,14 @@ class HttpServer:
 
     def shutdown(self) -> None:
         self._httpd.shutdown()
+
+    def drain(self, timeout: float) -> bool:
+        """Wait for in-flight handlers (bounded); see `_ThreadedServer.drain`."""
+        return self._httpd.drain(timeout)
+
+    @property
+    def active_handlers(self) -> int:
+        return self._httpd.active_handlers
 
     def close(self) -> None:
         try:
