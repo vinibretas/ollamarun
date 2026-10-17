@@ -72,3 +72,58 @@ session inside its own process. The initial contract is
 single-writer: a persistent session must not be actively modified by
 the CLI and the API at the same time. Shared cross-process session
 locking is a later upgrade; distributed coordination is out of scope.
+
+## Recorded implementation decisions
+
+- **The headless `Repl` is the seam.** A turn builds a headless `Repl`
+  (a default CLI-args namespace) with its `cancel_token`/`tool_ctx.cancel`
+  rewired to the turn's token and `tools_enabled`/`tools_max_rounds`/
+  `no_save` from the request, then runs `AgentRuntime` through
+  `TurnManager`. `hooks.execute_tools` is cleared so the runtime's own
+  tool execution carries the API approver and event sink into every round
+  (Repl's wrapper would rebuild hooks without them).
+- **Turn request:** `settings.approval` defaults to `"policy"`;
+  `"interactive"` is the client's explicit opt-in. The serve tool policy
+  is never `auto` (a config `auto` degrades to allowlist) and `--yes`
+  stays the only CLI auto path. Messages are the delta for an existing
+  session and the seed for a new one; `model`/`system`/`parameters` are
+  session mutations (persisted), while `tools`/`max_rounds`/`approval`/
+  `cancel_on_disconnect` are per-turn.
+- **Approvals:** parking lives in `agent_api` (`PendingApproval` +
+  `_first_decision`, first wins) with the wait loop inside the worker;
+  the manager's new `mark_waiting_approval()` publishes
+  `waiting_approval` (and unparking happens before the next event). A
+  resolution reuses the CLI's session mutations (`tool_allow`,
+  `tool_rules`); `auto` is scoped to the rest of that turn. The timeout
+  (`serve_approval_timeout`, default 300 s, 0 = none) resolves as
+  `action: "timeout"`, note "approval timed out", and cancellation as
+  `action: "cancelled"`.
+- **Cancellation/timeout:** `CancelToken.reason` (new) carries why and
+  the runtime reports it on `turn.cancelled`. `POST .../cancel` and the
+  `serve_turn_timeout` watchdog (0 = disabled) set the reason, call
+  `abort_stream()` and resolve pending approvals as cancelled.
+- **Registration and lifecycle:** one router serves both surfaces
+  (`add_agent_routes()` appends to `openai_api.build_router()`'s);
+  `serve_main()` shuts the agent API down after `run_forever` (pending
+  approvals → cancelled, then manager shutdown). `TurnManager.expired()`
+  distinguishes 410 from 404. Session CRUD goes through `SessionStore`
+  (delete = trash-put; a failed trash is a sanitized 500), and a session
+  with an active turn cannot be deleted (409).
+- **Phase 1b item 13 closed:** the context warning is emitted as a
+  `turn.warning` event and `auto_compact: "auto"` compacts before the
+  first round, through the new `TurnHooks.on_started` hook;
+  `Repl.context_warning()`/`maybe_auto_compact()`/`summarize()` are now
+  headless-safe while the CLI prints exactly as before.
+- **Auth and limits:** the endpoints ride the locked LAN/no-auth
+  contract. `serve_agent`, the `serve_models` allowlist and the other
+  Phase 6 policy keys stay for Phase 6.
+
+## Acceptance evidence
+
+`test_agent_turn_lifecycle`, `test_agent_turn_controls`,
+`test_agent_approvals`, `test_agent_approval_edge`, `test_agent_policy_mode`,
+`test_agent_disconnect_policy`, `test_agent_turn_timeout`,
+`test_agent_sessions_api`, `test_agent_turn_validation`,
+`test_agent_turn_expiry`, `test_agent_context_warning`; live-checked
+against Ollama 0.40 with a real policy-mode turn, an interactive
+park/resolve, event replay and session cleanup.

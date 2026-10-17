@@ -29,8 +29,8 @@ Phase index
 | 1 | done | `plans/done/ollamarunPhase1bPlan.md` (closure table) | Runtime inspection and isolation: `AgentRuntime`, typed event vocabulary, terminal/safety contracts, headless turn |
 | 1b | done | `plans/done/ollamarunPhase1bPlan.md` | Rails: runtime-owned tool-support check, live `quiet_tools`, full cancellation coverage, cross-process store lock, `@file` fix, 3.10 syntax guard |
 | 2 | done | `plans/done/ollamarunPhase2Plan.md` | Event envelopes (`TurnEvent`) and the turn manager: workers, replay/`stream.gap`, retention, cancellation, `SessionBusy`/`TooManyTurns`/`TurnExpired` |
-| 3 | current | `plans/phase-3-openai-api.md` | OpenAI-compatible surface: `GET /v1/models`, `GET /v1/models/{id}`, `POST /v1/chat/completions` (stream + non-stream), security baseline, `ollamarun serve` |
-| 4 | pending | `plans/phase-4-agent-api.md` | Native agent endpoints: turns, events, cancellation, approvals, sessions, turn status/recovery |
+| 3 | done | `plans/phase-3-openai-api.md` | OpenAI-compatible surface: `GET /v1/models`, `GET /v1/models/{id}`, `POST /v1/chat/completions` (stream + non-stream), security baseline, `ollamarun serve` |
+| 4 | current | `plans/phase-4-agent-api.md` | Native agent endpoints: turns, events, cancellation, approvals, sessions, turn status/recovery |
 | 5 | pending | `plans/phase-5-artifacts.md` | File/image input and artifact output with provenance, storage and retrieval |
 | 6 | pending | `plans/phase-6-security-operations.md` | Operational hardening: caps, timeouts, path jails, signal handling, `serve_*` policy keys, chunked request decoding |
 | 7 | pending | `plans/phase-7-testing.md` | Runtime/lifecycle/HTTP/artifact/compatibility test coverage; OpenAI SDK round-trip |
