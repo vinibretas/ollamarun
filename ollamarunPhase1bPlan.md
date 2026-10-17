@@ -37,7 +37,7 @@ keeps the full suite green.
 | 12 | `mode="model"` defined but unimplemented | **Phase 3** — the `AgentRuntime` model-turn path (single inference, client tools passthrough, no execution) is that phase's deliverable |
 | 13 | Server turns never trigger `_context_warning`/auto-compaction | **Phase 4** — the agent-turn controller calls the headless-safe warning/compact step after a turn when configured |
 | 14 | pyflakes nits (`ui.py` unused imports, two placeholder-less f-strings) | **Phase 7** — add a pyflakes-clean pass over `ollamarun_lib/` to the test gate and fix them there |
-| 15 | `Task was destroyed…` warning at test exit (pre-existing Textual timer) | **Phase 7** — test hygiene: silence it or prove it harmless at suite exit |
+| 15 | `Task was destroyed…` warning at test exit (pre-existing Textual timer) | **Out of scope** — the separate TUI/Textual plan owns it |
 | 16 | `HeadlessRenderer.after_tools`/`_committed_final` unused | **Locked** — kept for API symmetry with `Renderer`; documented as such |
 
 ## Phase 1b tasks (blocks Phase 2)
@@ -100,8 +100,9 @@ keeps the full suite green.
 - **Phase 4**: server-side warning/auto-compaction after turns;
   approvals resolved through the API.
 - **Phase 7**: real 3.10 interpreter smoke if a fleet host runs
-  `serve`; pyflakes-clean gate; Textual pending-timer test-exit
-  hygiene.
+  `serve`; pyflakes-clean gate.
+- Textual/TUI items (the test-exit timer warning included) are out of
+  scope for this plan — a separate TUI plan owns them.
 
 ## Acceptance
 
