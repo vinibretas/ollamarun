@@ -2,6 +2,31 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.51
+
+Summary of changes in this version:
+  - `/num-ctx --max-gpu` and `--max-cpu` now size their first-principles
+    estimate from a real model profile: `general.parameter_count` and the
+    on-disk size are cross-checked against the quantization
+    (`details.quantization_level`/`general.file_type`), per-layer KV geometry
+    covers hybrid attention, sliding windows (their cache saturates at
+    `window + batch`), per-layer SWA key/value dims and MLA's compressed
+    latent plus rope tail, recurrent `ssm.*`/shortconv state is sized
+    separately, and a pinned `/gpu-layers` counts the output layer and the
+    topmost blocks instead of an even weight split. The fit report names the
+    model's params, quantization, architecture and weights source.
+  - The measured-context cache is still there as a refinement: the current
+    resident model and prior probes seed the bytes-per-token estimate and the
+    probe search, while the profile formula is the fallback and floor. The
+    bounded, host/model/placement-scoped cache lives at
+    `~/etc/data/ollamarun/ctxfit-calibration.json`. The GPU estimate no longer
+    subtracts a second 256 MiB buffer reserve (`max_gpu_overhead_mb` now
+    defaults to 0): llama.cpp's own fit projection and `max_gpu_margin_mb`
+    already cover those buffers, so the estimate lands close to the real
+    boundary (granite4.2:3b 6,144 -> 9,216 against a measured 10,240 here).
+    Probe candidates halve when nothing fits and step just below a partial
+    load, and the probe caps default to 10.
+
 Version: 1.50
 
 Summary of changes in this version:
