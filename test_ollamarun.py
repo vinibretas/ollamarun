@@ -4,6 +4,7 @@ Run: python3 test_ollamarun.py
 """
 import base64
 import contextlib
+import hashlib
 import http.client
 import inspect
 import io
@@ -8650,6 +8651,239 @@ def test_session_store_without_fcntl() -> int:
     return failures
 
 
+def test_artifact_store() -> int:
+    """One opaque, indexed snapshot per artifact: bytes, hash, naming, jail."""
+    failures = 0
+
+    def _raises(call):
+        try:
+            call()
+            return None
+        except Exception as exc:  # the tests want the exception type
+            return exc
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "artifacts"
+        store = orun.ArtifactStore(root)
+
+        ref = store.register(b"hello\n", filename="/etc/passwd",
+                             media_type="Text/Plain", source="user")
+        failures = _check(failures, "register returns the ref shape",
+                          orun.ARTIFACT_ID_RE.fullmatch(ref.id) is not None
+                          and ref.media_type == "text/plain"
+                          and ref.filename == "passwd"
+                          and ref.size == 6
+                          and ref.sha256 == hashlib.sha256(b"hello\n").hexdigest()
+                          and ref.source == "user" and ref.turn_id is None
+                          and ref.session_id is None
+                          and ref.url == f"/v1/artifacts/{ref.id}",
+                          repr(ref))
+        failures = _check(failures, "resolve returns the same record",
+                          store.resolve(ref.id) == ref, repr(store.resolve(ref.id)))
+        failures = _check(failures, "read returns the stored bytes",
+                          store.read(ref.id) == (ref, b"hello\n"),
+                          repr(store.read(ref.id)))
+        failures = _check(failures, "the ref dict keeps the fixed key order",
+                          list(ref.to_dict()) == [
+                              "id", "media_type", "filename", "size", "sha256",
+                              "source", "turn_id", "session_id", "created_at",
+                              "url"],
+                          str(list(ref.to_dict())))
+        failures = _check(failures, "the stored object lives under uploads/",
+                          (root / "uploads" / ref.id).is_file(),
+                          str(sorted(p.name for p in root.rglob("*"))))
+        manifest = json.loads((root / "meta" / f"{ref.id}.json").read_text())
+        failures = _check(failures, "the manifest records the storage path",
+                          manifest.get("path") == f"uploads/{ref.id}",
+                          str(manifest.get("path")))
+        index = json.loads((root / "index.json").read_text())
+        entry = index["artifacts"][ref.id]
+        failures = _check(failures, "the index entry is committed",
+                          entry.get("pending") is False and entry.get("size") == 6,
+                          str(entry))
+
+        for bad in ("../../etc/passwd", "art_" + "0" * 31,
+                    "art_" + "g" * 32, "art_" + "0" * 32 + "/../x", ""):
+            failures = _check(failures,
+                              f"a malformed id never resolves ({bad[:24]!r})",
+                              store.resolve(bad) is None and store.read(bad) is None,
+                              "resolved")
+
+        path = Path(tmp) / "report.txt"
+        path.write_text("first", encoding="utf-8")
+        publisher = store.for_turn(turn_id="turn_1", session_id="ses_1")
+        ref2 = publisher.publish_path(path)
+        path.write_text("second", encoding="utf-8")
+        failures = _check(failures, "a published artifact is an immutable snapshot",
+                          store.read(ref2.id) == (ref2, b"first"),
+                          repr(store.read(ref2.id)))
+        failures = _check(failures, "a turn artifact carries its provenance",
+                          ref2.source == "tool" and ref2.turn_id == "turn_1"
+                          and ref2.session_id == "ses_1"
+                          and ref2.media_type == "text/plain",
+                          repr(ref2))
+        failures = _check(failures, "a turn artifact is stored under the session/turn",
+                          (root / "sessions" / "ses_1" / "turn_1"
+                           / ref2.id).is_file(),
+                          str(sorted(p.name for p in (root / "sessions").rglob("*"))))
+
+        failures = _check(failures, "a path-shaped filename is reduced to its base",
+                          store.register(b"x", filename="a/b/c.txt",
+                                         media_type="text/plain").filename == "c.txt"
+                          and store.register(b"x", filename="..\\evil",
+                                             media_type="text/plain").filename == "evil"
+                          and store.register(b"x", filename="\x01\x02",
+                                             media_type="text/plain").filename == "file"
+                          and store.register(b"x", filename="...",
+                                             media_type="text/plain").filename == "file",
+                          "sanitize")
+
+        error = _raises(lambda: store.register(b"x", filename="f",
+                                              media_type="not-a-type"))
+        failures = _check(failures, "a bad media type is a 400",
+                          isinstance(error, orun.ApiError) and error.status == 400,
+                          repr(error))
+        error = _raises(lambda: store.register(b"x", filename="f",
+                                               media_type="text/plain",
+                                               source="nope"))
+        failures = _check(failures, "an unknown source is a 400",
+                          isinstance(error, orun.ApiError) and error.status == 400,
+                          repr(error))
+        error = _raises(lambda: orun.ArtifactStore(
+            Path(tmp) / "small", max_bytes=2).register(
+                b"abc", filename="f", media_type="text/plain"))
+        failures = _check(failures, "an oversized artifact is a 413",
+                          isinstance(error, orun.ApiError)
+                          and error.status == 413
+                          and error.code == "artifact_too_large",
+                          repr(error))
+        error = _raises(lambda: publisher.publish_path(root))  # a directory
+        failures = _check(failures, "publishing a directory is refused",
+                          isinstance(error, orun.ApiError) and error.status == 400,
+                          repr(error))
+
+        blocked_root = Path(tmp) / "blocked"
+        blocked_root.mkdir()
+        (blocked_root / "uploads").write_text("not a dir", encoding="utf-8")
+        blocked = orun.ArtifactStore(blocked_root)
+        error = _raises(lambda: blocked.register(b"data", filename="f.txt",
+                                                 media_type="text/plain"))
+        index_after = (json.loads((blocked_root / "index.json").read_text())
+                       if (blocked_root / "index.json").exists()
+                       else {"artifacts": {}})
+        failures = _check(failures,
+                          "a failed write is reported and leaves no reservation",
+                          error is not None and index_after.get("artifacts") == {},
+                          f"{error!r} {index_after}")
+    return failures
+
+
+def test_artifact_quota_and_ttl() -> int:
+    """Quota reservations hold under concurrency; TTL and reconciliation sweep."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "artifacts"
+        store = orun.ArtifactStore(root, max_bytes=1024, quota_bytes=10)
+        store.register(b"123456", filename="a.txt", media_type="text/plain")
+        try:
+            store.register(b"12345", filename="b.txt", media_type="text/plain")
+            error = None
+        except orun.ApiError as exc:
+            error = exc
+        failures = _check(failures, "a registration over the quota is a 507",
+                          error is not None and error.status == 507
+                          and error.code == "artifact_quota_exceeded",
+                          repr(error))
+
+        concurrent = orun.ArtifactStore(Path(tmp) / "conc", max_bytes=1024,
+                                        quota_bytes=10)
+        barrier = threading.Barrier(4)
+        results: list = []
+
+        def worker() -> None:
+            barrier.wait(timeout=10)
+            try:
+                concurrent.register(b"1234", filename="w.txt",
+                                    media_type="text/plain")
+                results.append("ok")
+            except orun.ApiError as exc:
+                results.append(str(exc.code))
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+        failures = _check(failures,
+                          "concurrent uploads cannot overshoot the quota",
+                          results.count("ok") == 2
+                          and results.count("artifact_quota_exceeded") == 2,
+                          str(sorted(results)))
+
+        now = [1000.0]
+        ttl_store = orun.ArtifactStore(Path(tmp) / "ttl", ttl=50,
+                                       clock=lambda: now[0], sweep_interval=0)
+        old = ttl_store.register(b"old", filename="old.txt",
+                                 media_type="text/plain")
+        now[0] = 1030.0
+        fresh = ttl_store.register(b"new", filename="new.txt",
+                                   media_type="text/plain")
+        now[0] = 1060.0
+        removed = ttl_store.sweep()
+        ttl_root = Path(tmp) / "ttl"
+        failures = _check(failures, "the TTL sweep drops only expired artifacts",
+                          removed == 1
+                          and ttl_store.resolve(old.id) is None
+                          and ttl_store.resolve(fresh.id) is not None
+                          and not (ttl_root / "uploads" / old.id).exists()
+                          and not (ttl_root / "meta" / f"{old.id}.json").exists(),
+                          f"removed={removed}")
+
+        rec_root = Path(tmp) / "recon"
+        rec = orun.ArtifactStore(rec_root)
+        ref = rec.register(b"payload", filename="r.txt", media_type="text/plain")
+        index_path = rec_root / "index.json"
+        data = json.loads(index_path.read_text())
+        data["artifacts"][ref.id]["pending"] = True
+        index_path.write_text(json.dumps(data), encoding="utf-8")
+        second = orun.ArtifactStore(rec_root)
+        second.sweep()
+        refreshed = json.loads(index_path.read_text())["artifacts"][ref.id]
+        failures = _check(failures, "a pending entry with a manifest is adopted",
+                          refreshed.get("pending") is False
+                          and second.resolve(ref.id) is not None,
+                          str(refreshed))
+
+        orphan = rec.register(b"orphan", filename="o.txt", media_type="text/plain")
+        data = json.loads(index_path.read_text())
+        data["artifacts"].pop(orphan.id, None)
+        index_path.write_text(json.dumps(data), encoding="utf-8")
+        rec.sweep()
+        entry = json.loads(index_path.read_text())["artifacts"].get(orphan.id)
+        failures = _check(failures, "an orphan manifest is re-adopted into the index",
+                          isinstance(entry, dict) and entry.get("pending") is False,
+                          str(entry))
+
+        ghost = "art_" + "a" * 32
+        data = json.loads(index_path.read_text())
+        data["artifacts"][ghost] = {"path": f"uploads/{ghost}", "size": 3,
+                                    "pending": True, "created_at": 0.0}
+        index_path.write_text(json.dumps(data), encoding="utf-8")
+        rec.sweep()
+        failures = _check(failures, "a stale reservation without a manifest is reaped",
+                          ghost not in json.loads(index_path.read_text())["artifacts"],
+                          "still indexed")
+
+        debris = rec_root / "uploads" / "art_dead.tmp"
+        debris.write_text("x", encoding="utf-8")
+        old_stamp = time.time() - 7200
+        os.utime(debris, (old_stamp, old_stamp))
+        rec.sweep()
+        failures = _check(failures, "old temp debris is removed",
+                          not debris.exists(), "still there")
+    return failures
+
+
 def test_cancellation_destructive_guard() -> int:
     """A stopped turn must not trash anything, even inside the handler."""
     failures = 0
@@ -10756,6 +10990,7 @@ if __name__ == "__main__":
              + test_session_store_process_gate()
              + test_session_store_same_session_writers()
              + test_session_store_without_fcntl()
+             + test_artifact_store() + test_artifact_quota_and_ttl()
              + test_python310_syntax() + test_turn_result_mapping()
              + test_turn_event_envelope()
              + test_turn_manager_lifecycle()
