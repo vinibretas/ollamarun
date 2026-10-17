@@ -342,7 +342,7 @@ follows it over Server-Sent Events.
 | `POST /v1/agent/turns/{id}/cancel` | request cancellation |
 | `POST /v1/agent/approvals/{id}` | resolve a parked tool decision (`run`/`remember`/`rule`/`auto`/`deny`) |
 | `GET`/`POST /v1/sessions` | list / create sessions |
-| `GET`/`PATCH`/`DELETE /v1/sessions/{id}` | inspect, edit (title/model/system/tags) or trash a session |
+| `GET`/`PATCH`/`DELETE /v1/sessions/{id}` | inspect, edit (title/model/system/tags) or trash a session; edits and deletes are refused (409 `session_busy`) while a turn runs |
 
 ```json
 POST /v1/agent/turns
@@ -393,7 +393,8 @@ terminal state; a shutdown does the same for every active turn.
 
 Turn records live in memory — a restart loses live turns (404/410), while
 session history stays under `~/etc/data/ollamarun/sessions/`. One active
-turn per session (`409 session_busy` with `active_turn_id`), a global cap
+turn per session (`409 session_busy` with `active_turn_id`; editing or
+deleting the session is the same 409 while the turn runs), a global cap
 (config `serve_max_active_turns`, `429`), and an optional wall-clock limit
 per turn (config `serve_turn_timeout`, `0` = no limit).
 
