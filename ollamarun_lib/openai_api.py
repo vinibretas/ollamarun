@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
 import threading
 import time
@@ -37,6 +38,11 @@ from .helpers import CancelToken, canonical_model_name
 from .prompts import default_system_prompt
 from .renderer import GenerationResult, consume_chunk, stats_from_final
 from .server import ApiError, Request, Response, Router, SseWriter, StreamResponse
+
+logger = logging.getLogger("ollamarun.openai_api")
+
+#: Cap on one decoded image content part (the request body cap bounds the rest).
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 #: Fields a chat-completion request may carry. `user`, `metadata` and
 #: `parallel_tool_calls` are accepted and ignored (tracking hints with no
@@ -110,9 +116,10 @@ def parse_chat_request(body: Any) -> ChatRequest:
 
 def _reject_unsupported(body: dict[str, Any]) -> None:
     n = body.get("n")
-    if n is not None and n != 1:
-        raise ApiError(400, "n is not supported (only n=1)",
-                       param="n", code="unsupported_value")
+    if n is not None:
+        if isinstance(n, bool) or not isinstance(n, int) or n != 1:
+            raise ApiError(400, "n is not supported (only the integer 1)",
+                           param="n", code="unsupported_value")
     if body.get("logprobs"):
         raise ApiError(400, "logprobs is not supported", param="logprobs",
                        code="unsupported_parameter")
@@ -144,7 +151,13 @@ def _stream_options(body: dict[str, Any]) -> bool:
         if key != "include_usage":
             raise ApiError(400, f"unknown stream_options field: {key}",
                            param=f"stream_options.{key}", code="unknown_field")
-    return bool(options.get("include_usage"))
+    if "include_usage" not in options:
+        return False
+    value = options["include_usage"]
+    if not isinstance(value, bool):
+        raise ApiError(400, "stream_options.include_usage must be a boolean",
+                       param="stream_options.include_usage")
+    return value
 
 
 def _system_from(body: dict[str, Any]) -> Optional[str]:
@@ -215,12 +228,27 @@ def _format_from(body: dict[str, Any]) -> Any:
     if kind == "json_object":
         return "json"
     if kind == "json_schema":
-        schema = rf.get("json_schema")
-        if not isinstance(schema, dict) or not isinstance(schema.get("schema"),
-                                                         dict):
-            raise ApiError(400, "json_schema needs a schema object",
+        wrapper = rf.get("json_schema")
+        if not isinstance(wrapper, dict):
+            raise ApiError(400, "json_schema must be an object",
                            param="response_format.json_schema")
-        return schema["schema"]
+        unknown = set(wrapper) - {"name", "description", "schema", "strict"}
+        if unknown:
+            raise ApiError(400, f"unknown json_schema field: {sorted(unknown)[0]}",
+                           param="response_format.json_schema",
+                           code="unknown_field")
+        for key in ("name", "description"):
+            if key in wrapper and not isinstance(wrapper[key], str):
+                raise ApiError(400, f"json_schema.{key} must be a string",
+                               param=f"response_format.json_schema.{key}")
+        if "strict" in wrapper and not isinstance(wrapper["strict"], bool):
+            raise ApiError(400, "json_schema.strict must be a boolean",
+                           param="response_format.json_schema.strict")
+        schema = wrapper.get("schema")
+        if not isinstance(schema, dict):
+            raise ApiError(400, "json_schema needs a schema object",
+                           param="response_format.json_schema.schema")
+        return schema
     raise ApiError(400, f"unsupported response_format type: {kind!r}",
                    param="response_format.type", code="unsupported_value")
 
@@ -239,6 +267,8 @@ def _tools_from(body: dict[str, Any]) -> Optional[list[dict[str, Any]]]:
     tools = body.get("tools")
     choice = body.get("tool_choice")
     if tools is None:
+        if choice is not None:
+            raise ApiError(400, "tool_choice requires tools", param="tool_choice")
         return None
     if not isinstance(tools, list) or not tools:
         raise ApiError(400, "tools must be a non-empty array", param="tools")
@@ -247,16 +277,40 @@ def _tools_from(body: dict[str, Any]) -> Optional[list[dict[str, Any]]]:
         if not isinstance(tool, dict) or tool.get("type") != "function":
             raise ApiError(400, "only function tools are supported",
                            param=f"tools[{index}]", code="unsupported_value")
+        unknown = set(tool) - {"type", "function"}
+        if unknown:
+            raise ApiError(400, f"unknown tool field: {sorted(unknown)[0]}",
+                           param=f"tools[{index}]", code="unknown_field")
         function = tool.get("function")
         if not isinstance(function, dict) \
                 or not isinstance(function.get("name"), str) \
                 or not function["name"]:
             raise ApiError(400, "each function tool needs a name",
                            param=f"tools[{index}].function.name")
+        unknown = set(function) - {"name", "description", "parameters", "strict"}
+        if unknown:
+            raise ApiError(400, f"unknown function field: {sorted(unknown)[0]}",
+                           param=f"tools[{index}].function", code="unknown_field")
+        if "strict" in function:
+            if not isinstance(function["strict"], bool):
+                raise ApiError(400, "strict must be a boolean",
+                               param=f"tools[{index}].function.strict")
+            if function["strict"]:
+                # Ollama does not enforce tool-argument schemas; accepting
+                # `true` would promise an enforcement that does not exist.
+                raise ApiError(
+                    400,
+                    "strict tool schemas are not supported (the backend does "
+                    "not enforce tool-argument schemas)",
+                    param=f"tools[{index}].function.strict",
+                    code="unsupported_parameter")
         entry: dict[str, Any] = {"type": "function",
                                  "function": {"name": function["name"]}}
         if function.get("description") is not None:
-            entry["function"]["description"] = str(function["description"])
+            if not isinstance(function["description"], str):
+                raise ApiError(400, "tool description must be a string",
+                               param=f"tools[{index}].function.description")
+            entry["function"]["description"] = function["description"]
         if function.get("parameters") is not None:
             if not isinstance(function["parameters"], dict):
                 raise ApiError(400, "tool parameters must be a JSON schema",
@@ -269,8 +323,21 @@ def _tools_from(body: dict[str, Any]) -> Optional[list[dict[str, Any]]]:
     if choice == "none":
         return None
     if isinstance(choice, dict):
-        function = choice.get("function") or {}
-        name = function.get("name") if isinstance(function, dict) else None
+        unknown = set(choice) - {"type", "function"}
+        if unknown:
+            raise ApiError(400, f"unknown tool_choice field: {sorted(unknown)[0]}",
+                           param="tool_choice", code="unknown_field")
+        function = choice.get("function")
+        if not isinstance(function, dict):
+            raise ApiError(400, "invalid tool_choice", param="tool_choice")
+        function_unknown = set(function) - {"name"}
+        if function_unknown:
+            raise ApiError(
+                400,
+                f"unknown tool_choice function field: "
+                f"{sorted(function_unknown)[0]}",
+                param="tool_choice", code="unknown_field")
+        name = function.get("name")
         if choice.get("type") != "function" or not isinstance(name, str):
             raise ApiError(400, "invalid tool_choice", param="tool_choice")
         filtered = [tool for tool in out
@@ -287,10 +354,14 @@ def _tools_from(body: dict[str, Any]) -> Optional[list[dict[str, Any]]]:
 def _messages_from(messages: list[Any], system: Optional[str]
                    ) -> tuple[list[dict[str, Any]], bool]:
     """OpenAI messages -> Ollama payloads; resolves `tool_call_id` -> name."""
+    # Validate every element before any role/field inspection so a malformed
+    # element is always a structured 400 (never an AttributeError -> 500).
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            raise ApiError(400, f"messages[{index}] must be an object",
+                           param=f"messages[{index}]")
     name_by_id: dict[str, str] = {}
     for message in messages:
-        if not isinstance(message, dict):
-            continue
         for call in message.get("tool_calls") or []:
             if not isinstance(call, dict):
                 continue
@@ -305,9 +376,6 @@ def _messages_from(messages: list[Any], system: Optional[str]
         out.append({"role": "system", "content": system})
     has_images = False
     for index, message in enumerate(messages):
-        if not isinstance(message, dict):
-            raise ApiError(400, f"messages[{index}] must be an object",
-                           param=f"messages[{index}]")
         role = message.get("role")
         if role == "developer":
             role = "system"
@@ -379,6 +447,11 @@ def _content_parts(content: Any, index: int) -> tuple[str, list[str]]:
                     "only data: image URLs are supported for now",
                     param=f"{where}.url", code="unsupported_value")
             data = re.sub(r"\s+", "", match.group("data"))
+            if (len(data) * 3) // 4 > MAX_IMAGE_BYTES:
+                raise ApiError(
+                    413,
+                    f"image exceeds the {MAX_IMAGE_BYTES} byte limit",
+                    param=f"{where}.url", code="image_too_large")
             try:
                 base64.b64decode(data, validate=True)
             except (ValueError, TypeError):
@@ -539,16 +612,36 @@ def stream_error(message: str, *, code: Optional[str] = None) -> dict[str, Any]:
                       "param": None, "code": code}}
 
 
-def translate_error(exc: OllamaError) -> ApiError:
-    """Map an upstream failure onto a sanitized structured API error."""
-    message = str(exc)
-    if "HTTP 404" in message or "not found" in message.lower():
-        return ApiError(404, message, code="model_not_found")
-    if "cannot reach" in message:
-        return ApiError(502, "cannot reach the model backend",
-                        type_="api_error", code="backend_unreachable")
-    return ApiError(502, message[:400], type_="api_error",
-                    code="backend_error")
+def translate_error(exc: OllamaError, *, model: str = "") -> ApiError:
+    """Map an upstream failure onto a sanitized structured API error.
+
+    The client sees a stable message and code; the raw upstream text (which
+    can carry backend URLs and internal detail) goes to the debug log only.
+    """
+    raw = str(exc)
+    logger.debug("upstream error (model=%s): %s", model or "-", raw)
+    code, message = _backend_error(raw, model)
+    status = 404 if code == "model_not_found" else 502
+    return ApiError(status, message,
+                    type_="invalid_request_error" if status == 404
+                    else "api_error", code=code)
+
+
+def stream_backend_error(raw: str, *, model: str = "") -> dict[str, Any]:
+    """The in-band `{"error": {...}}` SSE event for an upstream failure."""
+    logger.debug("upstream stream error (model=%s): %s", model or "-", raw)
+    code, message = _backend_error(raw, model)
+    return stream_error(message, code=code)
+
+
+def _backend_error(raw: str, model: str) -> tuple[str, str]:
+    if "HTTP 404" in raw or "not found" in raw.lower():
+        message = (f"model {model!r} is not available" if model
+                   else "the requested model is not available")
+        return "model_not_found", message
+    if "cannot reach" in raw:
+        return "backend_unreachable", "cannot reach the model backend"
+    return "backend_error", "the model backend failed to complete the request"
 
 
 def ollama_payload(plan: ChatRequest, *, keepalive: Optional[str] = None
@@ -588,6 +681,10 @@ class OpenAIApi:
         self.keepalive = (keepalive if keepalive is not None
                           else self.config.get("keepalive"))
         self._lock = threading.Lock()
+        #: Held across an upstream fetch so concurrent cold requests share it
+        #: (one `/api/tags` or `/api/show` instead of a stampede).
+        self._fetch_lock = threading.Lock()
+        self._capability_lock = threading.Lock()
         self._models: Optional[tuple[float, list[dict[str, Any]]]] = None
         self._capability_cache: dict[str, tuple[float, list[str]]] = {}
 
@@ -610,16 +707,26 @@ class OpenAIApi:
                        code="model_not_found", param="model")
 
     def _model_entries(self) -> list[dict[str, Any]]:
-        now = time.monotonic()
+        cached = self._cached_models()
+        if cached is not None:
+            return cached
+        with self._fetch_lock:
+            cached = self._cached_models()
+            if cached is not None:
+                return cached
+            entries = [entry for entry in self._client_factory().tags()
+                       if isinstance(entry, dict)]
+            with self._lock:
+                self._models = (time.monotonic(), entries)
+            return entries
+
+    def _cached_models(self) -> Optional[list[dict[str, Any]]]:
         with self._lock:
             cached = self._models
-        if cached is not None and now - cached[0] < self.MODEL_CACHE_TTL:
+        if cached is not None \
+                and time.monotonic() - cached[0] < self.MODEL_CACHE_TTL:
             return cached[1]
-        client = self._client_factory()
-        entries = [entry for entry in client.tags() if isinstance(entry, dict)]
-        with self._lock:
-            self._models = (now, entries)
-        return entries
+        return None
 
     def _safe_models(self) -> list[dict[str, Any]]:
         try:
@@ -637,17 +744,27 @@ class OpenAIApi:
                        code="model_not_found", param="model")
 
     def _capabilities(self, client: Any, model: str) -> list[str]:
-        now = time.monotonic()
+        cached = self._cached_capabilities(model)
+        if cached is not None:
+            return cached
+        with self._capability_lock:
+            cached = self._cached_capabilities(model)
+            if cached is not None:
+                return cached
+            # `capabilities()` probes `/api/show` and degrades to an empty
+            # list; an unverifiable model passes the vision gate (an
+            # unreachable backend fails the chat request with its own 502).
+            capabilities = [str(capability)
+                            for capability in client.capabilities(model)]
+            self._capability_cache[model] = (time.monotonic(), capabilities)
+            return capabilities
+
+    def _cached_capabilities(self, model: str) -> Optional[list[str]]:
         cached = self._capability_cache.get(model)
-        if cached is not None and now - cached[0] < self.CAPABILITY_CACHE_TTL:
+        if cached is not None \
+                and time.monotonic() - cached[0] < self.CAPABILITY_CACHE_TTL:
             return cached[1]
-        # `capabilities()` probes `/api/show` and degrades to an empty list;
-        # an unverifiable model passes the vision gate (an unreachable backend
-        # fails the chat request itself, with its own 502).
-        capabilities = [str(capability)
-                        for capability in client.capabilities(model)]
-        self._capability_cache[model] = (now, capabilities)
-        return capabilities
+        return None
 
     # ── chat completions ────────────────────────────────────────────────────
 
@@ -668,10 +785,13 @@ class OpenAIApi:
             try:
                 response = client.chat_once(payload, timeout=self.timeout)
             except OllamaError as exc:
-                raise translate_error(exc)
+                raise translate_error(exc, model=plan.model)
             if isinstance(response, dict) and response.get("error"):
-                raise ApiError(502, str(response["error"])[:400],
-                               type_="api_error", code="backend_error")
+                logger.debug("upstream error (model=%s): %s", plan.model,
+                             response["error"])
+                raise ApiError(502, "the model backend failed to complete "
+                                    "the request", type_="api_error",
+                               code="backend_error")
             return Response.json(completion_body(plan, response))
 
         cancel = CancelToken()
@@ -718,8 +838,8 @@ class OpenAIApi:
         except OllamaError as exc:
             error = str(exc)
         if error is not None:
-            code = "model_not_found" if "HTTP 404" in error else None
-            writer.event(json.dumps(stream_error(error, code=code)))
+            writer.event(json.dumps(stream_backend_error(error,
+                                                         model=plan.model)))
             writer.event("[DONE]")
             return
         if result.tool_calls:
