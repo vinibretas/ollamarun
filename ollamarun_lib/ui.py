@@ -14,8 +14,8 @@ without a terminal.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Callable, Optional, Sequence
+from dataclasses import dataclass
+from typing import Any, Optional, Sequence
 
 from rich.markup import escape
 from rich.prompt import Confirm, Prompt

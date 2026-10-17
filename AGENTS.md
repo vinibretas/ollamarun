@@ -80,13 +80,23 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## Commands
 
 - Run tests: `python3 test_ollamarun.py` (plain script, no framework; does
-  `sys.path.insert(0, ...)` then `import ollamarun_lib as orun`). Add new
-  cases to the relevant list/function near the top of the file (e.g.
-  `MATH_CASES` for math-rendering regressions) rather than writing ad hoc
-  scripts; there's also a `test_*` function per subsystem (client HTTP,
-  session storage, REPL commands, CLI parsing, ...) run from `__main__` at
-  the bottom — add a new `test_*` function there for a new subsystem and
-  wire it into the `total = (...)` sum.
+  `sys.path.insert(0, ...)` then `import ollamarun_lib as orun`). That file
+  is the CLI/shared half and imports `test_ollamarun_serve.py` — the
+  API-layer half, where the runtime, turns, serve, agent, artifact and fit
+  tests live — so one command runs the whole suite and prints one verdict;
+  `python3 test_ollamarun_serve.py` runs the API half alone. Both files share
+  the harness defined in the CLI half (`_plain`, `_check`, `_FakeClient`,
+  `CTX_SHOW`, `_fit_check`). Add new cases to the relevant list/function near
+  the top of the file (e.g. `MATH_CASES` for math-rendering regressions)
+  rather than writing ad hoc scripts; there's also a `test_*` function per
+  subsystem (client HTTP, session storage, REPL commands, CLI parsing, ...) —
+  add a new `test_*` function and wire it into the file's runner
+  (`total = (...)` in the CLI half, `run_all` in the serve half).
+- Test-only dependencies, both **required** (the suite fails without them):
+  the `openai` SDK (the official-client compatibility round-trip) and
+  `pyflakes` (the `test_pyflakes_clean` gate; only the deliberate re-export
+  sites — `constants.py`'s hub names, `__init__.py`, and
+  `repl._prompt_approval`'s compatibility re-export — are exempt).
 - No build/lint config exists. Verify manually: `./ollamarun --help`,
   `./ollamarun serve --help`, or a real one-shot call against a running
   Ollama (`./ollamarun MODEL "prompt"`).
@@ -623,7 +633,11 @@ hint only, the way `renderer.py` does for `Session` (defined later, in
 
 ## Testing notes
 
-`test_ollamarun.py` is table-driven: some sections are a `CASES`-style list
+The suite is two files: `test_ollamarun.py` (the shared harness, CLI,
+renderer and tool tests) and `test_ollamarun_serve.py` (everything
+runtime/turns/serve/agent/artifact/fit); the canonical command
+`python3 test_ollamarun.py` imports and runs both. Tests are table-driven:
+some sections are a `CASES`-style list
 of `(name, input, predicate)` tuples run through a small harness, others are
 a `test_*() -> int` function that prints `PASS`/`FAIL` lines and returns a
 failure count, mirroring the pattern documented in `~/bin/AGENTS.md`
@@ -675,8 +689,8 @@ image caps), client-disconnect cancellation with stream isolation, the
 wired request timeout (stalled body 408, streams outliving it),
 single-flight caches, the serve parser, config defaults and `main()`
 dispatch, and the official OpenAI SDK round-trip including negative and
-mid-stream-failure paths (the SDK test skips when the package is absent;
-it is a test-only dependency). The Phase 6 hardening tests
+mid-stream-failure paths (a required gate: it fails when the package is
+missing and prints the SDK version it exercised). The Phase 6 hardening tests
 (`test_serve_config_matrix`, `test_chunked_bodies`, `test_input_limits`,
 `test_native_parameters`, `test_workspace_jail`,
 `test_artifact_root_containment`, `test_serve_model_gate`,
@@ -685,9 +699,14 @@ it is a test-only dependency). The Phase 6 hardening tests
 transport wiring, chunked decoding, the aggregate resolved-input budget,
 native option validation, the workspace jail, artifact-root containment,
 the model allowlist, the `serve_agent` route groups, the shutdown order
-and the tracked unload. `python3 test_ollamarun.py --live`
+and the tracked unload. `test_serve_process` spawns the real `ollamarun
+serve` binary against a stub upstream (banner-discovered address, a
+completion, a SIGTERM mid-stream drain, a clean exit, the tracked unload),
+`test_turn_mode_isolation` pins the model-turn-vs-agent-turn contrast, and
+`test_pyflakes_clean` is the lint gate. `python3 test_ollamarun.py --live`
 additionally runs a real-backend smoke test (models, completion with
-usage, streaming; tool round-trip with `OLLAMARUN_TEST_MODEL` set). The
+usage, streaming, one full agent turn; tool round-trip with
+`OLLAMARUN_TEST_MODEL` set). The
 Phase 4 agent tests (`test_agent_turn_lifecycle`, `test_agent_turn_controls`,
 `test_agent_approvals`, `test_agent_approval_edge`, `test_agent_policy_mode`,
 `test_agent_disconnect_policy`, `test_agent_turn_timeout`,
