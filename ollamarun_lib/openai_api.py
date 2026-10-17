@@ -1,12 +1,13 @@
 """The OpenAI-compatible `/v1` surface: model turns over HTTP.
 
-These endpoints are a translation proxy. One request becomes exactly one
-Ollama `/api/chat` call whose response is reshaped into OpenAI schemas.
-Client `tools` are passed to the backend and come back as standard
-`tool_calls` with `finish_reason: "tool_calls"` -- they are never executed
-here. The agent loop (harness tools, approvals, sessions) is not reachable
-from this module; full agent turns belong to the native `/v1/agent/*`
-endpoints in `agent_api.py`.
+These endpoints are a translation proxy. One chat request becomes one Ollama
+`/api/chat` call whose response is reshaped into OpenAI schemas (`n > 1` is
+emulated with that many sequential generations); one embeddings request
+becomes one `/api/embed` call. Client `tools` are passed to the backend and
+come back as standard `tool_calls` with `finish_reason: "tool_calls"` -- they
+are never executed here. The agent loop (harness tools, approvals, sessions)
+is not reachable from this module; full agent turns belong to the native
+`/v1/agent/*` endpoints in `agent_api.py`.
 
 Streaming speaks OpenAI SSE only (role chunk, content/thinking deltas,
 finish reason, optional usage chunk, `[DONE]`); the typed `turn.*` event
@@ -21,9 +22,11 @@ built-in default, any other text becomes the leading system message.
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
+import struct
 import threading
 import time
 import uuid
@@ -42,11 +45,11 @@ from .server import ApiError, Request, Response, Router, SseWriter, StreamRespon
 
 logger = logging.getLogger("ollamarun.openai_api")
 
-#: Fields a chat-completion request may carry. `user` and `metadata` are
-#: accepted and ignored (tracking hints with no backend meaning);
-#: `parallel_tool_calls` must be a boolean and is otherwise ignored until
-#: the compatibility phase implements it; everything else is rejected
-#: explicitly.
+#: Fields a chat-completion request may carry. `user`, `metadata` and a
+#: `parallel_tool_calls` boolean are accepted (`user`/`metadata` are
+#: tracking hints with no backend meaning; `parallel_tool_calls: false` is
+#: honored by truncating to the first returned call); everything else is
+#: rejected explicitly.
 _CHAT_FIELDS = frozenset({
     "model", "messages", "stream", "stream_options", "temperature", "top_p",
     "max_tokens", "max_completion_tokens", "stop", "seed",
@@ -55,6 +58,16 @@ _CHAT_FIELDS = frozenset({
     "modalities", "reasoning_effort", "system",
     "user", "metadata", "parallel_tool_calls",
 })
+
+#: Fields an embeddings request may carry (`user` is accepted and ignored,
+#: matching the chat mapper).
+_EMBEDDING_FIELDS = frozenset({"model", "input", "encoding_format",
+                               "dimensions", "user"})
+
+#: `n > 1` is emulated with that many sequential upstream generations, so a
+#: request holds its handler for roughly n generations; the cap keeps one
+#: request's fan-out bounded.
+MAX_N = 8
 
 
 @dataclass
@@ -70,6 +83,18 @@ class ChatRequest:
     stream: bool = False
     include_usage: bool = False
     has_images: bool = False
+    n: int = 1
+    parallel_tool_calls: Optional[bool] = None
+
+
+@dataclass
+class EmbeddingRequest:
+    """A validated embeddings request, mapped for the backend."""
+
+    model: str
+    inputs: list[str] = field(default_factory=list)
+    encoding_format: str = "float"
+    dimensions: Optional[int] = None
 
 
 # ── request validation and mapping ──────────────────────────────────────────
@@ -111,15 +136,38 @@ def parse_chat_request(body: Any, *,
         stream=stream,
         include_usage=include_usage,
         has_images=has_images,
+        n=_n_from(body),
+        parallel_tool_calls=_parallel_tool_calls_from(body),
     )
 
 
+def _n_from(body: dict[str, Any]) -> int:
+    """The validated `n`: a positive integer, capped at `MAX_N`."""
+    value = body.get("n")
+    if value is None:
+        return 1
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ApiError(400, "n must be a positive integer", param="n")
+    if value > MAX_N:
+        raise ApiError(
+            400, f"n is limited to {MAX_N} emulated generations",
+            param="n", code="unsupported_value")
+    return value
+
+
+def _parallel_tool_calls_from(body: dict[str, Any]) -> Optional[bool]:
+    if "parallel_tool_calls" not in body:
+        return None
+    value = body["parallel_tool_calls"]
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise ApiError(400, "parallel_tool_calls must be a boolean",
+                       param="parallel_tool_calls")
+    return value
+
+
 def _reject_unsupported(body: dict[str, Any]) -> None:
-    n = body.get("n")
-    if n is not None:
-        if isinstance(n, bool) or not isinstance(n, int) or n != 1:
-            raise ApiError(400, "n is not supported (only the integer 1)",
-                           param="n", code="unsupported_value")
     if body.get("logprobs"):
         raise ApiError(400, "logprobs is not supported", param="logprobs",
                        code="unsupported_parameter")
@@ -138,13 +186,6 @@ def _reject_unsupported(body: dict[str, Any]) -> None:
                 or any(item != "text" for item in modalities):
             raise ApiError(400, 'only the "text" modality is supported',
                            param="modalities", code="unsupported_value")
-    if "parallel_tool_calls" in body:
-        value = body["parallel_tool_calls"]
-        if value is not None and not isinstance(value, bool):
-            # Accepted but ignored until the compatibility phase implements
-            # it -- still type-checked like every other field it accepts.
-            raise ApiError(400, "parallel_tool_calls must be a boolean",
-                           param="parallel_tool_calls")
 
 
 def _stream_options(body: dict[str, Any]) -> bool:
@@ -476,6 +517,70 @@ def _tool_calls_in(calls: Any, index: int) -> list[dict[str, Any]]:
     return out
 
 
+# ── embeddings validation ───────────────────────────────────────────────────
+
+
+def parse_embeddings_request(body: Any, *,
+                             limits: Optional[InputLimits] = None
+                             ) -> EmbeddingRequest:
+    """Validate one `/v1/embeddings` body; raises `ApiError(400)`."""
+    if not isinstance(body, dict):
+        raise ApiError(400, "request body must be a JSON object")
+    for name in body:
+        if name not in _EMBEDDING_FIELDS:
+            raise ApiError(400, f"unknown field: {name}", param=name,
+                           code="unknown_field")
+    model = body.get("model")
+    if not isinstance(model, str) or not model.strip():
+        raise ApiError(400, "model must be a non-empty string", param="model")
+    inputs = _embedding_inputs(body.get("input"))
+    dimensions = body.get("dimensions")
+    if dimensions is not None:
+        if isinstance(dimensions, bool) or not isinstance(dimensions, int) \
+                or dimensions < 1:
+            raise ApiError(400, "dimensions must be a positive integer",
+                           param="dimensions")
+    encoding = body.get("encoding_format")
+    if encoding is None:
+        encoding = "float"
+    if encoding not in ("float", "base64"):
+        raise ApiError(
+            400, 'encoding_format must be "float" or "base64"',
+            param="encoding_format", code="unsupported_value")
+    budget = InputBudget(limits)
+    budget.note_messages(len(inputs), param="input")
+    for index, text in enumerate(inputs):
+        budget.note_text(len(text.encode("utf-8")), f"input[{index}]")
+    return EmbeddingRequest(model=model.strip(), inputs=inputs,
+                            encoding_format=encoding, dimensions=dimensions)
+
+
+def _embedding_inputs(value: Any) -> list[str]:
+    """`input` as a non-empty list of non-empty strings.
+
+    OpenAI also accepts token arrays; the backend takes text only, so those
+    are rejected explicitly (never silently reinterpreted).
+    """
+    if isinstance(value, str):
+        if not value:
+            raise ApiError(400, "input must not be empty", param="input")
+        return [value]
+    if isinstance(value, list):
+        if not value:
+            raise ApiError(400, "input must not be an empty array",
+                           param="input")
+        for index, item in enumerate(value):
+            if not isinstance(item, str) or not item:
+                raise ApiError(
+                    400,
+                    "input must be a string or an array of non-empty strings "
+                    "(token arrays are not supported)",
+                    param=f"input[{index}]", code="unsupported_value")
+        return list(value)
+    raise ApiError(400, "input must be a string or an array of strings",
+                   param="input")
+
+
 # ── response shaping ────────────────────────────────────────────────────────
 
 
@@ -540,6 +645,30 @@ def usage_from(stats: dict[str, Any]) -> dict[str, int]:
             "total_tokens": prompt + completion}
 
 
+def embeddings_body(plan: EmbeddingRequest,
+                    response: dict[str, Any]) -> dict[str, Any]:
+    """The `/v1/embeddings` body from an Ollama `/api/embed` reply.
+
+    `encoding_format: "base64"` is the little-endian float32 packing the
+    official SDK decodes; `"float"` returns plain JSON numbers.
+    """
+    vectors = [vector for vector in (response.get("embeddings") or [])
+               if isinstance(vector, list)]
+    data = []
+    for index, vector in enumerate(vectors):
+        values = [float(item) for item in vector]
+        if plan.encoding_format == "base64":
+            packed = struct.pack(f"<{len(values)}f", *values) if values else b""
+            embedding: Any = base64.b64encode(packed).decode("ascii")
+        else:
+            embedding = values
+        data.append({"object": "embedding", "index": index,
+                     "embedding": embedding})
+    prompt = int(response.get("prompt_eval_count") or 0)
+    return {"object": "list", "data": data, "model": plan.model,
+            "usage": {"prompt_tokens": prompt, "total_tokens": prompt}}
+
+
 def finish_reason(stats: dict[str, Any], has_tool_calls: bool) -> str:
     if has_tool_calls:
         return "tool_calls"
@@ -559,33 +688,66 @@ def assistant_message(content: str, thinking: str,
     return message
 
 
-def completion_body(plan: ChatRequest, response: dict[str, Any]) -> dict[str, Any]:
-    """One non-streaming `chat.completion` from an Ollama `/api/chat` reply."""
-    message = response.get("message") or {}
-    calls = message.get("tool_calls") or []
-    stats = stats_from_final(response)
+def completion_body(plan: ChatRequest,
+                    responses: list[dict[str, Any]]) -> dict[str, Any]:
+    """One non-streaming `chat.completion` for one or more emulated choices.
+
+    `n > 1` is emulation: the same request ran `n` sequential backend
+    generations, so `usage` is the sum across them rather than one backend
+    call's counters.
+    """
+    choices = []
+    for index, response in enumerate(responses):
+        message = response.get("message") or {}
+        calls = _forwarded_tool_calls(plan, message.get("tool_calls") or [])
+        stats = stats_from_final(response)
+        choices.append({
+            "index": index,
+            "message": assistant_message(message.get("content") or "",
+                                         message.get("thinking") or "",
+                                         calls),
+            "finish_reason": finish_reason(stats, bool(calls)),
+        })
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
         "object": "chat.completion",
         "created": int(time.time()),
         "model": plan.model,
-        "choices": [{
-            "index": 0,
-            "message": assistant_message(message.get("content") or "",
-                                         message.get("thinking") or "",
-                                         calls),
-            "finish_reason": finish_reason(stats, bool(calls)),
-        }],
-        "usage": usage_from(stats),
+        "choices": choices,
+        "usage": aggregate_usage([stats_from_final(response)
+                                  for response in responses]),
     }
+
+
+def _forwarded_tool_calls(plan: ChatRequest,
+                          calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`parallel_tool_calls: false` keeps only the first returned call.
+
+    The backend cannot be told to emit a single call, so the flag is honored
+    by truncation rather than model steering.
+    """
+    if plan.parallel_tool_calls is False and len(calls) > 1:
+        return calls[:1]
+    return calls
+
+
+def aggregate_usage(stats_list: list[dict[str, Any]]) -> dict[str, int]:
+    """The summed usage over per-generation stats (`n > 1` emulation)."""
+    prompt = sum(int(stats.get("prompt_tokens") or 0)
+                 for stats in stats_list)
+    completion = sum(int(stats.get("completion_tokens") or 0)
+                     for stats in stats_list)
+    return {"prompt_tokens": prompt, "completion_tokens": completion,
+            "total_tokens": prompt + completion}
 
 
 def stream_chunk(completion_id: str, created: int, model: str,
                  delta: dict[str, Any], *,
-                 finish: Optional[str] = None) -> dict[str, Any]:
+                 finish: Optional[str] = None,
+                 index: int = 0) -> dict[str, Any]:
     return {"id": completion_id, "object": "chat.completion.chunk",
             "created": created, "model": model,
-            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+            "choices": [{"index": index, "delta": delta, "finish_reason": finish}]}
 
 
 def stream_error(message: str, *, code: Optional[str] = None) -> dict[str, Any]:
@@ -781,6 +943,34 @@ class OpenAIApi:
             return cached[1]
         return None
 
+    # ── embeddings ──────────────────────────────────────────────────────────
+
+    def embeddings(self, request: Request, params: dict[str, str]) -> Response:
+        plan = parse_embeddings_request(request.json, limits=self._limits)
+        client = self._client_factory()
+        self._ensure_model(plan.model)
+        capabilities = self._capabilities(client, plan.model)
+        if capabilities and "embedding" not in capabilities:
+            # An empty capability list passes, matching the vision gate:
+            # older backends cannot be verified.
+            raise ApiError(
+                400, f"model {plan.model!r} does not support embeddings",
+                param="model", code="model_does_not_support_embeddings")
+        if self._tracker is not None:
+            self._tracker.note(plan.model)
+        try:
+            response = client.embed(plan.model, plan.inputs,
+                                    dimensions=plan.dimensions)
+        except OllamaError as exc:
+            raise translate_error(exc, model=plan.model)
+        if isinstance(response, dict) and response.get("error"):
+            logger.debug("upstream error (model=%s): %s", plan.model,
+                         response["error"])
+            raise ApiError(502, "the model backend failed to complete "
+                                "the request", type_="api_error",
+                           code="backend_error")
+        return Response.json(embeddings_body(plan, response))
+
     # ── chat completions ────────────────────────────────────────────────────
 
     def chat_completions(self, request: Request,
@@ -796,17 +986,20 @@ class OpenAIApi:
         payload = ollama_payload(plan, keepalive=self.keepalive)
 
         if not plan.stream:
-            try:
-                response = client.chat_once(payload, timeout=self.timeout)
-            except OllamaError as exc:
-                raise translate_error(exc, model=plan.model)
-            if isinstance(response, dict) and response.get("error"):
-                logger.debug("upstream error (model=%s): %s", plan.model,
-                             response["error"])
-                raise ApiError(502, "the model backend failed to complete "
-                                    "the request", type_="api_error",
-                               code="backend_error")
-            return Response.json(completion_body(plan, response))
+            responses: list[dict[str, Any]] = []
+            for _ in range(plan.n):
+                try:
+                    response = client.chat_once(payload, timeout=self.timeout)
+                except OllamaError as exc:
+                    raise translate_error(exc, model=plan.model)
+                if isinstance(response, dict) and response.get("error"):
+                    logger.debug("upstream error (model=%s): %s", plan.model,
+                                 response["error"])
+                    raise ApiError(502, "the model backend failed to complete "
+                                        "the request", type_="api_error",
+                                   code="backend_error")
+                responses.append(response)
+            return Response.json(completion_body(plan, responses))
 
         cancel = CancelToken()
 
@@ -827,48 +1020,59 @@ class OpenAIApi:
                            cancel: CancelToken) -> None:
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         created = int(time.time())
-        writer.event(json.dumps(stream_chunk(
-            completion_id, created, plan.model,
-            {"role": "assistant", "content": ""})))
-        result = GenerationResult()
-        error: Optional[str] = None
-        try:
-            for chunk in client.chat(payload, timeout=self.timeout,
-                                     cancel=cancel):
-                if writer.broken:
-                    break
-                if chunk.get("error"):
-                    error = str(chunk["error"])
-                    break
-                thinking, content = consume_chunk(result, chunk)
-                if thinking:
-                    writer.event(json.dumps(stream_chunk(
-                        completion_id, created, plan.model,
-                        {"reasoning_content": thinking})))
-                if content:
-                    writer.event(json.dumps(stream_chunk(
-                        completion_id, created, plan.model,
-                        {"content": content})))
-        except OllamaError as exc:
-            error = str(exc)
-        if error is not None:
-            writer.event(json.dumps(stream_backend_error(error,
-                                                         model=plan.model)))
-            writer.event("[DONE]")
-            return
-        if result.tool_calls:
+        results: list[GenerationResult] = []
+        # n > 1 is emulated: the choices stream one after another, each with
+        # its own index, and the usage chunk aggregates them at the end.
+        for choice_index in range(plan.n):
+            if writer.broken or cancel.cancelled:
+                return
             writer.event(json.dumps(stream_chunk(
                 completion_id, created, plan.model,
-                {"tool_calls": openai_tool_calls(result.tool_calls,
-                                                 with_index=True)})))
-        writer.event(json.dumps(stream_chunk(
-            completion_id, created, plan.model, {},
-            finish=finish_reason(result.stats, bool(result.tool_calls)))))
+                {"role": "assistant", "content": ""}, index=choice_index)))
+            result = GenerationResult()
+            error: Optional[str] = None
+            try:
+                for chunk in client.chat(payload, timeout=self.timeout,
+                                         cancel=cancel):
+                    if writer.broken:
+                        break
+                    if chunk.get("error"):
+                        error = str(chunk["error"])
+                        break
+                    thinking, content = consume_chunk(result, chunk)
+                    if thinking:
+                        writer.event(json.dumps(stream_chunk(
+                            completion_id, created, plan.model,
+                            {"reasoning_content": thinking},
+                            index=choice_index)))
+                    if content:
+                        writer.event(json.dumps(stream_chunk(
+                            completion_id, created, plan.model,
+                            {"content": content}, index=choice_index)))
+            except OllamaError as exc:
+                error = str(exc)
+            if error is not None:
+                writer.event(json.dumps(stream_backend_error(error,
+                                                             model=plan.model)))
+                writer.event("[DONE]")
+                return
+            calls = _forwarded_tool_calls(plan, result.tool_calls)
+            if calls:
+                writer.event(json.dumps(stream_chunk(
+                    completion_id, created, plan.model,
+                    {"tool_calls": openai_tool_calls(calls, with_index=True)},
+                    index=choice_index)))
+            writer.event(json.dumps(stream_chunk(
+                completion_id, created, plan.model, {},
+                finish=finish_reason(result.stats, bool(calls)),
+                index=choice_index)))
+            results.append(result)
         if plan.include_usage:
             writer.event(json.dumps({
                 "id": completion_id, "object": "chat.completion.chunk",
                 "created": created, "model": plan.model,
-                "choices": [], "usage": usage_from(result.stats)}))
+                "choices": [],
+                "usage": aggregate_usage([result.stats for result in results])}))
         writer.event("[DONE]")
 
 
@@ -878,11 +1082,12 @@ def build_router(client_factory: Callable[[], Any], *,
                  keepalive: Optional[str] = None,
                  artifacts: Optional[Any] = None,
                  tracker: Optional[Any] = None) -> Router:
-    """The `/v1` router: models, one model, chat completions."""
+    """The `/v1` router: models, one model, embeddings, chat completions."""
     api = OpenAIApi(client_factory, config=config, timeout=timeout,
                     keepalive=keepalive, artifacts=artifacts, tracker=tracker)
     router = Router()
     router.add("GET", "/v1/models", api.list_models)
     router.add("GET", "/v1/models/{model}", api.get_model)
+    router.add("POST", "/v1/embeddings", api.embeddings)
     router.add("POST", "/v1/chat/completions", api.chat_completions)
     return router
