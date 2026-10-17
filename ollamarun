@@ -2,6 +2,20 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.36
+
+Summary of changes in this version:
+  - A missing `prompt_toolkit` no longer takes the whole CLI down before
+    it starts: the fallback in `ollamarun_lib/constants.py` now binds
+    subclassable stub classes instead of `None`, so `repl.py`'s
+    module-level `SlashCompleter(Completer)` definition can no longer
+    crash the import with `TypeError: NoneType takes no arguments` (with
+    the dependency absent every command died, `--version` included).
+    Without prompt_toolkit the inline REPL degrades to plain `input()`
+    prompts, which is what the `HAS_PROMPT_TOOLKIT` checks always
+    intended; a regression test now imports the package and runs
+    `--version` in subprocesses with the prompt_toolkit import blocked.
+
 Version: 1.35
 
 Summary of changes in this version:
