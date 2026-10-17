@@ -7061,6 +7061,44 @@ def test_cancellation_coverage() -> int:
     return failures
 
 
+def test_file_mention_inlining() -> int:
+    """`@path` really inlines the file into the stored (and sent) message."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        notes = Path(tmp) / "notes.txt"
+        notes.write_text("SECRET-FILE-CONTENT\n", encoding="utf-8")
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain", "--no-save"])
+        client = _FakeClient(models=["m1"], capabilities=["completion", "tools"],
+                             chat_script=[[{"message": {"content": "ok"},
+                                            "done": True}]])
+        config = dict(orun.DEFAULT_CONFIG)
+        session = orun.Session.create("m1", client.base)
+        repl = orun.Repl(args, config, client, store, session)
+        repl._build_prompt_session = lambda: None
+        with orun.console.capture():
+            repl.send(f"@{notes} explain")
+        stored = session.messages[0].get("content", "")
+        failures = _check(failures, "the REPL stores the expanded message",
+                          "SECRET-FILE-CONTENT" in stored
+                          and f'<file name="{notes}">' in stored,
+                          stored[:200])
+
+        from ollamarun_lib.run import run_once
+        session2 = orun.Session.create("m1", client.base)
+        repl2 = orun.Repl(args, config, client, store, session2)
+        repl2._build_prompt_session = lambda: None
+        with orun.console.capture():
+            code = run_once(args, config, client, store, session2,
+                            f"@{notes} explain", repl2)
+        stored2 = session2.messages[0].get("content", "")
+        failures = _check(failures, "the one-shot path inlines too",
+                          code == 0 and "SECRET-FILE-CONTENT" in stored2,
+                          f"{code} {stored2[:200]}")
+    return failures
+
+
 def test_tool_support_warning() -> int:
     """The capability warning fires once per model, after turn.started."""
     failures = 0
@@ -7257,6 +7295,7 @@ if __name__ == "__main__":
              + test_session_store_cross_process_lock()
              + test_tool_cancellation() + test_run_once_json()
              + test_cancellation_coverage()
+             + test_file_mention_inlining()
              + test_tool_support_warning() + test_quiet_tools_live()
              + test_approval_event_contract())
     if total:
