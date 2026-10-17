@@ -89,17 +89,17 @@ docstring convention) — it is binding, not optional, for edits in this repo.
   real one-shot call against a running Ollama (`./ollamarun MODEL "prompt"`).
 - The entry-point script is executable and shebang-pinned to
   `#! /bin/python3.10` (system Python). Do not use stdlib features newer
-  than 3.10 without a try/except fallback (see `HAS_PYLATEXENC`/
-  `HAS_PYPERCLIP` guards in `ollamarun_lib/constants.py` for the existing
-  pattern — note that the `except` branch there also binds the names to
-  `None` so `from .constants import LatexNodes2Text` etc. never raises an
-  `ImportError` in another module just because the optional dependency is
-  missing).
+  than 3.10 without a try/except fallback (see the `HAS_PYLATEXENC`/
+  `HAS_PYPERCLIP`/`HAS_PROMPT_TOOLKIT` guards in `ollamarun_lib/constants.py`
+  for the existing pattern — the `except` branches bind the names to `None`
+  or, when the name is subclassed or called at module level (prompt_toolkit's
+  `Completer`, `PromptSession`, …), to stand-in classes, so importing a name
+  never raises just because the optional dependency is missing).
 
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"1.39"` — keep this
+  constant in `ollamarun_lib/constants.py`, currently `"1.40"` — keep this
   line current when you bump it) and prepend a new bullet list under
   `Summary of changes in this version:` in the top-level `ollamarun` entry
   script's module docstring — read the existing entries there before adding

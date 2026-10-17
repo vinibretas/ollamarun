@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import csv
 import hashlib
 import io
@@ -69,8 +70,29 @@ try:
     HAS_PROMPT_TOOLKIT = True
 except ImportError:  # pragma: no cover - fallback path
     HAS_PROMPT_TOOLKIT = False
-    (PromptSession, Completer, Completion, FileHistory, KeyBindings,
-     patch_stdout) = (None,) * 6
+
+    class _MissingPromptToolkit:
+        """Stand-in for the prompt_toolkit classes when it is not installed.
+
+        `repl.py` subclasses `Completer` at module level (`SlashCompleter`),
+        so the fallback must bind subclassable classes here -- with the
+        names bound to `None`, importing the package died with `TypeError:
+        NoneType takes no arguments` before any command could run. Every
+        real use of these names sits behind a `HAS_PROMPT_TOOLKIT` check
+        (the inline REPL falls back to plain `input()` prompts), so a stub
+        that is ever instantiated means a guard went missing and raises
+        instead of misbehaving.
+        """
+
+        def __init__(self, *args, **kwargs) -> None:
+            raise RuntimeError("prompt_toolkit is not installed")
+
+    (PromptSession, Completer, Completion, FileHistory,
+     KeyBindings) = (_MissingPromptToolkit,) * 5
+
+    def patch_stdout(*args, **kwargs) -> Any:
+        """No-op stand-in (the real one is only used with a live session)."""
+        return contextlib.nullcontext()
 
 try:
     import pyperclip
@@ -102,7 +124,7 @@ except ImportError:  # pragma: no cover - fallback path
     TEXTUAL_VERSION = ""
     TextualApp = None
 
-VERSION = "1.39"
+VERSION = "1.40"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
