@@ -2467,19 +2467,43 @@ def test_run_once_json() -> int:
 
 
 class _ServeClient(_FakeClient):
-    """`_FakeClient` plus what the API server needs: abort and slow streams."""
+    """`_FakeClient` plus what the API server needs: abort, slow streams and
+    embeddings (per-model capabilities included)."""
 
     def __init__(self, *args, chat_once_data=None, chunk_count=0,
-                 chunk_delay=0.0, **kwargs):
+                 chunk_delay=0.0, capabilities_by_model=None,
+                 embed_data=None, embed_error=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.chat_once_data = chat_once_data
         self.chunk_count = chunk_count
         self.chunk_delay = chunk_delay
         self.abort_calls = 0
+        self.capabilities_by_model = dict(capabilities_by_model or {})
+        self.embed_data = embed_data
+        self.embed_error = embed_error
+        self.embed_payloads = []
 
     def abort_stream(self):
         self.abort_calls += 1
         return True
+
+    def capabilities(self, model):
+        if model in self.capabilities_by_model:
+            return list(self.capabilities_by_model[model])
+        return super().capabilities(model)
+
+    def embed(self, model, inputs, *, truncate=True, dimensions=None,
+              options=None):
+        self.embed_payloads.append({"model": model, "input": list(inputs),
+                                    "truncate": truncate,
+                                    "dimensions": dimensions,
+                                    "options": options})
+        if self.embed_error:
+            raise orun.OllamaError(self.embed_error)
+        if self.embed_data is not None:
+            return dict(self.embed_data)
+        return {"embeddings": [[float(index), 0.5] for index in range(len(inputs))],
+                "prompt_eval_count": len(inputs)}
 
     def chat_once(self, payload, timeout=None):
         self.chat_once_payloads.append(payload)
@@ -2580,9 +2604,12 @@ def test_openai_mapping() -> int:
     tool = {"type": "function", "function": {"name": "get_weather"}}
     for name, body in (
         ("an unknown field", {"model": "m1", "messages": user, "foo": 1}),
-        ("n > 1", {"model": "m1", "messages": user, "n": 2}),
         ("a boolean n", {"model": "m1", "messages": user, "n": True}),
         ("a float n", {"model": "m1", "messages": user, "n": 1.0}),
+        ("a zero n", {"model": "m1", "messages": user, "n": 0}),
+        ("a negative n", {"model": "m1", "messages": user, "n": -2}),
+        ("a string n", {"model": "m1", "messages": user, "n": "2"}),
+        ("an oversized n", {"model": "m1", "messages": user, "n": 9}),
         ("logprobs", {"model": "m1", "messages": user, "logprobs": True}),
         ("logit_bias", {"model": "m1", "messages": user,
                         "logit_bias": {"1": 2}}),
@@ -2648,7 +2675,20 @@ def test_openai_mapping() -> int:
     failures = _check(failures,
                       "the strict forms of n/strict/parallel_tool_calls still pass",
                       accepted.include_usage is False
+                      and accepted.n == 1
+                      and accepted.parallel_tool_calls is False
                       and bool(accepted.tools), str(accepted))
+    multi = orun.parse_chat_request({"model": "m1", "n": 3, "messages": user})
+    parallel = orun.parse_chat_request({"model": "m1",
+                                        "parallel_tool_calls": True,
+                                        "messages": user})
+    default = orun.parse_chat_request({"model": "m1", "messages": user})
+    failures = _check(failures, "n maps and parallel_tool_calls is three-state",
+                      multi.n == 3 and parallel.parallel_tool_calls is True
+                      and default.n == 1
+                      and default.parallel_tool_calls is None,
+                      f"{multi.n} {parallel.parallel_tool_calls} "
+                      f"{default.parallel_tool_calls}")
 
     plain = orun.parse_chat_request({"model": "m1", "messages": user})
     auto = orun.parse_chat_request({"model": "m1", "system": "auto",
@@ -2773,12 +2813,12 @@ def test_openai_mapping() -> int:
         api_module.MAX_IMAGE_BYTES = original_cap
 
     plan = orun.parse_chat_request({"model": "m1", "messages": user})
-    body = orun.completion_body(plan, {
+    body = orun.completion_body(plan, [{
         "message": {"content": "", "tool_calls": [
             {"function": {"name": "get_weather",
                           "arguments": {"city": "SP"}}}]},
         "done": True, "prompt_eval_count": 9, "eval_count": 3,
-        "done_reason": "stop"})
+        "done_reason": "stop"}])
     choice = body["choices"][0]
     call = choice["message"]["tool_calls"][0]
     failures = _check(failures, "a tool-call completion maps with ids and usage",
@@ -2793,12 +2833,49 @@ def test_openai_mapping() -> int:
                                             "completion_tokens": 3,
                                             "total_tokens": 12},
                       str(body)[:240])
-    length = orun.completion_body(plan, {"message": {"content": "cut"},
-                                         "done": True, "eval_count": 5,
-                                         "done_reason": "length"})
+    length = orun.completion_body(plan, [{"message": {"content": "cut"},
+                                          "done": True, "eval_count": 5,
+                                          "done_reason": "length"}])
     failures = _check(failures, "done_reason length becomes finish_reason length",
                       length["choices"][0]["finish_reason"] == "length",
                       str(length)[:160])
+
+    # n > 1: one choice per emulated generation, usage summed.
+    multi = orun.parse_chat_request({"model": "m1", "n": 2, "messages": user})
+    multi_body = orun.completion_body(multi, [
+        {"message": {"content": "one"}, "done": True,
+         "prompt_eval_count": 5, "eval_count": 2, "done_reason": "stop"},
+        {"message": {"content": "two"}, "done": True,
+         "prompt_eval_count": 4, "eval_count": 3, "done_reason": "stop"},
+    ])
+    failures = _check(
+        failures, "n > 1 maps to indexed choices with summed usage",
+        [choice["index"] for choice in multi_body["choices"]] == [0, 1]
+        and [choice["message"]["content"] for choice in multi_body["choices"]]
+        == ["one", "two"]
+        and multi_body["usage"] == {"prompt_tokens": 9,
+                                    "completion_tokens": 5,
+                                    "total_tokens": 14},
+        str(multi_body)[:240])
+
+    # parallel_tool_calls: false truncates the returned calls to the first.
+    two_calls = {"message": {"content": "", "tool_calls": [
+        {"function": {"name": "a", "arguments": {}}},
+        {"function": {"name": "b", "arguments": {}}}]},
+        "done": True, "done_reason": "stop"}
+    truncated_plan = orun.parse_chat_request(
+        {"model": "m1", "messages": user, "parallel_tool_calls": False})
+    kept_plan = orun.parse_chat_request(
+        {"model": "m1", "messages": user, "parallel_tool_calls": True})
+    truncated = orun.completion_body(truncated_plan, [two_calls])
+    kept = orun.completion_body(kept_plan, [two_calls])
+    failures = _check(
+        failures, "parallel_tool_calls: false forwards only the first call",
+        len(truncated["choices"][0]["message"]["tool_calls"]) == 1
+        and truncated["choices"][0]["message"]["tool_calls"][0]["function"]["name"]
+        == "a"
+        and len(kept["choices"][0]["message"]["tool_calls"]) == 2,
+        f"{truncated['choices'][0]['message']} {kept['choices'][0]['message']}")
     model = orun.model_object(
         {"name": "m1:latest",
          "modified_at": "2026-10-17T10:00:00.123456789-03:00"})
@@ -2812,6 +2889,135 @@ def test_openai_mapping() -> int:
               if hasattr(api_module, name)]
     failures = _check(failures, "the OpenAI layer never reaches the agent loop",
                       not leaked, str(leaked))
+    return failures
+
+
+def test_embeddings_api() -> int:
+    """`/v1/embeddings`: schema, encodings, gates and backend mapping."""
+    failures = 0
+    vectors = [[0.5, -1.25, 2.0], [1.0, 2.0, 3.0]]
+    client = _ServeClient(
+        models=["m1", "chat-only", "mystery"],
+        capabilities=["embedding"],
+        capabilities_by_model={"chat-only": ["completion"], "mystery": []},
+        embed_data={"embeddings": vectors, "prompt_eval_count": 7})
+    server, client, thread = _start_api(client)
+    try:
+        status, _headers, raw = _http(
+            server, "POST", "/v1/embeddings",
+            body={"model": "m1", "input": "hello"})
+        body = json.loads(raw)
+        failures = _check(
+            failures, "a string input maps to the OpenAI embeddings schema",
+            status == 200 and body["object"] == "list"
+            and body["model"] == "m1"
+            and body["data"] == [
+                {"object": "embedding", "index": 0,
+                 "embedding": [0.5, -1.25, 2.0]},
+                {"object": "embedding", "index": 1,
+                 "embedding": [1.0, 2.0, 3.0]}]
+            and body["usage"] == {"prompt_tokens": 7, "total_tokens": 7},
+            raw[:240])
+        sent = client.embed_payloads[-1]
+        failures = _check(failures, "the backend receives the inputs verbatim",
+                          sent["input"] == ["hello"] and sent["truncate"] is True
+                          and sent["dimensions"] is None, str(sent))
+
+        status, _headers, raw = _http(
+            server, "POST", "/v1/embeddings",
+            body={"model": "m1", "input": ["a", "b"], "dimensions": 2,
+                  "encoding_format": "float", "user": "someone"})
+        body = json.loads(raw)
+        failures = _check(failures, "a list input, dimensions and user map",
+                          status == 200 and len(body["data"]) == 2
+                          and client.embed_payloads[-1]["input"] == ["a", "b"]
+                          and client.embed_payloads[-1]["dimensions"] == 2,
+                          raw[:240])
+
+        status, _headers, raw = _http(
+            server, "POST", "/v1/embeddings",
+            body={"model": "m1", "input": "hello",
+                  "encoding_format": "base64"})
+        body = json.loads(raw)
+        packed = base64.b64decode(body["data"][0]["embedding"])
+        values = list(struct.unpack(f"<{len(packed) // 4}f", packed))
+        failures = _check(
+            failures, "base64 is the SDK's little-endian float32 packing",
+            status == 200 and values == [0.5, -1.25, 2.0], repr(values))
+
+        status, _headers, raw = _http(
+            server, "POST", "/v1/embeddings",
+            body={"model": "chat-only", "input": "hello"})
+        error = json.loads(raw)["error"]
+        failures = _check(
+            failures, "a completion-only model is refused",
+            status == 400
+            and error["code"] == "model_does_not_support_embeddings"
+            and error["param"] == "model", f"{status} {raw[:200]}")
+        status, _headers, raw = _http(
+            server, "POST", "/v1/embeddings",
+            body={"model": "mystery", "input": "hello"})
+        failures = _check(failures, "an empty capability list passes",
+                          status == 200, f"{status} {raw[:160]}")
+
+        for label, body_ in (
+            ("an unknown field", {"model": "m1", "input": "x", "foo": 1}),
+            ("a missing input", {"model": "m1"}),
+            ("an empty input", {"model": "m1", "input": ""}),
+            ("an empty array", {"model": "m1", "input": []}),
+            ("a token array", {"model": "m1", "input": [1, 2, 3]}),
+            ("a nested array", {"model": "m1", "input": [[1, 2]]}),
+            ("a zero dimensions", {"model": "m1", "input": "x",
+                                   "dimensions": 0}),
+            ("a boolean dimensions", {"model": "m1", "input": "x",
+                                      "dimensions": True}),
+            ("a bad encoding_format", {"model": "m1", "input": "x",
+                                       "encoding_format": "hex"}),
+        ):
+            status, _headers, raw = _http(server, "POST", "/v1/embeddings",
+                                          body=body_)
+            failures = _check(failures, f"embeddings rejects {label}",
+                              status == 400, f"{status} {raw[:160]}")
+
+        # The serve_models allowlist applies like everywhere else.
+        client2 = _ServeClient(models=["m1"], capabilities=["embedding"])
+        server2, _client2, thread2 = _start_api(
+            client2, router_kwargs={"config": {"serve_models": ["allowed"]}})
+        try:
+            status, _headers, raw = _http(server2, "POST", "/v1/embeddings",
+                                          body={"model": "m1", "input": "x"})
+            failures = _check(failures, "embeddings honors serve_models",
+                              status == 404
+                              and json.loads(raw)["error"]["code"]
+                              == "model_not_found", f"{status} {raw[:160]}")
+        finally:
+            _stop_api(server2, thread2)
+
+        # The resolved-input budget bounds embeddings inputs too.
+        client3 = _ServeClient(models=["m1"], capabilities=["embedding"])
+        server3, _client3, thread3 = _start_api(
+            client3, router_kwargs={"config": {"serve_max_messages": 2}})
+        try:
+            status, _headers, raw = _http(
+                server3, "POST", "/v1/embeddings",
+                body={"model": "m1", "input": ["a", "b", "c"]})
+            failures = _check(
+                failures, "the input budget bounds the embeddings list",
+                status == 413
+                and json.loads(raw)["error"]["code"] == "input_too_large",
+                f"{status} {raw[:160]}")
+        finally:
+            _stop_api(server3, thread3)
+
+        client.embed_error = "HTTP 404 on /api/embed: model not found"
+        status, _headers, raw = _http(server, "POST", "/v1/embeddings",
+                                      body={"model": "m1", "input": "x"})
+        failures = _check(failures, "an upstream failure is a sanitized 404",
+                          status == 404
+                          and json.loads(raw)["error"]["code"]
+                          == "model_not_found", f"{status} {raw[:160]}")
+    finally:
+        _stop_api(server, thread)
     return failures
 
 
@@ -2998,6 +3204,108 @@ def test_serve_http() -> int:
                           all("usage" not in json.loads(item)
                               for item in events if item != "[DONE]"),
                           str(events)[:200])
+
+        # n > 1: emulated with sequential generations, one choice each.
+        calls_before = len(client.chat_once_payloads)
+        client.chat_once_data = None
+        status, _headers, raw = _http(server, "POST", "/v1/chat/completions",
+                                      body={"model": "m1", "n": 3,
+                                            "messages": [{"role": "user",
+                                                          "content": "x"}]})
+        completion = json.loads(raw)
+        failures = _check(
+            failures, "non-streaming n runs n generations and sums the usage",
+            status == 200
+            and [choice["index"] for choice in completion["choices"]] == [0, 1, 2]
+            and all(choice["message"]["content"] == "ok"
+                    for choice in completion["choices"])
+            and len(client.chat_once_payloads) - calls_before == 3
+            and completion["usage"] == {"prompt_tokens": 12,
+                                        "completion_tokens": 6,
+                                        "total_tokens": 18},
+            raw[:240])
+
+        client.chat_script = [
+            [{"message": {"content": "one"}, "done": False},
+             {"message": {"content": ""}, "done": True,
+              "prompt_eval_count": 2, "eval_count": 1, "done_reason": "stop"}],
+            [{"message": {"content": "two"}, "done": False},
+             {"message": {"content": ""}, "done": True,
+              "prompt_eval_count": 3, "eval_count": 2, "done_reason": "stop"}],
+        ]
+        client.chat_calls = 0
+        status, _headers, raw = _http(
+            server, "POST", "/v1/chat/completions",
+            body={"model": "m1", "stream": True, "n": 2,
+                  "stream_options": {"include_usage": True},
+                  "messages": [{"role": "user", "content": "x"}]})
+        events = _sse_events(raw)
+        chunks = [json.loads(item) for item in events if item != "[DONE]"]
+        data_chunks = [chunk for chunk in chunks if chunk["choices"]]
+        contents = {chunk["choices"][0]["index"]:
+                    chunk["choices"][0]["delta"].get("content")
+                    for chunk in data_chunks
+                    if chunk["choices"][0]["delta"].get("content")}
+        finishes = [chunk["choices"][0]["finish_reason"] for chunk in data_chunks
+                    if chunk["choices"][0]["finish_reason"]]
+        failures = _check(
+            failures, "streaming n multiplexes per-choice indexes",
+            status == 200
+            and [chunk["choices"][0]["index"] for chunk in data_chunks]
+            == [0, 0, 0, 1, 1, 1]
+            and contents == {0: "one", 1: "two"}
+            and finishes == ["stop", "stop"]
+            and chunks[-1]["choices"] == []
+            and chunks[-1]["usage"] == {"prompt_tokens": 5,
+                                        "completion_tokens": 3,
+                                        "total_tokens": 8}
+            and events[-1] == "[DONE]",
+            str(chunks)[:240])
+
+        # parallel_tool_calls: false truncates to the first returned call.
+        two_calls = {"message": {"content": "", "tool_calls": [
+            {"function": {"name": "a", "arguments": {}}},
+            {"function": {"name": "b", "arguments": {}}}]},
+            "done": True, "prompt_eval_count": 5, "eval_count": 2,
+            "done_reason": "stop"}
+        client.chat_once_data = two_calls
+        status, _headers, raw = _http(
+            server, "POST", "/v1/chat/completions",
+            body={"model": "m1", "parallel_tool_calls": False,
+                  "messages": [{"role": "user", "content": "x"}]})
+        completion = json.loads(raw)
+        failures = _check(
+            failures, "non-streaming parallel_tool_calls: false keeps one call",
+            status == 200 and len(completion["choices"][0]["message"]
+                                  ["tool_calls"]) == 1
+            and completion["choices"][0]["message"]["tool_calls"][0]
+            ["function"]["name"] == "a",
+            raw[:200])
+
+        client.chat_script = [[
+            {"message": {"content": "", "tool_calls": [
+                {"function": {"name": "a", "arguments": {}}},
+                {"function": {"name": "b", "arguments": {}}}]}},
+            {"message": {"content": ""}, "done": True, "prompt_eval_count": 5,
+             "eval_count": 3, "done_reason": "stop"},
+        ]]
+        client.chat_calls = 0
+        status, _headers, raw = _http(
+            server, "POST", "/v1/chat/completions",
+            body={"model": "m1", "stream": True,
+                  "parallel_tool_calls": False,
+                  "messages": [{"role": "user", "content": "x"}]})
+        chunks = [json.loads(item) for item in _sse_events(raw)
+                  if item != "[DONE]"]
+        tool_delta = [chunk for chunk in chunks
+                      if chunk["choices"][0]["delta"].get("tool_calls")]
+        failures = _check(
+            failures, "streaming parallel_tool_calls: false keeps one call",
+            status == 200 and len(tool_delta) == 1
+            and len(tool_delta[0]["choices"][0]["delta"]["tool_calls"]) == 1
+            and tool_delta[0]["choices"][0]["delta"]["tool_calls"][0]
+            ["function"]["name"] == "a",
+            str(chunks)[:240])
 
         image = base64.b64encode(b"png").decode()
         image_part = [{"type": "text", "text": "?"},
@@ -4344,6 +4652,17 @@ def test_openai_sdk() -> int:
                           == {"city": "SP"},
                           str(tool_response)[:200])
 
+        client.chat_once_data = None
+        multi = api.chat.completions.create(
+            model="m1", temperature=0, n=2,
+            messages=[{"role": "user", "content": "hi"}])
+        failures = _check(
+            failures, "the SDK receives n choices with summed usage",
+            [choice.index for choice in multi.choices] == [0, 1]
+            and all(choice.message.content == "ok" for choice in multi.choices)
+            and multi.usage.total_tokens == 12,
+            str(multi)[:200])
+
         def sdk_failure(callable_):
             try:
                 callable_()
@@ -4352,12 +4671,12 @@ def test_openai_sdk() -> int:
                 return exc
 
         raised = sdk_failure(lambda: api.chat.completions.create(
-            model="m1", n=2, messages=[{"role": "user", "content": "hi"}]))
+            model="m1", n=9, messages=[{"role": "user", "content": "hi"}]))
         failures = _check(failures, "the SDK surfaces rejected fields as 400s",
                           raised is not None
                           and type(raised).__name__ == "BadRequestError"
                           and getattr(raised, "status_code", None) == 400
-                          and "only the integer 1" in str(raised),
+                          and "limited to 8" in str(raised),
                           repr(raised)[:200])
 
         raised = sdk_failure(lambda: api.chat.completions.create(
@@ -6372,7 +6691,7 @@ def run_all(*, live: bool = False) -> int:
         + test_turn_manager_cancel() + test_turn_subscriber_overflow()
         + test_turn_manager_shutdown()
         + test_turn_manager_context() + test_turn_manager_headless_turn()
-        + test_openai_mapping() + test_serve_http()
+        + test_openai_mapping() + test_embeddings_api() + test_serve_http()
         + test_serve_disconnect() + test_serve_sockets()
         + test_serve_cache_concurrency()
         + test_serve_config_matrix()
