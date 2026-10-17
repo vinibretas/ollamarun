@@ -255,5 +255,6 @@ handle = manager.submit(session_id=repl.session.id, work=work,
 4. Version bump 1.45 + changelog entry.
 5. Docs (AGENTS/CLAUDE numbering and notes) and the plan status.
 
-Then: PR → mergeability check (resolve conflicts if any) → merge, same
-as Phase 1b.
+Then: PR → mergeability check (resolve conflicts if any) → **stop and
+wait for the user's explicit go-ahead before merging** (this round runs
+every step up to the merge; the merge itself is manual).
