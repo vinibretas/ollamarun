@@ -9,9 +9,11 @@ import logging
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import threading
+import time
 import urllib.parse
 import uuid
 from datetime import datetime
@@ -84,6 +86,74 @@ class CancelToken:
 
     def reset(self) -> None:
         self._event.clear()
+
+
+class CommandCancelled(RuntimeError):
+    """The user cancelled the turn while this command was running."""
+
+
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    """Kill a Popen'd command and everything it spawned (never raises)."""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+def run_cancellable(argv: list[str], *, input_text: Optional[str] = None,
+                    cwd: Optional[str] = None, env: Optional[dict[str, str]] = None,
+                    timeout: float = 120.0, cancel: Optional[Any] = None
+                    ) -> subprocess.CompletedProcess:
+    """`subprocess.run()` that a cancel token can actually stop.
+
+    Without a token this is exactly `subprocess.run(...)`. With one, the child
+    runs in its own session and a cancel (or the timeout) kills the whole
+    process group, so a `sleep` or a spawned pipeline does not outlive the
+    turn. Raises `CommandCancelled` when the token wins.
+    """
+    if cancel is None:
+        return subprocess.run(argv, input=input_text, capture_output=True,
+                              text=True, timeout=timeout, errors="replace",
+                              cwd=cwd, env=env)
+    if cancel.cancelled:
+        # Do not even spawn a child the turn has already given up on: nested
+        # callers (chem/tts/ssh probes) rely on this to answer immediately.
+        raise CommandCancelled("cancelled by user; nothing was run")
+    proc = subprocess.Popen(argv,
+                            stdin=subprocess.PIPE if input_text is not None else None,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, errors="replace",
+                            cwd=cwd, env=env, start_new_session=True)
+    if input_text is not None and proc.stdin is not None:
+        try:
+            proc.stdin.write(input_text)
+        except (BrokenPipeError, OSError):
+            pass
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
+        # communicate() would flush a closed stdin and die with "I/O operation
+        # on closed file"; dropping the handle keeps the retry loop below alive.
+        proc.stdin = None
+    deadline = time.monotonic() + max(0.1, timeout)
+    while True:
+        try:
+            stdout, stderr = proc.communicate(timeout=0.1)
+            break
+        except subprocess.TimeoutExpired:
+            if cancel is not None and cancel.cancelled:
+                _kill_process_group(proc)
+                proc.communicate()
+                raise CommandCancelled("cancelled by user; the process was killed")
+            if time.monotonic() >= deadline:
+                _kill_process_group(proc)
+                proc.communicate()
+                raise subprocess.TimeoutExpired(argv, timeout)
+    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
 
 
 def parse_bool(value: Any, default: bool = False) -> bool:
@@ -294,18 +364,35 @@ SSH_DISK_COMMAND = (
 )
 
 
+def _probe_runner(cancel: Optional[Any], runner: Any) -> Any:
+    """The runner the ssh probes use: an injected one wins; with a cancel
+    token the probe runs through `run_cancellable` (so a stopped turn kills
+    the ssh child); otherwise it is plain `subprocess.run`."""
+    if runner is not None:
+        return runner
+    if cancel is None:
+        return subprocess.run
+
+    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        return run_cancellable(argv, timeout=kwargs.get("timeout", 8.0),
+                               cancel=cancel)
+    return run
+
+
 def ssh_free_disk(target: str, *, user: Optional[str] = None, timeout: float = 8.0,
-                  runner: Any = None) -> Optional[tuple[int, int, str]]:
+                  runner: Any = None, cancel: Optional[Any] = None
+                  ) -> Optional[tuple[int, int, str]]:
     """(free_bytes, total_bytes, mount) on a remote machine over SSH, or None.
 
     Best-effort: a missing/unreachable host, no key or a bad response all
     return None; the caller degrades to "unknown". `runner` is injectable for
-    tests (defaults to `subprocess.run`).
+    tests (defaults to `subprocess.run`); `cancel` makes the probe killable by
+    a stopped turn (raises `CommandCancelled` instead of degrading).
     """
     if not target or shutil.which("ssh") is None:
         return None
     dest = f"{user}@{target}" if user else target
-    run = runner or subprocess.run
+    run = _probe_runner(cancel, runner)
     try:
         proc = run(["ssh", *SSH_OPTS, dest, SSH_DISK_COMMAND],
                    capture_output=True, text=True, timeout=timeout)
@@ -389,7 +476,8 @@ def local_gpu_probe(runner: Any = None) -> tuple[list[tuple[int, int]], dict[str
 
 
 def ssh_gpu_probe(target: str, *, user: Optional[str] = None, timeout: float = 8.0,
-                  runner: Any = None) -> Optional[tuple[list[tuple[int, int]], dict[str, str]]]:
+                  runner: Any = None, cancel: Optional[Any] = None
+                  ) -> Optional[tuple[list[tuple[int, int]], dict[str, str]]]:
     """(devices, ollama service env) on a remote machine over SSH, or None on failure.
 
     Best-effort exactly like `ssh_free_disk`: a missing/unreachable host, no
@@ -398,7 +486,7 @@ def ssh_gpu_probe(target: str, *, user: Optional[str] = None, timeout: float = 8
     if not target or shutil.which("ssh") is None:
         return None
     dest = f"{user}@{target}" if user else target
-    run = runner or subprocess.run
+    run = _probe_runner(cancel, runner)
     try:
         proc = run(["ssh", *SSH_OPTS, dest, SSH_GPU_ENV_COMMAND],
                    capture_output=True, text=True, timeout=timeout)
@@ -465,7 +553,8 @@ def local_ram_probe(reader: Any = None) -> Optional[tuple[int, int]]:
 
 
 def ssh_ram_probe(target: str, *, user: Optional[str] = None, timeout: float = 8.0,
-                  runner: Any = None) -> Optional[tuple[int, int]]:
+                  runner: Any = None, cancel: Optional[Any] = None
+                  ) -> Optional[tuple[int, int]]:
     """(total, available) bytes on a remote machine over SSH, or None on failure.
 
     Best-effort exactly like `ssh_free_disk`: a missing/unreachable host, no
@@ -474,7 +563,7 @@ def ssh_ram_probe(target: str, *, user: Optional[str] = None, timeout: float = 8
     if not target or shutil.which("ssh") is None:
         return None
     dest = f"{user}@{target}" if user else target
-    run = runner or subprocess.run
+    run = _probe_runner(cancel, runner)
     try:
         proc = run(["ssh", *SSH_OPTS, dest, SSH_RAM_COMMAND],
                    capture_output=True, text=True, timeout=timeout)
