@@ -2,6 +2,53 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.54
+
+Summary of changes in this version:
+  - The Phase 5 artifact layer. `ollamarun serve` now has one canonical
+    artifact model behind `POST /v1/files` (a strict JSON upload,
+    `{filename, media_type, data_base64}` -> 201 with the full
+    `ArtifactRef`: opaque `art_…` id, media type, sanitized display
+    filename, size, sha256, source, turn/session provenance, created_at
+    and the relative `url`), `GET /v1/artifacts/{id}` (the stored bytes
+    with their media type, an ASCII-safe Content-Disposition and
+    nosniff) and `GET /v1/artifacts/{id}/meta`. Contents are immutable
+    snapshots (a later edit of the original file never changes a stored
+    artifact), lookups go through per-artifact manifests (a validated id
+    never builds a storage path), and the store enforces one per-file
+    cap (`serve_artifact_max_bytes`, default 16 MiB under the 32 MiB
+    body cap), a locked quota (`serve_artifact_quota_bytes`, 2 GiB;
+    concurrent uploads cannot overshoot) and TTL retention
+    (`serve_artifact_ttl`, 7 days; startup + opportunistic sweeps also
+    reap stale reservations and debris).
+  - Messages meet files through one shared resolver, so the OpenAI
+    surface and native agent turns behave identically: a
+    `{"type": "file", "file_id": "art_…"}` part inlines text-ish files
+    as a bounded `<file name="…">` block (32 KiB, truncation noted),
+    sends image files through the same vision capability check as
+    `image_url` parts, describes unsupported binaries as downloadable
+    but not processed, and answers a missing/expired id with a
+    structured 404 before inference. Agent turns now accept
+    string-or-parts content; `image_url` accepts http(s) URLs through
+    one bounded fetch (scheme allowlist, 3 redirects, timeouts, 10 MiB
+    cap; the SSRF caveat is the locked trusted-network boundary).
+  - Tools publish artifacts. `ToolHandlerResult(text, artifact_paths)`
+    lets `write_file`/`edit_file`/`copy_file`/`move_file` snapshot their
+    result (regular files only; `copy_file`/`move_file` publish the
+    destination) and `run_python`/`run_shell` outputs go through the new
+    approval-gated `publish_artifact` tool (cwd-jailed, size-capped,
+    present only when serve runs a store — the CLI is unchanged). Each
+    publication emits `artifact.created` (the full ref) between the
+    approval decision and `tool.result`, which references the ids;
+    `TurnResult.artifacts`, the turn status body, the session's artifact
+    list and `GET /v1/sessions/{id}` carry the refs, while message
+    payloads never leak them to the model. `persist: false` artifacts
+    are still stored and served, and deleting a session leaves its
+    artifacts to their own TTL.
+  - Housekeeping: `serve_approval_timeout: 0` now really disables the
+    approval timeout (it used to fall back to 300 s), with a regression
+    test.
+
 Version: 1.53
 
 Summary of changes in this version:

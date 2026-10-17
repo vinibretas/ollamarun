@@ -4,6 +4,7 @@ Run: python3 test_ollamarun.py
 """
 import base64
 import contextlib
+import hashlib
 import http.client
 import inspect
 import io
@@ -430,10 +431,10 @@ def test_tool_definitions() -> int:
                                 "context_status", "copy_file", "delete_file",
                                 "edit_file", "fetch_url", "list_dir",
                                 "list_models", "list_voices", "make_dir",
-                                "move_file", "read_file", "run_python",
-                                "run_shell", "search_sessions", "session_info",
-                                "speak", "system_status", "web_search",
-                                "write_file"], str(names))
+                                "move_file", "publish_artifact", "read_file",
+                                "run_python", "run_shell", "search_sessions",
+                                "session_info", "speak", "system_status",
+                                "web_search", "write_file"], str(names))
     failures = _check(failures, "every definition's handler resolves",
                       all(definition.handler in orun.HANDLERS
                           for definition in defs))
@@ -442,6 +443,12 @@ def test_tool_definitions() -> int:
     failures = _check(failures, "web_search declares its capability and aliases",
                       web is not None and web.read_only
                       and web.requires == "search" and "google" in web.aliases)
+    publish = next((definition for definition in defs
+                    if definition.name == "publish_artifact"), None)
+    failures = _check(failures, "publish_artifact needs the artifact store",
+                      publish is not None and publish.requires == "artifacts"
+                      and not publish.read_only
+                      and not publish.always_safe, str(publish))
     run_python = next((definition for definition in defs
                        if definition.name == "run_python"), None)
     failures = _check(failures, "run_python prefers code over mental math",
@@ -8650,6 +8657,861 @@ def test_session_store_without_fcntl() -> int:
     return failures
 
 
+def test_artifact_store() -> int:
+    """One opaque, indexed snapshot per artifact: bytes, hash, naming, jail."""
+    failures = 0
+
+    def _raises(call):
+        try:
+            call()
+            return None
+        except Exception as exc:  # the tests want the exception type
+            return exc
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "artifacts"
+        store = orun.ArtifactStore(root)
+
+        ref = store.register(b"hello\n", filename="/etc/passwd",
+                             media_type="Text/Plain", source="user")
+        failures = _check(failures, "register returns the ref shape",
+                          orun.ARTIFACT_ID_RE.fullmatch(ref.id) is not None
+                          and ref.media_type == "text/plain"
+                          and ref.filename == "passwd"
+                          and ref.size == 6
+                          and ref.sha256 == hashlib.sha256(b"hello\n").hexdigest()
+                          and ref.source == "user" and ref.turn_id is None
+                          and ref.session_id is None
+                          and ref.url == f"/v1/artifacts/{ref.id}",
+                          repr(ref))
+        failures = _check(failures, "resolve returns the same record",
+                          store.resolve(ref.id) == ref, repr(store.resolve(ref.id)))
+        failures = _check(failures, "read returns the stored bytes",
+                          store.read(ref.id) == (ref, b"hello\n"),
+                          repr(store.read(ref.id)))
+        failures = _check(failures, "the ref dict keeps the fixed key order",
+                          list(ref.to_dict()) == [
+                              "id", "media_type", "filename", "size", "sha256",
+                              "source", "turn_id", "session_id", "created_at",
+                              "url"],
+                          str(list(ref.to_dict())))
+        failures = _check(failures, "the stored object lives under uploads/",
+                          (root / "uploads" / ref.id).is_file(),
+                          str(sorted(p.name for p in root.rglob("*"))))
+        manifest = json.loads((root / "meta" / f"{ref.id}.json").read_text())
+        failures = _check(failures, "the manifest records the storage path",
+                          manifest.get("path") == f"uploads/{ref.id}",
+                          str(manifest.get("path")))
+        index = json.loads((root / "index.json").read_text())
+        entry = index["artifacts"][ref.id]
+        failures = _check(failures, "the index entry is committed",
+                          entry.get("pending") is False and entry.get("size") == 6,
+                          str(entry))
+
+        for bad in ("../../etc/passwd", "art_" + "0" * 31,
+                    "art_" + "g" * 32, "art_" + "0" * 32 + "/../x", ""):
+            failures = _check(failures,
+                              f"a malformed id never resolves ({bad[:24]!r})",
+                              store.resolve(bad) is None and store.read(bad) is None,
+                              "resolved")
+
+        path = Path(tmp) / "report.txt"
+        path.write_text("first", encoding="utf-8")
+        publisher = store.for_turn(turn_id="turn_1", session_id="ses_1")
+        ref2 = publisher.publish_path(path)
+        path.write_text("second", encoding="utf-8")
+        failures = _check(failures, "a published artifact is an immutable snapshot",
+                          store.read(ref2.id) == (ref2, b"first"),
+                          repr(store.read(ref2.id)))
+        failures = _check(failures, "a turn artifact carries its provenance",
+                          ref2.source == "tool" and ref2.turn_id == "turn_1"
+                          and ref2.session_id == "ses_1"
+                          and ref2.media_type == "text/plain",
+                          repr(ref2))
+        failures = _check(failures, "a turn artifact is stored under the session/turn",
+                          (root / "sessions" / "ses_1" / "turn_1"
+                           / ref2.id).is_file(),
+                          str(sorted(p.name for p in (root / "sessions").rglob("*"))))
+
+        failures = _check(failures, "a path-shaped filename is reduced to its base",
+                          store.register(b"x", filename="a/b/c.txt",
+                                         media_type="text/plain").filename == "c.txt"
+                          and store.register(b"x", filename="..\\evil",
+                                             media_type="text/plain").filename == "evil"
+                          and store.register(b"x", filename="\x01\x02",
+                                             media_type="text/plain").filename == "file"
+                          and store.register(b"x", filename="...",
+                                             media_type="text/plain").filename == "file",
+                          "sanitize")
+
+        error = _raises(lambda: store.register(b"x", filename="f",
+                                              media_type="not-a-type"))
+        failures = _check(failures, "a bad media type is a 400",
+                          isinstance(error, orun.ApiError) and error.status == 400,
+                          repr(error))
+        error = _raises(lambda: store.register(b"x", filename="f",
+                                               media_type="text/plain",
+                                               source="nope"))
+        failures = _check(failures, "an unknown source is a 400",
+                          isinstance(error, orun.ApiError) and error.status == 400,
+                          repr(error))
+        error = _raises(lambda: orun.ArtifactStore(
+            Path(tmp) / "small", max_bytes=2).register(
+                b"abc", filename="f", media_type="text/plain"))
+        failures = _check(failures, "an oversized artifact is a 413",
+                          isinstance(error, orun.ApiError)
+                          and error.status == 413
+                          and error.code == "artifact_too_large",
+                          repr(error))
+        error = _raises(lambda: publisher.publish_path(root))  # a directory
+        failures = _check(failures, "publishing a directory is refused",
+                          isinstance(error, orun.ApiError) and error.status == 400,
+                          repr(error))
+
+        blocked_root = Path(tmp) / "blocked"
+        blocked_root.mkdir()
+        (blocked_root / "uploads").write_text("not a dir", encoding="utf-8")
+        blocked = orun.ArtifactStore(blocked_root)
+        error = _raises(lambda: blocked.register(b"data", filename="f.txt",
+                                                 media_type="text/plain"))
+        index_after = (json.loads((blocked_root / "index.json").read_text())
+                       if (blocked_root / "index.json").exists()
+                       else {"artifacts": {}})
+        failures = _check(failures,
+                          "a failed write is reported and leaves no reservation",
+                          error is not None and index_after.get("artifacts") == {},
+                          f"{error!r} {index_after}")
+    return failures
+
+
+def test_artifact_quota_and_ttl() -> int:
+    """Quota reservations hold under concurrency; TTL and reconciliation sweep."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "artifacts"
+        store = orun.ArtifactStore(root, max_bytes=1024, quota_bytes=10)
+        store.register(b"123456", filename="a.txt", media_type="text/plain")
+        try:
+            store.register(b"12345", filename="b.txt", media_type="text/plain")
+            error = None
+        except orun.ApiError as exc:
+            error = exc
+        failures = _check(failures, "a registration over the quota is a 507",
+                          error is not None and error.status == 507
+                          and error.code == "artifact_quota_exceeded",
+                          repr(error))
+
+        concurrent = orun.ArtifactStore(Path(tmp) / "conc", max_bytes=1024,
+                                        quota_bytes=10)
+        barrier = threading.Barrier(4)
+        results: list = []
+
+        def worker() -> None:
+            barrier.wait(timeout=10)
+            try:
+                concurrent.register(b"1234", filename="w.txt",
+                                    media_type="text/plain")
+                results.append("ok")
+            except orun.ApiError as exc:
+                results.append(str(exc.code))
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+        failures = _check(failures,
+                          "concurrent uploads cannot overshoot the quota",
+                          results.count("ok") == 2
+                          and results.count("artifact_quota_exceeded") == 2,
+                          str(sorted(results)))
+
+        now = [1000.0]
+        ttl_store = orun.ArtifactStore(Path(tmp) / "ttl", ttl=50,
+                                       clock=lambda: now[0], sweep_interval=0)
+        old = ttl_store.register(b"old", filename="old.txt",
+                                 media_type="text/plain")
+        now[0] = 1030.0
+        fresh = ttl_store.register(b"new", filename="new.txt",
+                                   media_type="text/plain")
+        now[0] = 1060.0
+        removed = ttl_store.sweep()
+        ttl_root = Path(tmp) / "ttl"
+        failures = _check(failures, "the TTL sweep drops only expired artifacts",
+                          removed == 1
+                          and ttl_store.resolve(old.id) is None
+                          and ttl_store.resolve(fresh.id) is not None
+                          and not (ttl_root / "uploads" / old.id).exists()
+                          and not (ttl_root / "meta" / f"{old.id}.json").exists(),
+                          f"removed={removed}")
+
+        rec_root = Path(tmp) / "recon"
+        rec = orun.ArtifactStore(rec_root)
+        ref = rec.register(b"payload", filename="r.txt", media_type="text/plain")
+        index_path = rec_root / "index.json"
+        data = json.loads(index_path.read_text())
+        data["artifacts"][ref.id]["pending"] = True
+        index_path.write_text(json.dumps(data), encoding="utf-8")
+        second = orun.ArtifactStore(rec_root)
+        second.sweep()
+        refreshed = json.loads(index_path.read_text())["artifacts"][ref.id]
+        failures = _check(failures, "a pending entry with a manifest is adopted",
+                          refreshed.get("pending") is False
+                          and second.resolve(ref.id) is not None,
+                          str(refreshed))
+
+        orphan = rec.register(b"orphan", filename="o.txt", media_type="text/plain")
+        data = json.loads(index_path.read_text())
+        data["artifacts"].pop(orphan.id, None)
+        index_path.write_text(json.dumps(data), encoding="utf-8")
+        rec.sweep()
+        entry = json.loads(index_path.read_text())["artifacts"].get(orphan.id)
+        failures = _check(failures, "an orphan manifest is re-adopted into the index",
+                          isinstance(entry, dict) and entry.get("pending") is False,
+                          str(entry))
+
+        ghost = "art_" + "a" * 32
+        data = json.loads(index_path.read_text())
+        data["artifacts"][ghost] = {"path": f"uploads/{ghost}", "size": 3,
+                                    "pending": True, "created_at": 0.0}
+        index_path.write_text(json.dumps(data), encoding="utf-8")
+        rec.sweep()
+        failures = _check(failures, "a stale reservation without a manifest is reaped",
+                          ghost not in json.loads(index_path.read_text())["artifacts"],
+                          "still indexed")
+
+        debris = rec_root / "uploads" / "art_dead.tmp"
+        debris.write_text("x", encoding="utf-8")
+        old_stamp = time.time() - 7200
+        os.utime(debris, (old_stamp, old_stamp))
+        rec.sweep()
+        failures = _check(failures, "old temp debris is removed",
+                          not debris.exists(), "still there")
+    return failures
+
+
+def test_tool_artifact_registration() -> int:
+    """File tools publish their destination; publish_artifact is gated and jailed."""
+    failures = 0
+
+    def _spec(name: str) -> orun.ToolSpec:
+        return orun.ToolSpec(name=name, description="", parameters={},
+                             handler=orun.HANDLERS[name])
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        store = orun.ArtifactStore(tmp / "artifacts")
+        publisher = store.for_turn(turn_id="turn_9", session_id="ses_9")
+        ctx = orun.ToolContext(cwd=str(tmp), artifacts=publisher)
+
+        target = tmp / "out.txt"
+        outcome = orun.execute_tool(_spec("write_file"),
+                                    {"path": str(target), "content": "hi"}, ctx)
+        refs = outcome.artifacts
+        failures = _check(failures, "write_file publishes the file it wrote",
+                          outcome.ok and len(refs) == 1
+                          and refs[0]["filename"] == "out.txt"
+                          and refs[0]["source"] == "tool"
+                          and refs[0]["turn_id"] == "turn_9"
+                          and refs[0]["session_id"] == "ses_9"
+                          and store.read(refs[0]["id"])[1] == b"hi",
+                          f"{outcome.ok} {refs}")
+
+        target.write_text("changed on disk", encoding="utf-8")
+        failures = _check(failures, "the published snapshot is immutable",
+                          store.read(refs[0]["id"])[1] == b"hi",
+                          repr(store.read(refs[0]["id"])))
+
+        edited = orun.execute_tool(
+            _spec("edit_file"),
+            {"path": str(target), "old_string": "changed", "new_string": "edited"}, ctx)
+        failures = _check(failures, "edit_file publishes the edited file",
+                          edited.ok and len(edited.artifacts) == 1
+                          and store.read(edited.artifacts[0]["id"])[1]
+                          == b"edited on disk",
+                          str(edited.artifacts))
+
+        copied = tmp / "copy.txt"
+        copy_outcome = orun.execute_tool(
+            _spec("copy_file"),
+            {"source": str(target), "destination": str(copied)}, ctx)
+        failures = _check(failures, "copy_file publishes the destination",
+                          copy_outcome.ok and len(copy_outcome.artifacts) == 1
+                          and copy_outcome.artifacts[0]["filename"] == "copy.txt",
+                          str(copy_outcome.artifacts))
+
+        moved = tmp / "moved.txt"
+        move_outcome = orun.execute_tool(
+            _spec("move_file"),
+            {"source": str(copied), "destination": str(moved)}, ctx)
+        failures = _check(failures, "move_file publishes the destination",
+                          move_outcome.ok and len(move_outcome.artifacts) == 1
+                          and move_outcome.artifacts[0]["filename"] == "moved.txt"
+                          and not copied.exists(),
+                          str(move_outcome.artifacts))
+
+        folder = tmp / "folder"
+        folder.mkdir()
+        (folder / "inner.txt").write_text("x", encoding="utf-8")
+        dir_outcome = orun.execute_tool(
+            _spec("copy_file"),
+            {"source": str(folder), "destination": str(tmp / "folder-copy")}, ctx)
+        failures = _check(failures, "a directory copy publishes nothing",
+                          dir_outcome.ok and dir_outcome.artifacts == []
+                          and "artifact not published" not in dir_outcome.text,
+                          str(dir_outcome.artifacts))
+
+        published = tmp / "report.bin"
+        published.write_bytes(b"\x00\x01")
+        publish_outcome = orun.execute_tool(
+            _spec("publish_artifact"), {"path": "report.bin"}, ctx)
+        failures = _check(failures, "publish_artifact publishes a relative path",
+                          publish_outcome.ok and len(publish_outcome.artifacts) == 1
+                          and publish_outcome.artifacts[0]["filename"] == "report.bin",
+                          str(publish_outcome))
+        outside = Path("/etc/hostname")
+        if outside.is_file():
+            refused = orun.execute_tool(
+                _spec("publish_artifact"), {"path": str(outside)}, ctx)
+            failures = _check(failures,
+                              "publish_artifact refuses a path outside the cwd",
+                              not refused.ok and refused.artifacts == []
+                              and "outside the working directory" in refused.text,
+                              str(refused))
+        refused_dir = orun.execute_tool(
+            _spec("publish_artifact"), {"path": "folder"}, ctx)
+        failures = _check(failures, "publish_artifact refuses a directory",
+                          not refused_dir.ok and refused_dir.artifacts == [],
+                          str(refused_dir))
+        no_store = orun.execute_tool(
+            _spec("publish_artifact"), {"path": "report.bin"},
+            orun.ToolContext(cwd=str(tmp)))
+        failures = _check(failures, "publish_artifact needs the serve store",
+                          not no_store.ok and no_store.artifacts == []
+                          and "artifact store" in no_store.text,
+                          str(no_store))
+        failures = _check(failures, "publish_artifact is not auto-approved",
+                          not orun.approval_decision(
+                              _spec("publish_artifact"), {"path": "x"},
+                              policy="allowlist").allowed,
+                          "auto-approved")
+
+        tiny = orun.ArtifactStore(tmp / "tiny", max_bytes=2)
+        tiny_ctx = orun.ToolContext(
+            cwd=str(tmp),
+            artifacts=tiny.for_turn(turn_id="turn_t", session_id="ses_t"))
+        note = orun.execute_tool(_spec("write_file"),
+                                 {"path": str(tmp / "big.txt"), "content": "hello"},
+                                 tiny_ctx)
+        failures = _check(failures,
+                          "a failed publication is a note, not a failed tool",
+                          note.ok and note.artifacts == []
+                          and "artifact not published" in note.text
+                          and (tmp / "big.txt").is_file(),
+                          str(note))
+        refused_size = orun.execute_tool(
+            _spec("publish_artifact"), {"path": "big.txt"}, tiny_ctx)
+        failures = _check(failures, "publish_artifact refuses over the store limit",
+                          not refused_size.ok
+                          and "byte artifact limit" in refused_size.text,
+                          str(refused_size))
+
+        without = orun.default_registry(tts=False, search=False, chem=False)
+        with_store = orun.default_registry(tts=False, search=False, chem=False,
+                                           artifacts=True)
+        failures = _check(failures, "publish_artifact appears only with a store",
+                          "publish_artifact" not in without
+                          and "publish_artifact" in with_store,
+                          str(sorted(set(with_store) - set(without))))
+    return failures
+
+
+def test_artifact_events() -> int:
+    """artifact.created rides the turn stream and reaches the TurnResult."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        store = orun.SessionStore(sessions_dir=root / "s",
+                                  index_path=root / "i.json")
+        artifacts = orun.ArtifactStore(root / "artifacts")
+        args = orun.build_parser().parse_args(
+            ["m1", "--render", "plain", "--no-save", "-y"])
+        out = root / "report.txt"
+        client = _FakeClient(models=["m1"], capabilities=["completion", "tools"],
+                             chat_script=[
+                                 [{"message": {"content": "", "tool_calls": [
+                                     {"function": {"name": "write_file",
+                                                   "arguments": {"path": str(out),
+                                                                 "content": "payload"}}}]}},
+                                  {"done": True}],
+                                 [{"message": {"content": "done"}, "done": True}],
+                             ])
+        session = orun.Session.create("m1", client.base)
+        publisher = artifacts.for_turn(turn_id="turn_test",
+                                       session_id=session.id)
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store, session,
+                         artifacts=publisher)
+        repl._build_prompt_session = lambda: None
+        repl.headless = True
+        manager = orun.TurnManager()
+
+        def work(sink, cancel):
+            hooks = repl._turn_hooks()
+            hooks.on_event = sink
+            hooks.cancel = cancel
+            # The API seam: the runtime's own tool execution carries this
+            # sink, the approver and the tool context into every round.
+            hooks.execute_tools = None
+            renderer = orun.HeadlessRenderer(on_event=sink)
+
+            def present(payload, after_tools, cancel_token):
+                return renderer.stream(client.chat(payload, cancel=cancel_token),
+                                       cancel=cancel_token)
+
+            hooks.present_round = present
+            runtime = orun.AgentRuntime(hooks)
+            result = runtime.run()
+            return runtime.to_turn_result(result, session_id=session.id,
+                                          turn_id="turn_test")
+
+        handle = manager.submit(session_id=session.id, work=work)
+        snapshot = manager.wait(handle.id, timeout=5)
+        events = _collect(manager.subscribe(handle.id, after=0))
+        types = [event.type for event in events]
+        created = [event for event in events if event.type == orun.ARTIFACT_CREATED]
+        results = [event for event in events if event.type == orun.TOOL_RESULT]
+        failures = _check(failures, "artifact.created carries the full ref",
+                          len(created) == 1
+                          and created[0].data.get("source") == "tool"
+                          and created[0].data.get("filename") == "report.txt"
+                          and created[0].data.get("session_id") == session.id
+                          and created[0].data.get("turn_id") == "turn_test"
+                          and created[0].data.get("url", "").startswith("/v1/artifacts/"),
+                          str(created[:1]))
+        failures = _check(failures,
+                          "artifact.created sits between the decision and the result",
+                          orun.APPROVAL_RESOLVED in types
+                          and types.index(orun.APPROVAL_RESOLVED)
+                          < types.index(orun.ARTIFACT_CREATED)
+                          < types.index(orun.TOOL_RESULT),
+                          str(types))
+        failures = _check(failures, "tool.result references the artifact ids",
+                          bool(results)
+                          and results[0].data.get("artifacts")
+                          == [created[0].data["id"]],
+                          str(results[:1]))
+        failures = _check(failures, "the TurnResult carries the refs",
+                          snapshot is not None and snapshot.result is not None
+                          and [ref.get("id") for ref in snapshot.result.artifacts]
+                          == [created[0].data["id"]],
+                          str(snapshot.result.artifacts
+                              if snapshot and snapshot.result else None))
+        failures = _check(failures, "the session records the artifact",
+                          [ref.get("id") for ref in session.artifacts]
+                          == [created[0].data["id"]]
+                          and any(message.get("artifacts")
+                                  for message in session.messages
+                                  if message.get("role") == "tool"),
+                          str(session.artifacts))
+        stored = artifacts.read(created[0].data["id"])
+        failures = _check(failures, "the bytes are in the store",
+                          stored is not None and stored[1] == b"payload",
+                          repr(stored))
+    return failures
+
+
+def test_artifact_session_persistence() -> int:
+    """Sessions accumulate refs without leaking them to the model."""
+    failures = 0
+    old = {"id": "s1", "model": "m1", "host": "h",
+           "messages": [{"role": "user", "content": "hi", "ts": "t"}]}
+    loaded = orun.Session.from_dict(old)
+    failures = _check(failures, "old session files load without artifacts",
+                      loaded.artifacts == [] and loaded.id == "s1",
+                      repr(loaded.artifacts))
+    ref = {"id": "art_" + "1" * 32, "media_type": "text/plain",
+           "filename": "a.txt", "size": 1, "sha256": "x", "source": "tool",
+           "turn_id": "t1", "session_id": "s1", "created_at": "now",
+           "url": "/v1/artifacts/" + "art_" + "1" * 32}
+    loaded.add_artifacts([ref])
+    loaded.add_artifacts([dict(ref)])  # same id again: deduped
+    failures = _check(failures, "artifact refs are deduped by id",
+                      [item["id"] for item in loaded.artifacts] == [ref["id"]],
+                      str(loaded.artifacts))
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        store.save(loaded)
+        round_trip = store.load("s1")
+        failures = _check(failures, "artifact refs survive the session round trip",
+                          round_trip.artifacts == [ref],
+                          str(round_trip.artifacts))
+        payloads = round_trip.message_payloads(with_tools=True)
+        failures = _check(failures, "artifact refs never reach the model payload",
+                          all("artifacts" not in payload for payload in payloads),
+                          str(payloads))
+    return failures
+
+
+def test_artifact_content_parts() -> int:
+    """One resolver: file refs, text inlining, binary notes, vision parity."""
+    failures = 0
+
+    def _raises(call):
+        try:
+            call()
+            return None
+        except Exception as exc:
+            return exc
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        store = orun.ArtifactStore(tmp / "artifacts")
+        text_ref = store.register(b"# Title\nhello", filename="notes.md",
+                                  media_type="text/markdown", source="user")
+        json_ref = store.register(b'{"a": 1}', filename="data.json",
+                                  media_type="application/json", source="user")
+        bin_ref = store.register(b"%PDF-\x00\x01", filename="report.pdf",
+                                 media_type="application/pdf", source="user")
+        img_bytes = b"\x89PNG\r\n\x1a\nimage-bytes"
+        img_ref = store.register(img_bytes, filename="pic.png",
+                                 media_type="image/png", source="user")
+        big_ref = store.register(b"x" * (orun.INLINE_TEXT_BYTES + 100),
+                                 filename="big.txt", media_type="text/plain",
+                                 source="user")
+
+        resolved = orun.resolve_content_parts(
+            [{"type": "text", "text": "look"},
+             {"type": "file", "file_id": text_ref.id}],
+            where="messages[0].content", store=store)
+        failures = _check(failures, "a text file part inlines as a <file> block",
+                          resolved.text.startswith("look")
+                          and '<file name="notes.md">' in resolved.text
+                          and "# Title\nhello" in resolved.text
+                          and resolved.images == []
+                          and [ref.id for ref in resolved.artifacts]
+                          == [text_ref.id],
+                          resolved.text[:200])
+        resolved_json = orun.resolve_content_parts(
+            [{"type": "file", "file_id": json_ref.id}],
+            where="messages[0].content", store=store)
+        failures = _check(failures, "application/json counts as text",
+                          '{"a": 1}' in resolved_json.text,
+                          resolved_json.text[:200])
+        resolved_bin = orun.resolve_content_parts(
+            [{"type": "file", "file_id": bin_ref.id}],
+            where="messages[0].content", store=store)
+        failures = _check(failures, "a binary part is noted, never faked",
+                          "contents were not extracted" in resolved_bin.text
+                          and "report.pdf" in resolved_bin.text,
+                          resolved_bin.text[:200])
+        resolved_img = orun.resolve_content_parts(
+            [{"type": "file", "file_id": img_ref.id}],
+            where="messages[0].content", store=store)
+        failures = _check(failures, "an image file part becomes an image payload",
+                          len(resolved_img.images) == 1
+                          and resolved_img.images[0].b64
+                          == base64.b64encode(img_bytes).decode()
+                          and resolved_img.images[0].artifact_id == img_ref.id,
+                          str(resolved_img.images))
+        resolved_big = orun.resolve_content_parts(
+            [{"type": "file", "file_id": big_ref.id}],
+            where="messages[0].content", store=store)
+        failures = _check(failures, "an oversized text part is truncated, not dropped",
+                          "truncated" in resolved_big.text
+                          and resolved_big.text.count("x") >= orun.INLINE_TEXT_BYTES,
+                          resolved_big.text[-120:])
+
+        missing = _raises(lambda: orun.resolve_content_parts(
+            [{"type": "file", "file_id": "art_" + "0" * 32}],
+            where="messages[0].content", store=store))
+        failures = _check(failures, "a missing artifact id is a structured 404",
+                          isinstance(missing, orun.ApiError)
+                          and missing.status == 404
+                          and missing.code == "artifact_not_found"
+                          and missing.param == "messages[0].content[0].file_id",
+                          repr(missing))
+        unknown = _raises(lambda: orun.resolve_content_parts(
+            [{"type": "video", "url": "x"}],
+            where="messages[0].content", store=store))
+        failures = _check(failures, "an unknown part type is a 400",
+                          isinstance(unknown, orun.ApiError)
+                          and unknown.status == 400
+                          and unknown.code == "unsupported_value",
+                          repr(unknown))
+
+        plan = orun.parse_chat_request({
+            "model": "m1",
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "check"},
+                {"type": "file", "file_id": text_ref.id},
+                {"type": "image_url", "image_url": {"url":
+                    "data:image/png;base64,"
+                    + base64.b64encode(b"png").decode()}}]}]}, store=store)
+        failures = _check(failures, "the OpenAI surface resolves file parts",
+                          plan.has_images
+                          and '<file name="notes.md">' in plan.messages[0]["content"]
+                          and plan.messages[0]["images"]
+                          == [base64.b64encode(b"png").decode()],
+                          str(plan.messages)[:200])
+
+        client = _ServeClient(models=["m1"],
+                              capabilities=["completion", "tools", "vision"],
+                              chat_script=[[{"message": {"content": "ok"},
+                                             "done": True}]])
+        server, api, sessions, thread = _start_agent_api(tmp, client,
+                                                         artifacts=store)
+        try:
+            body = {"model": "m1", "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "see"},
+                {"type": "file", "file_id": text_ref.id}]}]}
+            status, _headers, raw = _http(server, "POST", "/v1/agent/turns",
+                                          body=body)
+            turn = json.loads(raw)
+            _poll_turn(server, turn["id"])
+            session = sessions.load(turn["session_id"])
+            user = session.messages[0]
+            failures = _check(failures, "the native surface resolves file parts",
+                              status == 202
+                              and '<file name="notes.md">' in user["content"]
+                              and user.get("artifacts", [{}])[0].get("id")
+                              == text_ref.id
+                              and session.artifacts
+                              and session.artifacts[0]["id"] == text_ref.id,
+                              str(user))
+        finally:
+            _stop_api(server, thread)
+
+        blind = _ServeClient(models=["m1"], capabilities=["completion", "tools"],
+                             chat_script=[[{"message": {"content": "ok"},
+                                            "done": True}]])
+        server, api, sessions, thread = _start_agent_api(tmp, blind,
+                                                         artifacts=store)
+        try:
+            status, _headers, raw = _http(server, "POST", "/v1/agent/turns",
+                                          body={"model": "m1", "messages": [
+                                              {"role": "user", "content": [
+                                                  {"type": "file",
+                                                   "file_id": img_ref.id}]}]})
+            error = json.loads(raw).get("error", {})
+            failures = _check(failures,
+                              "the native surface refuses images without vision",
+                              status == 400
+                              and error.get("code")
+                              == "model_does_not_support_images",
+                              f"{status} {error}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
+def test_artifact_remote_fetch() -> int:
+    """The shared fetch enforces scheme, redirect, size and timeout rules."""
+    failures = 0
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):  # keep the test output clean
+            pass
+
+        def _send(self, status, body=b"", content_type=None, location=None):
+            self.send_response(status)
+            if content_type:
+                self.send_header("Content-Type", content_type)
+            if location:
+                self.send_header("Location", location)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if body:
+                self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == "/small.png":
+                self._send(200, b"\x89PNG\r\n\x1a\nbody", "image/png")
+            elif self.path == "/redirect":
+                self._send(302, location="/small.png")
+            elif self.path == "/loop":
+                self._send(302, location="/loop")
+            elif self.path == "/noctype":
+                self._send(200, b"GIF89a raw")
+            elif self.path == "/slow":
+                time.sleep(0.6)
+                self._send(200, b"late", "text/plain")
+            else:
+                self._send(404)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        data, media = orun.fetch_remote_media(f"{base}/small.png", max_bytes=1024)
+        failures = _check(failures, "a remote image comes back with its type",
+                          data == b"\x89PNG\r\n\x1a\nbody"
+                          and media == "image/png", f"{data!r} {media}")
+        data, media = orun.fetch_remote_media(f"{base}/redirect", max_bytes=1024)
+        failures = _check(failures, "a bounded redirect is followed",
+                          data.startswith(b"\x89PNG") and media == "image/png",
+                          f"{data!r} {media}")
+        _data, media = orun.fetch_remote_media(f"{base}/noctype", max_bytes=1024)
+        failures = _check(failures, "a missing content type is sniffed",
+                          media == "image/gif", media)
+
+        loop = orun.ApiError
+        for name, call, code in (
+            ("a redirect loop fails", lambda: orun.fetch_remote_media(
+                f"{base}/loop", max_bytes=1024), "remote_fetch_failed"),
+            ("an HTTP error fails", lambda: orun.fetch_remote_media(
+                f"{base}/missing", max_bytes=1024), "remote_fetch_failed"),
+            ("an unreachable host fails", lambda: orun.fetch_remote_media(
+                "http://127.0.0.1:1/x", max_bytes=1024, timeout=0.5),
+             "remote_fetch_failed"),
+            ("a stalled fetch times out", lambda: orun.fetch_remote_media(
+                f"{base}/slow", max_bytes=1024, timeout=0.2),
+             "remote_fetch_failed"),
+            ("an oversize body is a 413", lambda: orun.fetch_remote_media(
+                f"{base}/small.png", max_bytes=3), "image_too_large"),
+            ("a non-http scheme is refused", lambda: orun.fetch_remote_media(
+                "ftp://example/x", max_bytes=1024), "unsupported_value"),
+        ):
+            try:
+                call()
+                error = None
+            except orun.ApiError as exc:
+                error = exc
+            failures = _check(failures, name,
+                              error is not None and error.status in (400, 413)
+                              and error.code == code, repr(error))
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    return failures
+
+
+def test_artifact_upload_api() -> int:
+    """POST /v1/files validates strictly and returns the full ref."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        artifact_store = orun.ArtifactStore(Path(tmp) / "artifacts", max_bytes=64)
+        client = _ServeClient(models=["m1"])
+        server, api, sessions, thread = _start_agent_api(
+            tmp, client, artifacts=artifact_store)
+        try:
+            data = base64.b64encode(b"hello upload").decode()
+            status, _headers, raw = _http(server, "POST", "/v1/files", body={
+                "filename": "notes/../notes.txt", "media_type": "text/plain",
+                "data_base64": data})
+            ref = json.loads(raw)
+            failures = _check(failures, "an upload returns the full ref",
+                              status == 201 and ref.get("source") == "user"
+                              and ref.get("filename") == "notes.txt"
+                              and ref.get("size") == 12
+                              and ref.get("sha256")
+                              == hashlib.sha256(b"hello upload").hexdigest()
+                              and ref.get("url")
+                              == f"/v1/artifacts/{ref.get('id')}",
+                              f"{status} {ref}")
+            over = base64.b64encode(b"x" * 100).decode()
+            for name, body, code in (
+                ("an unknown field",
+                 {"filename": "a", "media_type": "text/plain",
+                  "data_base64": data, "x": 1}, "unknown_field"),
+                ("a missing filename",
+                 {"media_type": "text/plain", "data_base64": data}, None),
+                ("a bad media type",
+                 {"filename": "a", "media_type": "nope",
+                  "data_base64": data}, "unsupported_value"),
+                ("bad base64",
+                 {"filename": "a", "media_type": "text/plain",
+                  "data_base64": "!!!"}, None),
+                ("oversize before decode",
+                 {"filename": "a", "media_type": "text/plain",
+                  "data_base64": over}, "artifact_too_large"),
+            ):
+                status, _headers, raw = _http(server, "POST", "/v1/files",
+                                              body=body)
+                error = json.loads(raw).get("error", {})
+                failures = _check(failures, f"the upload API rejects {name}",
+                                  status in (400, 413)
+                                  and (code is None or error.get("code") == code),
+                                  f"{status} {error}")
+        finally:
+            _stop_api(server, thread)
+
+        tiny = orun.ArtifactStore(Path(tmp) / "quota", quota_bytes=5)
+        server, api, sessions, thread = _start_agent_api(tmp, client,
+                                                         artifacts=tiny)
+        try:
+            status, _headers, raw = _http(server, "POST", "/v1/files", body={
+                "filename": "a.txt", "media_type": "text/plain",
+                "data_base64": base64.b64encode(b"123456").decode()})
+            error = json.loads(raw).get("error", {})
+            failures = _check(failures, "an upload over the quota is a 507",
+                              status == 507
+                              and error.get("code") == "artifact_quota_exceeded",
+                              f"{status} {error}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
+def test_artifact_fetch_api() -> int:
+    """Downloads serve the stored bytes with the recorded type; missing 404s."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        artifact_store = orun.ArtifactStore(Path(tmp) / "artifacts")
+        payload = b"\x89PNG\r\n\x1a\nfetch-me"
+        ref = artifact_store.register(payload, filename="pic.png",
+                                      media_type="image/png", source="user")
+        client = _ServeClient(models=["m1"])
+        server, api, sessions, thread = _start_agent_api(
+            tmp, client, artifacts=artifact_store)
+        try:
+            status, headers, raw = _http(server, "GET",
+                                         f"/v1/artifacts/{ref.id}")
+            failures = _check(failures, "a download carries the bytes and type",
+                              status == 200 and raw == payload
+                              and headers.get("Content-Type") == "image/png"
+                              and 'filename="pic.png"'
+                              in headers.get("Content-Disposition", ""),
+                              f"{status} {headers}")
+            status, headers, raw = _http(server, "GET",
+                                         f"/v1/artifacts/{ref.id}/meta")
+            meta = json.loads(raw)
+            failures = _check(failures, "the meta route returns the full ref",
+                              status == 200 and meta == ref.to_dict(),
+                              f"{status} {meta}")
+            for path, code in (
+                (f"/v1/artifacts/art_{'0' * 32}", "artifact_not_found"),
+                (f"/v1/artifacts/art_{'0' * 32}/meta", "artifact_not_found"),
+                ("/v1/artifacts/../../etc/passwd", "not_found"),
+            ):
+                status, _headers, raw = _http(server, "GET", path)
+                error = json.loads(raw).get("error", {})
+                failures = _check(failures, f"a missing artifact 404s ({path[-28:]})",
+                                  status == 404
+                                  and error.get("code") == code,
+                                  f"{status} {error}")
+        finally:
+            _stop_api(server, thread)
+
+        server, api, sessions, thread = _start_agent_api(tmp, client)
+        try:
+            status, _headers, raw = _http(server, "POST", "/v1/files", body={
+                "filename": "a.txt", "media_type": "text/plain",
+                "data_base64": base64.b64encode(b"x").decode()})
+            error = json.loads(raw).get("error", {})
+            failures = _check(failures,
+                              "an upload without a store is a structured 503",
+                              status == 503
+                              and error.get("code") == "artifacts_unavailable",
+                              f"{status} {error}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
 def test_cancellation_destructive_guard() -> int:
     """A stopped turn must not trash anything, even inside the handler."""
     failures = 0
@@ -9004,9 +9866,10 @@ def test_openai_mapping() -> int:
         "model": "m1",
         "messages": [{"role": "user", "content": [
             {"type": "image_url",
-             "image_url": {"url": "https://example/x.png"}}]}]})
-    failures = _check(failures, "remote image URLs are rejected for now",
-                      remote is not None and remote.status == 400,
+             "image_url": {"url": "ftp://example/x.png"}}]}]})
+    failures = _check(failures, "a non-http image URL is rejected",
+                      remote is not None and remote.status == 400
+                      and remote.code == "unsupported_value",
                       repr(remote))
 
     import ollamarun_lib.openai_api as api_module
@@ -9795,7 +10658,7 @@ def test_serve_live() -> int:
 
 
 def _start_agent_api(tmp, client, *, config_extra=None, manager=None,
-                     store=None, args_extra=(), config=None):
+                     store=None, args_extra=(), config=None, artifacts=None):
     """An API server with the native agent routes over a fake backend."""
     if store is None:
         store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
@@ -9809,7 +10672,7 @@ def _start_agent_api(tmp, client, *, config_extra=None, manager=None,
     router = orun.build_router(lambda: client, config=settings)
     api = orun.add_agent_routes(router, args=args, config=settings,
                                 store=store, client_factory=lambda: client,
-                                manager=manager)
+                                manager=manager, artifacts=artifacts)
     server = orun.HttpServer(router, bind="127.0.0.1", port=0, ping_interval=0.2)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -10283,6 +11146,51 @@ def test_agent_approval_edge() -> int:
     return failures
 
 
+def test_serve_approval_timeout_zero() -> int:
+    """serve_approval_timeout: 0 disables the timeout (0 is not "unset")."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        shell = f"touch {Path(tmp) / 'never.txt'}"
+        client = _ServeClient(models=["m1"], capabilities=["completion", "tools"],
+                              chat_script=[
+                                  [{"message": {"content": "", "tool_calls": [
+                                      {"function": {"name": "run_shell",
+                                                    "arguments": {"command": shell}}}]}},
+                                   {"done": True}],
+                                  [{"message": {"content": "ok"}, "done": True}],
+                              ])
+        server, api, store, thread = _start_agent_api(
+            tmp, client, config_extra={"serve_approval_timeout": 0},
+            manager=orun.TurnManager())
+        try:
+            failures = _check(failures,
+                              "an explicit 0 disables the approval timeout",
+                              api._approval_timeout == 0.0,
+                              repr(api._approval_timeout))
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body=_turn_request("wait forever",
+                                   settings={"approval": "interactive"}))
+            turn = json.loads(raw)
+            _poll_turn(server, turn["id"], until={"waiting_approval"})
+            time.sleep(1.0)
+            events = _headless_events(api, turn["id"])
+            resolved = [event.data for event in events
+                        if event.type == "approval.resolved"]
+            failures = _check(failures,
+                              "a zero-timeout approval does not resolve itself",
+                              not resolved, str(resolved[:1]))
+            # Clean up: deny the parked call so the turn can finish.
+            notice = [event.data for event in events
+                      if event.type == "approval.required"][0]
+            _http(server, "POST", f"/v1/agent/approvals/{notice['approval_id']}",
+                  body={"action": "deny"})
+            _poll_turn(server, turn["id"])
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
 def test_agent_policy_mode() -> int:
     """The default mode runs allowlisted calls and denies the rest with a note."""
     failures = 0
@@ -10504,8 +11412,12 @@ def test_agent_turn_validation() -> int:
         ("empty messages", {**base, "messages": []}),
         ("a tool role", {**base, "messages": [{"role": "tool", "content": "x"}]}),
         ("empty content", {**base, "messages": [{"role": "user", "content": " "}]}),
-        ("a non-string content", {**base, "messages": [
-            {"role": "user", "content": [{"type": "text", "text": "x"}]}]}),
+        ("a numeric content", {**base, "messages": [
+            {"role": "user", "content": 123}]}),
+        ("an empty parts array", {**base, "messages": [
+            {"role": "user", "content": []}]}),
+        ("a malformed part", {**base, "messages": [
+            {"role": "user", "content": [42]}]}),
         ("a boolean max_rounds", {**base, "settings": {"max_rounds": True}}),
         ("max_rounds 0", {**base, "settings": {"max_rounds": 0}}),
         ("a bad approval mode", {**base, "settings": {"approval": "auto"}}),
@@ -10711,6 +11623,11 @@ if __name__ == "__main__":
              + test_session_store_process_gate()
              + test_session_store_same_session_writers()
              + test_session_store_without_fcntl()
+             + test_artifact_store() + test_artifact_quota_and_ttl()
+             + test_tool_artifact_registration()
+             + test_artifact_events() + test_artifact_session_persistence()
+             + test_artifact_content_parts() + test_artifact_remote_fetch()
+             + test_artifact_upload_api() + test_artifact_fetch_api()
              + test_python310_syntax() + test_turn_result_mapping()
              + test_turn_event_envelope()
              + test_turn_manager_lifecycle()
@@ -10727,6 +11644,7 @@ if __name__ == "__main__":
              + test_openai_sdk()
              + test_agent_turn_lifecycle() + test_agent_turn_controls()
              + test_agent_approvals() + test_agent_approval_edge()
+             + test_serve_approval_timeout_zero()
              + test_agent_policy_mode() + test_agent_disconnect_policy()
              + test_agent_turn_timeout() + test_agent_sessions_api()
              + test_agent_turn_validation() + test_agent_turn_expiry()

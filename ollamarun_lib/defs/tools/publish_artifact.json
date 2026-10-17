@@ -1,0 +1,14 @@
+{
+  "name": "publish_artifact",
+  "description": "Publish a generated file as a downloadable artifact so the user can retrieve it (for files created by run_shell or run_python; the file tools publish their own results). Only files inside the working directory can be published.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {"type": "string", "description": "file to publish (inside the working directory)"}
+    },
+    "required": ["path"]
+  },
+  "handler": "publish_artifact",
+  "requires": "artifacts",
+  "aliases": ["publish_file", "share_file"]
+}
