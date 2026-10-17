@@ -2,6 +2,28 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.46
+
+Summary of changes in this version:
+  - The turn manager arrived (`ollamarun_lib/turns.py`). Every runtime
+    event now gets a deterministic envelope (`TurnEvent`) carrying the
+    turn id, a 1-based per-turn `seq` and an ISO timestamp, and
+    `TurnManager` runs each turn on its own worker thread: one active
+    turn per session, a global cap, cancellation through the turn's
+    `CancelToken`, and typed errors (`SessionBusy`, `TooManyTurns`,
+    `UnknownTurn`, `TurnExpired`) for the HTTP layer to map later.
+    Events are buffered per turn and replayed to reconnecting
+    subscribers (`after=<seq>`); when the requested window predates the
+    buffer, or a subscriber falls too far behind, the first thing it
+    sees is a `stream.gap` telling it to re-read the turn/session state
+    instead of assuming continuity. Completed turns are retained for a
+    day and then answer "expired"; a subscriber that cannot keep up is
+    closed, so a missing reader can never stall a turn. The runtime is
+    untouched — the manager wraps it — and a headless Repl turn already
+    runs through it end to end. The serve-phase keys
+    (`serve_max_active_turns`, `serve_turn_event_buffer`,
+    `serve_turn_event_ttl`) are in place.
+
 Version: 1.45
 
 Summary of changes in this version:
@@ -21,6 +43,7 @@ Summary of changes in this version:
     blocking another process (with the no-`fcntl` fallback), two writers
     of one session keeping a valid file with no temp leftovers, and
     `delete_file` refusing to trash anything after a stop.
+
 
 Version: 1.44
 
