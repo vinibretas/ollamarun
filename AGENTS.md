@@ -101,7 +101,7 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"1.41"` — keep this
+  constant in `ollamarun_lib/constants.py`, currently `"1.43"` — keep this
   line current when you bump it) and prepend a new bullet list under
   `Summary of changes in this version:` in the top-level `ollamarun` entry
   script's module docstring — read the existing entries there before adding
@@ -199,7 +199,10 @@ a module's own docstring for what lives there before editing:
    on the tool message as `tool_note`) -- plus
    `render_transcript()` (replays a saved session the way it looked live,
    used by `/show`/`--show`). This is the piece that talks to the terminal
-   frame-by-frame; changes to streaming UX go here.
+   frame-by-frame; changes to streaming UX go here. `consume_chunk()` is
+   the shared per-chunk accumulator and `HeadlessRenderer` is the
+   terminal-free presenter (it emits `message.delta` events instead of
+   printing), used by the runtime's headless turns.
 7. **`client.py`** — `OllamaClient` wraps `/api/chat`, `/api/generate`,
    `/api/embed`, `/api/ps`, `/api/pull`, `/api/create` etc. over raw
    `requests`, streaming response bodies line-by-line (including pull
@@ -236,34 +239,47 @@ a module's own docstring for what lives there before editing:
    `tts-remote` without `--json` is retried without it) and turns the
    `say --json` plan into the shared `title_note` via `speech_hosts()`.
    The agent loop that
-   calls into it lives in `repl.py` (approve → execute → append a `role: tool`
-   message → ask the model again), auto-speak lives in `Repl.speak_text`, and
-   rendering of calls/results is `renderer.py`.
+   calls into it lives in `runtime.py` (approve → execute → append a
+   `role: tool` message → ask the model again), auto-speak lives in
+   `Repl.speak_text`, and rendering of calls/results is `renderer.py`.
+   `ToolContext.cancel` + `run_cancellable()` kill a subprocess's process
+   group on a stop, and `ToolRunner` abandons network tools (`fetch_url`,
+   `web_search`) on cancel so the result is discarded instead of waited on.
 9. **`prompts.py`** — the prompt files: `load_prompt()` (override layer first,
    shipped default after, cached per process; missing/unreadable warns and
    reads as None), `default_system_prompt()` (composes `system.md` +
    `system_tools.md` when tools are on), `title_prompt()`/`summarize_prompt()`
    (both expand `{{content}}`) and `render_prompt()`. Defaults live in
    `defs/prompts/`.
-10. **`session.py`** — `Session` (in-memory conversation model: messages,
+10. **`events.py`** — the runtime event vocabulary: `RuntimeEvent` plus
+   the `turn.*`/`message.*`/`tool.*`/`approval.*` type constants and
+   `TERMINAL_EVENTS`. A leaf module (no imports from the package) shared
+   by `renderer.py`, `runtime.py` and the HTTP layer; envelopes, sequence
+   numbers and replay are added on top of the same types, so nothing
+   here depends on transport.
+11. **`session.py`** — `Session` (in-memory conversation model: messages,
    model, system prompt, options) and `SessionStore` (atomic read/write of
-   the JSON files + `index.json`, list/search/export/delete).
+   the JSON files + `index.json`, list/search/export/delete; its index
+   read-modify-write runs under an `RLock` so parallel turns cannot lose
+   entries).
    `export_markdown`/`export_json`/`export_html` are the three export
    formats.
-11. **`emit.py`** — `emit()` plus the `cli_list`/`cli_search`/`cli_show`/
+12. **`emit.py`** — `emit()` plus the `cli_list`/`cli_search`/`cli_show`/
    `cli_export`/`cli_delete` functions that implement the non-interactive
    inspection flags.
-12. **`ui.py`** — the front-end seam: `Ui` (the interactive hooks `repl.py`
+13. **`ui.py`** — the front-end seam: `Ui` (the interactive hooks `repl.py`
    and `interactive.py` call: `ask`, `confirm`, `editor`, `approval`,
-   `notify`), `ConsoleUi` (the inline implementation — the same rich prompts
-   as always, notifications are a no-op), the tool-approval choice list
+   `notify`, and `interactive` — whether the front end can actually ask),
+   `ConsoleUi` (the inline implementation — the same rich prompts as
+   always, notifications are a no-op; `interactive` follows
+   `console.is_terminal`), the tool-approval choice list
    (`approval_entries`/`approval_lines`) and the numbered typed prompt
    `_prompt_approval` (moved here so the console prompt and the TUI modal are
    built from one list), and the status-bar model (`StatusSnapshot`,
    `format_status()`, `spinner_frame()`): plain data plus a pure formatter
    (context text via `format_context`, tps + `tps_avg`), unit-testable
    without a terminal.
-13. **`interactive.py`** — `open_in_editor` (`$OLLAMA_EDITOR`),
+14. **`interactive.py`** — `open_in_editor` (`$OLLAMA_EDITOR`),
    `pick_model`/`pick_session` (fuzzy pickers; `ui=` routes the question to
    the TUI front end), `model_context_length`
    (reads context window from `/api/show`), and the missing-model flow:
@@ -280,7 +296,7 @@ a module's own docstring for what lives there before editing:
    Also
    the GPU-layer spec logic: `model_block_count()`,
    `parse_gpu_layers_spec()`, `resolve_gpu_layers()`, `gpu_layers_label()`.
-14. **`ctxfit.py`** — the context fits behind `/num-ctx --max-gpu` and
+15. **`ctxfit.py`** — the context fits behind `/num-ctx --max-gpu` and
    `/num-ctx --max-cpu N`: `kv_bytes_per_token()` (llama.cpp's KV formula
    applied to `/api/show`'s GGUF metadata, per-layer `head_count_kv` arrays
    included), `machine_state_for()`/`probe_machine_gpu()` (free VRAM plus
@@ -299,12 +315,24 @@ a module's own docstring for what lives there before editing:
    command and the CLI `--num-ctx max-gpu` / `--num-ctx --max-cpu N` flags
    both call. The probes themselves live in `helpers.py` (`local_gpu_probe`,
    `ssh_gpu_probe`, `local_ram_probe`, `ssh_ram_probe`, `host_is_self`).
-15. **`repl.py`** — `SlashCompleter`/`completion_candidates` (completion for
+16. **`runtime.py`** — the agent turn runtime: `AgentRuntime` (the loop
+   and tool execution that used to live in `Repl._generate`/
+   `Repl._execute_tool_calls`), `TurnSettings`, `TurnHooks` (the host
+   seam: payload builder, presenter, approver, event sink, boundary
+   drain), `ApprovalRequest`/`ApprovalDecision`, `TurnResult`, and the
+   shared `build_payload()`/`context_report()`/`session_report()`
+   helpers. It never prints and never touches a terminal; the CLI
+   supplies a `rich` presenter and keeps thin wrappers with the old
+   signatures, while `HeadlessRenderer` + an event sink drive it with no
+   terminal at all.
+17. **`repl.py`** — `SlashCompleter`/`completion_candidates` (completion for
    `/commands`, session ids, models, `@files`, shared with the TUI input),
-   the `Repl` class (the multi-round tool loop
-   `_generate` → `_execute_tool_calls`, the approval flow
-   `_approve_tool_call`, the `MessageQueue` of what was typed while a turn was
-   running and `CancelToken`-driven stopping). `_payload()` is the one chat-
+   the `Repl` class (the CLI adapter over `runtime.AgentRuntime`:
+   `_generate` and `_execute_tool_calls` are thin wrappers that build the
+   per-turn `TurnHooks` and render its events, `_approve_tool_call` is the
+   policy + prompt approver, and the `MessageQueue`/`CancelToken`
+   machinery is unchanged). `headless` + `event_sink` make the same
+   object drivable with no terminal. `_payload()` is the one chat-
    request builder: it prepends the effective system prompt as a leading
    `role: system` message — `Repl.effective_system()` returns the session's
    text when set, the built-in default otherwise, None when disabled (empty
@@ -350,7 +378,7 @@ a module's own docstring for what lives there before editing:
    `cmd_num_ctx` are their only callers (`resolve_num_ctx` is reused by
    `main()` in `cli.py` for `--num-ctx`). `ApprovalPicker` and its runners are
    re-exported from `ui.py` for compatibility.
-16. **`tui.py`** — the optional Textual front end (`--ui tui`): the app
+18. **`tui.py`** — the optional Textual front end (`--ui tui`): the app
    (transcript pane / rule / status bar / always-on `PromptInput`),
    `TuiStreamSink` (the `StreamSink` that paints the streaming answer),
    `TranscriptWriter` (a file-like sink capturing everything printed through
@@ -360,10 +388,11 @@ a module's own docstring for what lives there before editing:
    workers that marshal widget updates back with `call_from_thread`;
    `run_tui()` is the entry point. Textual is optional — `cli.py`'s
    `wants_tui()` checks it and falls back to the inline REPL with a note.
-17. **`run.py`** — `run_once()` (non-REPL path, built on an already-constructed
-   `Repl`) and `run_embed()` (routes embedding-capable models to
-   `/api/embed` instead of chat).
-18. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
+19. **`run.py`** — `run_once()` (non-REPL path, built on an
+   already-constructed `Repl`; its `--json` branch runs the tool loop
+   through `AgentRuntime` directly) and `run_embed()` (routes
+   embedding-capable models to `/api/embed` instead of chat).
+20. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
    every `ollama run` flag), `resolve_model`/`resolve_session` (figuring out
    what model/session a given invocation means, including the `-c`/`-r`/
    `--session` disambiguation in `normalize_argv`), `ui_mode()`/`wants_tui()`
@@ -379,11 +408,12 @@ separate module. The model picker those commands (and a model-less
 `--sort` and updated whenever a sort is chosen at the prompt.
 
 Cross-module imports follow the numbering above (a module only imports from
-one earlier in the list, plus `constants.py`/`helpers.py` from anywhere) —
-keep new code on that side of the dependency graph rather than reaching
-"backwards" (e.g. don't import from `repl.py` inside `renderer.py`); use
-`typing.TYPE_CHECKING` for a backwards-pointing type hint only, the way
-`renderer.py` does for `Session` (defined later, in `session.py`).
+one earlier in the list, plus `constants.py`/`helpers.py`/`events.py` from
+anywhere) — keep new code on that side of the dependency graph rather than
+reaching "backwards" (e.g. don't import from `repl.py` inside
+`renderer.py`); use `typing.TYPE_CHECKING` for a backwards-pointing type
+hint only, the way `renderer.py` does for `Session` (defined later, in
+`session.py`).
 
 ### Where to change what
 
@@ -401,7 +431,12 @@ keep new code on that side of the dependency graph rather than reaching
   function and route through `emit()` (`emit.py`), never a hand-rolled table.
 - **New interactive prompt/hook**: extend the `Ui` protocol and `ConsoleUi`
   in `ui.py`, then implement it in `TuiUi` (`tui.py`) — nothing below the
-  `repl.py` layer may know which front end is running.
+  `repl.py` layer may know which front end is running. Set `interactive`
+  on an implementation that can actually ask; the approval gate reads it.
+- **New runtime event**: add the type to `events.py`, emit it from
+  `runtime.py`, and teach the consumers (`Repl`'s event printer,
+  `HeadlessRenderer`, the future HTTP layer) — the event stream is the
+  contract between the runtime and every front end.
 - **New model-facing text**: tool wording in `defs/tools/*.json`, prompt text
   in `defs/prompts/`; never hardcode it in Python.
 - **Streaming/rendering UX**: `renderer.py` (the TUI consumes the same frames
@@ -425,4 +460,7 @@ methods those layers actually call) instead. Console output assertions that
 capture the shared `console` singleton (`with orun.console.capture() as cap:`)
 should go through the `_plain()` helper before substring-matching, since
 `rich`'s automatic number/keyword highlighting can split a literal substring
-across ANSI color codes.
+across ANSI color codes. The Phase 1 runtime tests (`test_runtime_events`,
+`test_headless_renderer`, `test_session_store_lock`, `test_ui_interactive`,
+`test_tool_cancellation`) cover the `AgentRuntime` event stream, the
+terminal-free turn path, the session-store lock and turn cancellation.
