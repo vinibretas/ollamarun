@@ -2,6 +2,24 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.50
+
+Summary of changes in this version:
+  - The Phase 4 review fixes. Turn retention is enforced by the events
+    endpoint itself: `TurnManager.subscribe()` sweeps expired records like
+    `get()`/`submit()` do, so a completed turn past `serve_turn_event_ttl`
+    answers 410 instead of serving a stale replay (it used to depend on
+    something else having swept first). The manager's synthesized error
+    terminals (a crashed work closure, or a result returned without one)
+    carry the stable "the turn failed internally" message while the raw
+    exception text goes to the `--debug` log and stays on the internal
+    result, so the event stream no longer leaks paths the status endpoint
+    was already hiding. And `PATCH /v1/sessions/{id}` is refused with the
+    same 409 `session_busy` as DELETE while the session has an active turn,
+    closing a concurrent-mutation window against the worker's saves.
+    Regression tests cover the direct-subscribe 410, the sanitized crash
+    stream and the PATCH guard.
+
 Version: 1.49
 
 Summary of changes in this version:
