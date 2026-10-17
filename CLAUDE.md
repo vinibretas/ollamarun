@@ -1,12 +1,14 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository. `AGENTS.md` is a mirror copy for other agents — **edit both together**; they must stay identical.
+Guidance for coding agents (OpenCode, Codex, Cursor, Claude Code, ...) working
+in this repository. `CLAUDE.md` is a mirror copy for Claude Code — **edit both
+together**; they must stay identical.
 
 ## What this is
 
 `ollamarun` is a full terminal agent harness for Ollama: a drop-in superset of
 `ollama run` that can also give the model tools. Beyond every upstream flag it
-adds an approval-gated tool-calling loop over Ollama function calling (22
+adds an approval-gated tool-calling loop over Ollama function calling (23
 built-in tools, defined as data under `defs/`), persistent sessions, live
 markdown/2D-math rendering with a collapsible thinking panel and a tok/s +
 context footer, two front ends (the inline prompt_toolkit REPL and the
@@ -100,7 +102,7 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"1.53"` — keep this
+  constant in `ollamarun_lib/constants.py`, currently `"1.54"` — keep this
   line current when you bump it) and prepend a new bullet list under
   `Summary of changes in this version:` in the top-level `ollamarun` entry
   script's module docstring — read the existing entries there before adding
@@ -228,10 +230,16 @@ a module's own docstring for what lives there before editing:
    retries on a miss; bad files
    warn and are skipped). `ToolSpec` keeps each definition's `requires` and
    `aliases` (`REQUIREMENT_HINTS` words them for the help pages).
+   `ToolHandlerResult(text, artifact_paths)` is the optional structured
+   handler return: `execute_tool()` registers regular files through
+   `ToolContext.artifacts` (the turn-bound `TurnArtifacts` publisher the
+   serve API injects) and attaches the refs to the `ToolOutcome`; plain
+   strings still work for every handler that produces no files.
    `ToolContext` carries the runtime seams the REPL
    injects: `client`/`store` (list_models, system_status, search_sessions),
    `ssh_target`/`ssh_user` for remote probes, `chem_inventory` (the CLI
-   path override) and `context_report`/`session_report` (the plain dicts
+   path override), `artifacts` (the serve publisher) and
+   `context_report`/`session_report` (the plain dicts
    Repl.context_report()/session_report() assemble for the awareness tools).
    The web half
    is self-contained: `_HTMLTextExtractor`/`extract_html_text` turn pages into
@@ -263,8 +271,9 @@ a module's own docstring for what lives there before editing:
    numbers and replay are added on top of the same types, so nothing
    here depends on transport.
 11. **`session.py`** — `Session` (in-memory conversation model: messages,
-   model, system prompt, options) and `SessionStore` (atomic read/write of
-   the JSON files + `index.json`, list/search/export/delete; its index
+   model, system prompt, options; `artifacts` accumulates the refs the
+   conversation saw, `add_artifacts()` dedupes by id) and `SessionStore`
+   (atomic read/write of the JSON files + `index.json`, list/search/export/delete; its index
    read-modify-write runs under a shared `RLock` plus an exclusive `flock`
    on `<index>.lock` (so a CLI saving while serve runs cannot lose entries)
    and its temp files are named per writer.
@@ -339,7 +348,11 @@ a module's own docstring for what lives there before editing:
    signatures, while `HeadlessRenderer` + an event sink drive it with no
    terminal at all. The runtime owns the tool-support capability check
    (once per model, after `turn.started`, warned as a `turn.warning`), and
-   `quiet_tools` is read live so `/render raw` mid-turn takes effect.
+   `quiet_tools` is read live so `/render raw` mid-turn takes effect. Tool
+   artifacts: the runtime emits one `artifact.created` per ref between the
+   approval decision and `tool.result` (which references the ids), stores
+   the refs on the tool session message and accumulates them onto
+   `TurnResult.artifacts`.
 17. **`turns.py`** — the turn manager: `TurnEvent` envelopes (turn id,
    1-based `seq`, ISO timestamp, deterministic `id`), `TurnManager`
    (a worker thread per turn, one active turn per session, a global
@@ -434,7 +447,27 @@ a module's own docstring for what lives there before editing:
    500 and its traceback goes only to the `--debug` log.
    `run_forever()` serves on a worker thread with SIGINT/SIGTERM mapped
    to a clean `shutdown()`. It knows nothing about OpenAI or Ollama.
-22. **`openai_api.py`** — the OpenAI-compatible `/v1` surface
+22. **`artifacts.py`** — the artifact subsystem behind the serve API's
+   files/artifacts endpoints and the `file` content parts: `ArtifactStore`
+   (immutable snapshots behind opaque `art_…` ids; `register()` reserves
+   quota in the index under the `SessionStore` lock pattern — RLock +
+   `flock` — publishes with a temp file + `os.replace`, writes one
+   authoritative manifest per artifact under `meta/`, and `sweep()`s TTL
+   expiries, stale reservations and debris at startup and, rate-limited,
+   on registration) and `ArtifactRef` (the public record: id, media type,
+   sanitized display filename, size, sha256, source, turn/session
+   provenance, created_at and the relative `url`; `TurnArtifacts` is the
+   turn-bound publisher tools receive through `ToolContext.artifacts`).
+   The shared content layer lives here too: `resolve_content_parts()`
+   maps `text`/`image_url`/`file` parts for both API surfaces (text
+   inlining bounded by `INLINE_TEXT_BYTES`, `TEXTUAL_MEDIA_TYPES` as the
+   deterministic text rule, binary parts described but never faked,
+   missing ids a structured 404), `fetch_remote_media()` is the one
+   bounded http(s) fetch (redirects, timeouts, size cap) and
+   `require_vision()` the one image capability check. It raises
+   `server.ApiError` directly — it exists for the HTTP layer. Imports
+   `constants`, `helpers`, `server`.
+23. **`openai_api.py`** — the OpenAI-compatible `/v1` surface
    (`build_router()` registers `GET /v1/models`, `GET /v1/models/{id}`,
    `POST /v1/chat/completions`). Model turns only: `parse_chat_request()`
    validates the OpenAI schema (explicit 400s for unknown fields, `n>1`,
@@ -457,7 +490,9 @@ a module's own docstring for what lives there before editing:
 23. **`agent_api.py`** — the native agent endpoints
    (`add_agent_routes()` registers `POST /v1/agent/turns`,
    `GET /v1/agent/turns/{id}` and `.../events`, `POST .../cancel`,
-   `POST /v1/agent/approvals/{id}` and the `/v1/sessions` routes).
+   `POST /v1/agent/approvals/{id}`, the `/v1/sessions` routes and the
+   files/artifacts routes: `POST /v1/files`, `GET /v1/artifacts/{id}` and
+   `.../meta`).
    `parse_agent_turn()` validates the turn body (new-session seed vs
    existing-session delta; `settings.tools`/`max_rounds`/`approval`/
    `system`/`parameters`/`cancel_on_disconnect`). Each turn builds a
@@ -478,7 +513,7 @@ a module's own docstring for what lives there before editing:
    `serve_turn_timeout` is a watchdog that cancels with reason `timeout`.
    The context warning/auto-compaction step runs headlessly at turn start
    through the runtime's `on_started` hook.
-24. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
+25. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
    every `ollama run` flag), `resolve_model`/`resolve_session` (figuring out
    what model/session a given invocation means, including the `-c`/`-r`/
    `--session` disambiguation in `normalize_argv`), `ui_mode()`/`wants_tui()`
@@ -608,4 +643,17 @@ run/remember/deny and duplicate rejection, approval timeout, cancellation
 and shutdown while waiting, policy-mode allow/deny, disconnect vs
 `cancel_on_disconnect`, the wall-clock turn timeout, the session CRUD
 routes, the turn-schema malformed matrix, 404/410 turn status and the
-headless context warning/compaction.
+headless context warning/compaction. The Phase 5 artifact tests
+(`test_artifact_store`, `test_artifact_quota_and_ttl`,
+`test_tool_artifact_registration`, `test_artifact_events`,
+`test_artifact_session_persistence`, `test_artifact_content_parts`,
+`test_artifact_remote_fetch`, `test_artifact_upload_api`,
+`test_artifact_fetch_api`, `test_serve_approval_timeout_zero`) pin the
+store (ids, hashes, immutability, traversal-shaped ids, sanitized names,
+concurrent quota reservations, TTL/reconciliation sweeps), tool
+publication (file tools' destinations, `publish_artifact` jailing and
+gating, note-not-failure), the `artifact.created` ordering and
+persistence, the shared content resolver (inlining, binary notes, 404s,
+remote-fetch rules against a local stub server) and the HTTP endpoints
+(201 refs, strict validation, 413/507, download headers, 404 and the
+no-store 503).
