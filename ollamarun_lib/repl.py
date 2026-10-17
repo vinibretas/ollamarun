@@ -490,6 +490,10 @@ class Repl:
         self.ui: Ui = ConsoleUi()
         self.queue = MessageQueue()
         self.cancel_token = CancelToken()
+        # The tool context carries the turn's token so stopping a turn kills
+        # the subprocess-backed tool that is running (and refuses to start
+        # the next one); `tool_ctx` is built before the token, so wire it here.
+        self.tool_ctx.cancel = self.cancel_token
         self.current_renderer: Optional[Renderer] = None
         self.state = "ready"
         self.state_detail = ""
