@@ -327,6 +327,76 @@ before parsing, and responses never carry tracebacks or internal paths —
 `--debug` logs requests, upstream detail and tracebacks to
 `~/etc/logs/ollamarun.log`.
 
+## Agent API (turns, events, approvals, sessions)
+
+The same `ollamarun serve` process also exposes ollamarun's own endpoints:
+instead of one inference call, a client submits a **full agent turn** — the
+internal tool loop, approvals and session persistence run server-side — and
+follows it over Server-Sent Events.
+
+| Endpoint | What it does |
+| --- | --- |
+| `POST /v1/agent/turns` | start a full agent turn (`202` + the turn id and its URLs) |
+| `GET /v1/agent/turns/{id}` | snapshot: `queued`/`running`/`waiting_approval`/`completed`/`failed`/`cancelled`, seq, result, error (404 unknown, 410 swept) |
+| `GET /v1/agent/turns/{id}/events` | SSE turn events (`id: <turn>:<seq>`, typed `event:` names; replay with `?after=N` or `Last-Event-ID`) |
+| `POST /v1/agent/turns/{id}/cancel` | request cancellation |
+| `POST /v1/agent/approvals/{id}` | resolve a parked tool decision (`run`/`remember`/`rule`/`auto`/`deny`) |
+| `GET`/`POST /v1/sessions` | list / create sessions |
+| `GET`/`PATCH`/`DELETE /v1/sessions/{id}` | inspect, edit (title/model/system/tags) or trash a session |
+
+```json
+POST /v1/agent/turns
+{
+  "model": "llama3.2:3b",
+  "messages": [{"role": "user", "content": "Clean up /tmp/build"}],
+  "persist": true,
+  "settings": {
+    "tools": true, "max_rounds": 8,
+    "approval": "interactive",
+    "system": null, "parameters": {},
+    "cancel_on_disconnect": false
+  }
+}
+```
+
+For an existing session (`session_id`) the messages are the delta; for a new
+one they seed the history. Turns persist by default (`persist: false` runs
+ephemeral). The event stream carries `turn.started`, `message.delta`,
+`tool.call`/`tool.result`, `approval.required`/`approval.resolved`,
+`turn.warning` and the terminal `turn.completed`/`turn.error`/
+`turn.cancelled`, each with a deterministic `<turn_id>:<seq>` id — a
+reconnecting client resumes with `Last-Event-ID`, a truncated buffer is
+reported as `stream.gap`, and the turn status endpoint is the recovery path
+afterwards.
+
+**Approvals.** `settings.approval` decides who answers:
+
+- `"policy"` (the default) applies the configured tool policy — allowlisted
+  and rule-covered calls run, everything else is denied with a note. The
+  serve policy is never `auto`; `--yes` remains the only CLI auto path.
+- `"interactive"` parks genuinely undecided calls: the turn enters
+  `waiting_approval` and emits `approval.required` with the `approval_id`,
+  the call, the reason and suggested rules. `POST /v1/agent/approvals/{id}`
+  resolves it with `run`, `remember` (this exact call from now on), `rule`
+  (a generalized `{"kind", "pattern"}` grant), `auto` (everything for the
+  rest of this turn) or `deny`. The first decision wins; duplicates get
+  `409`. An unanswered approval times out (config `serve_approval_timeout`,
+  default 300 s) as **denied**: the tool result says `not run: approval
+  timed out` and the model continues.
+
+**Disconnects and cancellation.** A dropped event stream is an
+unsubscribe — the turn keeps running (its results land in the session)
+unless it asked for `"cancel_on_disconnect": true`. `POST .../cancel`
+cancels explicitly: it aborts the in-flight generation, kills cancellable
+subprocesses, resolves a waiting approval as cancelled and persists the
+terminal state; a shutdown does the same for every active turn.
+
+Turn records live in memory — a restart loses live turns (404/410), while
+session history stays under `~/etc/data/ollamarun/sessions/`. One active
+turn per session (`409 session_busy` with `active_turn_id`), a global cap
+(config `serve_max_active_turns`, `429`), and an optional wall-clock limit
+per turn (config `serve_turn_timeout`, `0` = no limit).
+
 ## Prompts and tool definitions
 
 The model-facing text lives in files, not code:
@@ -435,9 +505,10 @@ Selected config keys: `render`, `math`, `thinking`, `ui`, `show_stats`,
 `tps_footer`, `max_render_chars`, `pager`, `auto_title`, `auto_compact`,
 `image_storage`, `max_file_kb`, `options`, `unload_on_exit`, `gpu_layers`,
 `tools*`, `tool_colors`, `tts*`, `chem_*`, `remote*`, `max_gpu_*`,
-`max_cpu_*`, `serve_bind`, `serve_port`, `timeout`. The turn-manager keys
+`max_cpu_*`, `serve_bind`, `serve_port`, `serve_approval_timeout`,
+`serve_turn_timeout`, `timeout`, plus the turn-manager keys
 (`serve_max_active_turns`, `serve_turn_event_buffer`, `serve_turn_event_ttl`)
-belong to the agent endpoints of the upcoming phase. See `DEFAULT_CONFIG` in
+for the agent endpoints. See `DEFAULT_CONFIG` in
 `ollamarun_lib/constants.py` for the full set.
 
 ## Layout

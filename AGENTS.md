@@ -102,7 +102,7 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"1.48"` — keep this
+  constant in `ollamarun_lib/constants.py`, currently `"1.49"` — keep this
   line current when you bump it) and prepend a new bullet list under
   `Summary of changes in this version:` in the top-level `ollamarun` entry
   script's module docstring — read the existing entries there before adding
@@ -443,12 +443,35 @@ a module's own docstring for what lives there before editing:
    off unless asked. `translate_error()`/`stream_backend_error()` map
    upstream failures onto sanitized 404/502 envelopes with stable messages
    (raw backend detail goes to the `--debug` log).
-23. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
+23. **`agent_api.py`** — the native agent endpoints
+   (`add_agent_routes()` registers `POST /v1/agent/turns`,
+   `GET /v1/agent/turns/{id}` and `.../events`, `POST .../cancel`,
+   `POST /v1/agent/approvals/{id}` and the `/v1/sessions` routes).
+   `parse_agent_turn()` validates the turn body (new-session seed vs
+   existing-session delta; `settings.tools`/`max_rounds`/`approval`/
+   `system`/`parameters`/`cancel_on_disconnect`). Each turn builds a
+   headless `Repl` (its `cancel_token` and `tool_ctx.cancel` rewired to the
+   turn's token) and runs `AgentRuntime` through `TurnManager` with the
+   runtime's own tool execution, so the API approver and event sink apply
+   to every round. The approver composes `tools.policy_check` (shared with
+   the CLI), parks genuinely undecided calls in `waiting_approval`
+   (`PendingApproval` + `approval.required` carrying its `approval_id`;
+   the first decision wins, a timeout denies, cancellation resolves it as
+   cancelled), and the serve tool policy is never `auto`. The events
+   endpoint speaks the typed `TurnEvent` stream (`id: <turn>:<seq>`,
+   `?after=`/`Last-Event-ID` replay, `stream.gap` passthrough) and treats a
+   disconnect as an unsubscribe unless `cancel_on_disconnect`; the status
+   endpoint distinguishes 404 from 410 through `TurnManager.expired()`;
+   `serve_turn_timeout` is a watchdog that cancels with reason `timeout`.
+   The context warning/auto-compaction step runs headlessly at turn start
+   through the runtime's `on_started` hook.
+24. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
    every `ollama run` flag), `resolve_model`/`resolve_session` (figuring out
    what model/session a given invocation means, including the `-c`/`-r`/
    `--session` disambiguation in `normalize_argv`), `ui_mode()`/`wants_tui()`
    (which front end to start), `build_serve_parser()`/`serve_main()` (the
-   `ollamarun serve` subcommand: upstream resolution, banner, listener) and
+   `ollamarun serve` subcommand: upstream resolution, banner, the combined
+   OpenAI + agent router, agent shutdown on exit) and
    `main()` as the entry point (called by the top-level `ollamarun` script),
    which dispatches `serve` before the normal parser.
 
@@ -490,11 +513,13 @@ hint only, the way `renderer.py` does for `Session` (defined later, in
   `runtime.py`, and teach the consumers (`Repl`'s event printer,
   `HeadlessRenderer`, the future HTTP layer) — the event stream is the
   contract between the runtime and every front end.
-- **New `/v1` endpoint**: register it in `openai_api.build_router()` and keep
-  transport concerns in `server.py` (body caps, SSE framing, error
-  envelopes); handlers raise `ApiError` for structured errors and return a
-  `Response` or `StreamResponse`. Native agent endpoints belong to
-  `turns.py`'s manager plus a headless `Repl`, not to the OpenAI layer.
+- **New `/v1` endpoint**: register it in `openai_api.build_router()`
+  (OpenAI-compatible surface) or `agent_api.add_agent_routes()` (native
+  agent/session surface), and keep transport concerns in `server.py` (body
+  caps, SSE framing, error envelopes); handlers raise `ApiError` for
+  structured errors and return a `Response` or `StreamResponse`. The agent
+  layer reuses `turns.py`'s manager plus a headless `Repl`, never the
+  OpenAI mapping.
 - **New model-facing text**: tool wording in `defs/tools/*.json`, prompt text
   in `defs/prompts/`; never hardcode it in Python.
 - **Streaming/rendering UX**: `renderer.py` (the TUI consumes the same frames
@@ -558,4 +583,16 @@ dispatch, and the official OpenAI SDK round-trip including negative and
 mid-stream-failure paths (the SDK test skips when the package is absent;
 it is a test-only dependency). `python3 test_ollamarun.py --live`
 additionally runs a real-backend smoke test (models, completion with
-usage, streaming; tool round-trip with `OLLAMARUN_TEST_MODEL` set).
+usage, streaming; tool round-trip with `OLLAMARUN_TEST_MODEL` set). The
+Phase 4 agent tests (`test_agent_turn_lifecycle`, `test_agent_turn_controls`,
+`test_agent_approvals`, `test_agent_approval_edge`, `test_agent_policy_mode`,
+`test_agent_disconnect_policy`, `test_agent_turn_timeout`,
+`test_agent_sessions_api`, `test_agent_turn_validation`,
+`test_agent_turn_expiry`, `test_agent_context_warning`) pin the full-turn
+path (202/status/events/session persistence), session-busy 409 with the
+active id and the global-cap 429, approval parking with
+run/remember/deny and duplicate rejection, approval timeout, cancellation
+and shutdown while waiting, policy-mode allow/deny, disconnect vs
+`cancel_on_disconnect`, the wall-clock turn timeout, the session CRUD
+routes, the turn-schema malformed matrix, 404/410 turn status and the
+headless context warning/compaction.
