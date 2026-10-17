@@ -2,6 +2,25 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.42
+
+Summary of changes in this version:
+  - The tool harness is fully per-tool controllable from the prompt. `/tools`
+    now takes a tool name (or one of its invented aliases) as its first
+    token: `/tools web_search off` toggles just that tool, `/tools web_search
+    help` prints a page generated from the tool's definition — description,
+    every parameter with its type and whether it is required or optional,
+    aliases, approval behaviour and, when the tool is not installed, what it
+    needs (ddgs, tts-remote, chemInventoryAPI) — and `/tools web_search call
+    ARGS` runs the tool yourself through the same approval gate and result
+    panel as a model call (JSON, `key=value` pairs, or a bare value when a
+    single parameter is required); a manual call never touches the
+    conversation. `/tools help` (and `/help tools`) is the reference. Tab
+    completion walks the whole command in both front ends: subcommands and
+    tool names after `/tools`, aliases once a prefix is typed, per-tool
+    actions after a name, and the keywords after enable/disable, policy and
+    rules add.
+
 Version: 1.41
 
 Summary of changes in this version:
