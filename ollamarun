@@ -2,6 +2,35 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.47
+
+Summary of changes in this version:
+  - The API layer's first HTTP phase landed: `ollamarun serve` runs an
+    OpenAI-compatible API in front of Ollama (`GET /v1/models`,
+    `GET /v1/models/{id}`, `POST /v1/chat/completions`, streaming or not),
+    so standard OpenAI clients work against the local models with a custom
+    base URL. Two new modules: `server.py` (generic threading-HTTP
+    plumbing: router, body caps checked before parsing, request timeouts,
+    sanitized error envelopes, an SSE writer with a `: ping` heartbeat and
+    a disconnect callback, SIGINT/SIGTERM shutdown) and `openai_api.py`
+    (the `/v1` mapping). Model turns are a stateless translation proxy:
+    one inference call, client `tools` passed through and returned as
+    standard `tool_calls` — never executed — no session writes, and
+    thinking models surface as `delta.reasoning_content`.
+    Compatibility gaps fail explicitly (n>1, logprobs, logit_bias, audio,
+    non-text modalities, unknown fields, `tool_choice: "required"`, remote
+    image URLs for now) and images are validated against the model's
+    vision capability; the request extension `system: "auto"` sends the
+    built-in default prompt. `--bind`/`--port` (default 0.0.0.0:11440,
+    LAN-accessible without authentication, trusted-network-only) stay
+    separate from the upstream `--host`/`--remote`, and a disconnecting
+    streaming client cancels only its own upstream generation. Phase 1b
+    item 12 closed by deviation: model turns live in the OpenAI layer, not
+    as an `AgentRuntime` mode, so the dead `mode` fields were removed.
+    Tests cover the mapping, the live HTTP surface over a fake backend,
+    client-disconnect cancellation, the serve CLI, and a real OpenAI SDK
+    round-trip (skipped when the package is absent).
+
 Version: 1.46
 
 Summary of changes in this version:
