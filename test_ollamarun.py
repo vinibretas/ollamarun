@@ -7099,6 +7099,67 @@ def test_file_mention_inlining() -> int:
     return failures
 
 
+def test_python310_syntax() -> int:
+    """Every module must parse as Python 3.10 (the pinned interpreter)."""
+    failures = 0
+    import ast
+
+    repo = Path(__file__).parent
+    paths = sorted((repo / "ollamarun_lib").glob("*.py")) + [repo / "ollamarun"]
+    bad = []
+    for path in paths:
+        try:
+            ast.parse(path.read_text(encoding="utf-8"),
+                      filename=str(path), feature_version=(3, 10))
+        except SyntaxError as exc:
+            bad.append(f"{path.name}: {exc}")
+    failures = _check(failures, "every module parses as Python 3.10",
+                      not bad, "; ".join(bad))
+    return failures
+
+
+def test_turn_result_mapping() -> int:
+    """`to_turn_result` maps a GenerationResult onto the API-ready summary."""
+    failures = 0
+    hooks = orun.TurnHooks(
+        client=None, store=None, session=orun.Session.create("m1", "http://h"),
+        settings=orun.TurnSettings(),
+        payload_for=lambda messages, with_tools: {},
+        present_round=lambda payload, after_tools, cancel: orun.GenerationResult(),
+        approver=lambda request: orun.ApprovalDecision(run=False))
+    runtime = orun.AgentRuntime(hooks)
+    runtime.tool_round = 2
+
+    done = orun.GenerationResult(content="done", thinking="hmm",
+                                 stats={"prompt_tokens": 5, "completion_tokens": 2})
+    turn = runtime.to_turn_result(done, session_id="s1", turn_id="t1")
+    failures = _check(failures, "a completed turn maps cleanly",
+                      turn.id == "t1" and turn.session_id == "s1"
+                      and turn.status == "completed"
+                      and turn.final_message["content"] == "done"
+                      and turn.final_message["thinking"] == "hmm"
+                      and turn.usage["prompt_tokens"] == 5
+                      and turn.rounds == 2 and turn.error is None,
+                      str(turn))
+
+    failed = runtime.to_turn_result(orun.GenerationResult(error="boom"))
+    cancelled = runtime.to_turn_result(orun.GenerationResult(cancelled=True,
+                                                             content="partial"))
+    failures = _check(failures, "failure and cancellation get their status",
+                      failed.status == "failed" and failed.error == "boom"
+                      and cancelled.status == "cancelled"
+                      and cancelled.final_message["content"] == "partial",
+                      f"{failed} {cancelled}")
+
+    request = orun.TurnRequest(messages=[{"role": "user", "content": "hi"}],
+                               model="m1", session_id="s1")
+    failures = _check(failures, "TurnRequest defaults match the API plan",
+                      request.mode == "agent" and request.persist is True
+                      and request.messages[0]["role"] == "user",
+                      str(request))
+    return failures
+
+
 def test_tool_support_warning() -> int:
     """The capability warning fires once per model, after turn.started."""
     failures = 0
@@ -7297,7 +7358,8 @@ if __name__ == "__main__":
              + test_cancellation_coverage()
              + test_file_mention_inlining()
              + test_tool_support_warning() + test_quiet_tools_live()
-             + test_approval_event_contract())
+             + test_approval_event_contract()
+             + test_python310_syntax() + test_turn_result_mapping())
     if total:
         print(f"\n{total} failure(s)")
         sys.exit(1)
