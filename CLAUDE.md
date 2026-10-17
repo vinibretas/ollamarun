@@ -85,8 +85,9 @@ docstring convention) — it is binding, not optional, for edits in this repo.
   session storage, REPL commands, CLI parsing, ...) run from `__main__` at
   the bottom — add a new `test_*` function there for a new subsystem and
   wire it into the `total = (...)` sum.
-- No build/lint config exists. Verify manually: `./ollamarun --help`, or a
-  real one-shot call against a running Ollama (`./ollamarun MODEL "prompt"`).
+- No build/lint config exists. Verify manually: `./ollamarun --help`,
+  `./ollamarun serve --help`, or a real one-shot call against a running
+  Ollama (`./ollamarun MODEL "prompt"`).
 - The entry-point script is executable and shebang-pinned to
   `#! /bin/python3.10` (system Python). Do not use stdlib features newer
   than 3.10 without a try/except fallback (see the `HAS_PYLATEXENC`/
@@ -99,7 +100,7 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"1.46"` — keep this
+  constant in `ollamarun_lib/constants.py`, currently `"1.47"` — keep this
   line current when you bump it) and prepend a new bullet list under
   `Summary of changes in this version:` in the top-level `ollamarun` entry
   script's module docstring — read the existing entries there before adding
@@ -408,12 +409,45 @@ a module's own docstring for what lives there before editing:
    already-constructed `Repl`; its `--json` branch runs the tool loop
    through `AgentRuntime` directly) and `run_embed()` (routes
    embedding-capable models to `/api/embed` instead of chat).
-21. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
+21. **`server.py`** — the generic HTTP plumbing behind `ollamarun serve`:
+   `Router` (method + `{param}` path patterns, with distinct 404/405),
+   the `Request`/`Response`/`StreamResponse` model, `HttpServer` (a
+   `ThreadingHTTPServer` wrapper with a body cap checked before the body
+   is read, socket timeouts and daemon handler threads) and `SseWriter`
+   (one HTTP chunk per event, flushed; a `: ping` heartbeat from a
+   companion thread; a failed write marks the stream broken exactly once
+   and fires the response's `on_disconnect`). `ApiError` renders as the
+   sanitized `{"error": {...}}` envelope; any other exception is a bare
+   500 and its traceback goes only to the `--debug` log.
+   `run_forever()` serves on a worker thread with SIGINT/SIGTERM mapped
+   to a clean `shutdown()`. It knows nothing about OpenAI or Ollama.
+22. **`openai_api.py`** — the OpenAI-compatible `/v1` surface
+   (`build_router()` registers `GET /v1/models`, `GET /v1/models/{id}`,
+   `POST /v1/chat/completions`). Model turns only: `parse_chat_request()`
+   validates the OpenAI schema (explicit 400s for unknown fields, `n>1`,
+   `logprobs`, `logit_bias`, `audio`, non-text modalities,
+   `tool_choice: "required"`), converts messages verbatim (assistant
+   `tool_calls`, `role: tool` + `tool_call_id`→`tool_name` history,
+   data-URI images) and `ollama_payload()` builds the one `/api/chat`
+   call; client `tools` pass through and never execute (the agent loop,
+   tools registry and sessions are not reachable from this module).
+   `completion_body()`/`_stream_completion()`/`stream_chunk()` shape the
+   OpenAI response and SSE (role chunk, deltas, thinking as
+   `delta.reasoning_content`, the tool calls as one indexed array chunk,
+   finish reason, optional usage chunk, `[DONE]`); `OpenAIApi` caches the
+   model list and capabilities briefly and builds one `OllamaClient` per
+   request so a disconnecting client cancels only its own stream. The
+   `system` extension (`"auto"` = built-in default, text = replace) is
+   off unless asked. `translate_error()` maps upstream failures onto
+   404/502 envelopes.
+23. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
    every `ollama run` flag), `resolve_model`/`resolve_session` (figuring out
    what model/session a given invocation means, including the `-c`/`-r`/
    `--session` disambiguation in `normalize_argv`), `ui_mode()`/`wants_tui()`
-   (which front end to start) and `main()` as the entry point (called by the
-   top-level `ollamarun` script).
+   (which front end to start), `build_serve_parser()`/`serve_main()` (the
+   `ollamarun serve` subcommand: upstream resolution, banner, listener) and
+   `main()` as the entry point (called by the top-level `ollamarun` script),
+   which dispatches `serve` before the normal parser.
 
 Model housekeeping (unload-before-switch, unload-on-exit, embedding models
 always resident) is cross-cutting logic that lives in the REPL commands
@@ -453,6 +487,11 @@ hint only, the way `renderer.py` does for `Session` (defined later, in
   `runtime.py`, and teach the consumers (`Repl`'s event printer,
   `HeadlessRenderer`, the future HTTP layer) — the event stream is the
   contract between the runtime and every front end.
+- **New `/v1` endpoint**: register it in `openai_api.build_router()` and keep
+  transport concerns in `server.py` (body caps, SSE framing, error
+  envelopes); handlers raise `ApiError` for structured errors and return a
+  `Response` or `StreamResponse`. Native agent endpoints belong to
+  `turns.py`'s manager plus a headless `Repl`, not to the OpenAI layer.
 - **New model-facing text**: tool wording in `defs/tools/*.json`, prompt text
   in `defs/prompts/`; never hardcode it in Python.
 - **Streaming/rendering UX**: `renderer.py` (the TUI consumes the same frames
@@ -503,4 +542,12 @@ and the destructive-tool refusal after a stop. The Phase 2 tests
 `test_turn_subscriber_overflow`, `test_turn_manager_shutdown`,
 `test_turn_manager_context`, `test_turn_manager_headless_turn`) cover
 envelopes, lifecycle, replay/gap/truncation, session exclusivity, the
-active cap, cancellation, overflow and shutdown.
+active cap, cancellation, overflow and shutdown. The Phase 3 serve tests
+(`test_openai_mapping`, `test_serve_http`, `test_serve_disconnect`,
+`test_serve_cli`, `test_openai_sdk`) pin request validation and
+message/tool mapping, the live HTTP surface over a fake backend (models,
+non-stream and SSE chat, tool calls, the vision gate, the body cap and the
+error envelopes), client-disconnect cancellation, the serve parser,
+config defaults and `main()` dispatch, and the official OpenAI SDK
+round-trip (the SDK test skips when the package is absent; it is a
+test-only dependency).
