@@ -627,7 +627,8 @@ class AgentApi:
         #: turn tools publish into it, and the artifact routes read from it.
         self._artifacts = artifacts
         #: The serve model tracker (`helpers.ModelTracker`): feeds the
-        #: unused-on-exit unload. None outside `ollamarun serve`.
+        #: unload-on-exit of the models this server used. None outside
+        #: `ollamarun serve`.
         self._tracker = tracker
         # Every turn-manager key is explicit-None defaulted: a configured 0
         # must not be conflated with "unset" (`or 4` would).

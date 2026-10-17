@@ -102,7 +102,7 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"1.54"` — keep this
+  constant in `ollamarun_lib/constants.py`, currently `"1.56"` — keep this
   line current when you bump it) and prepend a new bullet list under
   `Summary of changes in this version:` in the top-level `ollamarun` entry
   script's module docstring — read the existing entries there before adding
@@ -144,7 +144,8 @@ a module's own docstring for what lives there before editing:
 
 1. **`constants.py`** — shared stdlib/`rich`/optional-dependency imports,
    `VERSION`, config/session/log paths, `THEME`, the shared `console`
-   singleton, `DEFAULT_CONFIG`, and the tool-panel colours (`TOOL_COLORS`/
+   singleton, `DEFAULT_CONFIG`, the `DEFAULT_SERVE_*` transport/limit
+   defaults, and the tool-panel colours (`TOOL_COLORS`/
    `TOOL_COLOR_PALETTE`, `tool_color()` with its random per-run fallback,
    `set_tool_colors()` for the config `tool_colors` overrides). Every other
    module sits on top of this one.
@@ -157,7 +158,11 @@ a module's own docstring for what lives there before editing:
    (`load_config`) and the response-timings policy (`resolve_show_stats`),
    logging setup, and the count formatters shared by both front ends
    (`human_tokens`/`format_context` for the ctx counter, `human_chars`,
-   `human_duration`).
+   `human_duration`), `serve_settings()` (the one validated `serve_*`
+   policy matrix: defaults, types, ranges and zero semantics, consumed
+   by `serve_main`), `model_allowed()` (the `serve_models` tag-aware
+   fnmatch allowlist) and `ModelTracker` (the models a serve process
+   used, for unload-on-exit).
 3. **`mathrender.py`** — LaTeX → Unicode, combined in one module because the
    two halves call into each other: regex-level conversion for inline math
    (`convert_math`, `latex_to_unicode`) falls through to the 2D layout
@@ -238,9 +243,13 @@ a module's own docstring for what lives there before editing:
    `ToolContext` carries the runtime seams the REPL
    injects: `client`/`store` (list_models, system_status, search_sessions),
    `ssh_target`/`ssh_user` for remote probes, `chem_inventory` (the CLI
-   path override), `artifacts` (the serve publisher) and
+   path override), `artifacts` (the serve publisher),
    `context_report`/`session_report` (the plain dicts
-   Repl.context_report()/session_report() assemble for the awareness tools).
+   Repl.context_report()/session_report() assemble for the awareness tools)
+   and `workspace` (the API path jail: when set, path arguments and the
+   `run_shell`/`run_python` working directories resolve under it and
+   resolved escapes including symlinks are refused; the CLI leaves it
+   unset).
    The web half
    is self-contained: `_HTMLTextExtractor`/`extract_html_text` turn pages into
    readable text plus links, `extract_pdf_text` uses pypdf or pdftotext,
@@ -359,8 +368,9 @@ a module's own docstring for what lives there before editing:
    (a worker thread per turn, one active turn per session, a global
    cap, per-turn buffers, replay with `stream.gap`, TTL retention swept
    on every entry point (`subscribe()` included), cancellation,
-   shutdown, and synthesized error terminals that carry the stable
-   `INTERNAL_ERROR_MESSAGE` while the raw crash text goes to the
+   `begin_shutdown()` (refuse new submissions before the ordered
+   cancel/join), shutdown, and synthesized error terminals that carry the
+   stable `INTERNAL_ERROR_MESSAGE` while the raw crash text goes to the
    `--debug` log and stays on the internal `TurnResult`),
    `TurnHandle`/`Subscription`/
    `TurnSnapshot`, and the typed errors (`SessionBusy`/`TooManyTurns`/
@@ -440,7 +450,11 @@ a module's own docstring for what lives there before editing:
    `Router` (method + `{param}` path patterns, with distinct 404/405),
    the `Request`/`Response`/`StreamResponse` model, `HttpServer` (a
    `ThreadingHTTPServer` wrapper with a body cap checked before the body
-   is read, socket timeouts and daemon handler threads) and `SseWriter`
+   is read — `Content-Length` and chunked alike, the chunked decoder
+   enforcing the cumulative decoded cap before each chunk and rejecting
+   ambiguous or malformed framing — socket timeouts, daemon handler
+   threads and a bounded `drain()` over its tracked in-flight handlers)
+   and `SseWriter`
    (one HTTP chunk per event, flushed; a `: ping` heartbeat from a
    companion thread; a failed write marks the stream broken exactly once
    and fires the response's `on_disconnect`). `ApiError` renders as the
@@ -455,7 +469,8 @@ a module's own docstring for what lives there before editing:
    `flock` — publishes with a temp file + `os.replace`, writes one
    authoritative manifest per artifact under `meta/`, and `sweep()`s TTL
    expiries, stale reservations and debris at startup and, rate-limited,
-   on registration) and `ArtifactRef` (the public record: id, media type,
+   on registration; every index/manifest path read back must resolve
+   inside the store root) and `ArtifactRef` (the public record: id, media type,
    sanitized display filename, size, sha256, source, turn/session
    provenance, created_at and the relative `url`; `TurnArtifacts` is the
    turn-bound publisher tools receive through `ToolContext.artifacts`).
@@ -463,8 +478,11 @@ a module's own docstring for what lives there before editing:
    maps `text`/`image_url`/`file` parts for both API surfaces (text
    inlining bounded by `INLINE_TEXT_BYTES`, `TEXTUAL_MEDIA_TYPES` as the
    deterministic text rule, binary parts described but never faked,
-   missing ids a structured 404), `fetch_remote_media()` is the one
-   bounded http(s) fetch (redirects, timeouts, size cap) and
+   missing ids a structured 404), charging every part/image/text byte to
+   an optional `InputBudget` (`InputLimits`/`input_limits`, the aggregate
+   `serve_max_*` caps: message/part counts, message and total text bytes,
+   image counts and cumulative decoded image bytes), `fetch_remote_media()`
+   is the one bounded http(s) fetch (redirects, timeouts, size cap) and
    `require_vision()` the one image capability check. It raises
    `server.ApiError` directly — it exists for the HTTP layer. Imports
    `constants`, `helpers`, `server`.
@@ -498,13 +516,15 @@ a module's own docstring for what lives there before editing:
    upstream failures onto sanitized 404/502 envelopes with stable messages
    (raw backend detail goes to the `--debug` log).
 25. **`agent_api.py`** — the native agent endpoints
-   (`add_agent_routes()` registers `POST /v1/agent/turns`,
+   (`build_agent_api()` constructs the one `AgentApi`;
+   `add_artifact_routes()` registers the shared `POST /v1/files` and
+   `GET /v1/artifacts/*` routes — kept even when `serve_agent` disables
+   the agent surface — and `add_agent_routes()` registers
+   `POST /v1/agent/turns`,
    `GET /v1/agent/turns/{id}` and `.../events`, `POST .../cancel`,
-   `POST /v1/agent/approvals/{id}`, the `/v1/sessions` routes, the
-   files/artifacts routes (`POST /v1/files`, `GET /v1/artifacts/{id}` and
-   `.../meta`) and the fit routes (`POST /v1/agent/fit`,
-   `POST /v1/agent/fits`, `GET /v1/agent/fits/{id}`,
-   `POST /v1/agent/fits/{id}/cancel`).
+   `POST /v1/agent/approvals/{id}`, the `/v1/sessions` routes and the
+   fit routes (`POST /v1/agent/fit`, `POST /v1/agent/fits`,
+   `GET /v1/agent/fits/{id}`, `POST /v1/agent/fits/{id}/cancel`).
    `parse_agent_turn()` validates the turn body (new-session seed vs
    existing-session delta; `settings.tools`/`max_rounds`/`approval`/
    `system`/`parameters`/`cancel_on_disconnect`). Each turn builds a
@@ -526,7 +546,9 @@ a module's own docstring for what lives there before editing:
    The context warning/auto-compaction step runs headlessly at turn start
    through the runtime's `on_started` hook. Context control:
    `PATCH`/turn settings take `num_ctx`/`gpu_layers` (strictly validated;
-   a placement change unloads the resident model),
+   a placement change unloads the resident model) and a validated
+   `parameters` merge (`validate_settings_parameters`: known Ollama
+   options type/range checked, unknown names passed through bounded),
    `settings.num_ctx: "max-gpu"|"max-cpu"` estimates at turn start
    (estimate only) and rides the typed `session.fit` event plus
    `result.fit`, `POST /v1/agent/fit` serves the synchronous estimate with
@@ -539,8 +561,11 @@ a module's own docstring for what lives there before editing:
    what model/session a given invocation means, including the `-c`/`-r`/
    `--session` disambiguation in `normalize_argv`), `ui_mode()`/`wants_tui()`
    (which front end to start), `build_serve_parser()`/`serve_main()` (the
-   `ollamarun serve` subcommand: upstream resolution, banner, the combined
-   OpenAI + agent router, agent shutdown on exit) and
+   `ollamarun serve` subcommand: upstream resolution, `serve_settings()`
+   validation, banner, the combined OpenAI + agent router gated by
+   `serve_agent`, and the ordered shutdown — refuse new work, cancel/join,
+   drain handlers within `serve_shutdown_timeout`, then unload the tracked
+   models unless `--keep-loaded`) and
    `main()` as the entry point (called by the top-level `ollamarun` script),
    which dispatches `serve` before the normal parser.
 
@@ -583,9 +608,10 @@ hint only, the way `renderer.py` does for `Session` (defined later, in
   `HeadlessRenderer`, the future HTTP layer) — the event stream is the
   contract between the runtime and every front end.
 - **New `/v1` endpoint**: register it in `openai_api.build_router()`
-  (OpenAI-compatible surface) or `agent_api.add_agent_routes()` (native
-  agent/session surface), and keep transport concerns in `server.py` (body
-  caps, SSE framing, error envelopes); handlers raise `ApiError` for
+  (OpenAI-compatible surface) or the right native group —
+  `agent_api.add_agent_routes()` (turns/sessions/fits) or
+  `add_artifact_routes()` (shared files/artifacts), and keep transport
+  concerns in `server.py` (body caps, SSE framing, error envelopes); handlers raise `ApiError` for
   structured errors and return a `Response` or `StreamResponse`. The agent
   layer reuses `turns.py`'s manager plus a headless `Repl`, never the
   OpenAI mapping.
@@ -650,7 +676,16 @@ wired request timeout (stalled body 408, streams outliving it),
 single-flight caches, the serve parser, config defaults and `main()`
 dispatch, and the official OpenAI SDK round-trip including negative and
 mid-stream-failure paths (the SDK test skips when the package is absent;
-it is a test-only dependency). `python3 test_ollamarun.py --live`
+it is a test-only dependency). The Phase 6 hardening tests
+(`test_serve_config_matrix`, `test_chunked_bodies`, `test_input_limits`,
+`test_native_parameters`, `test_workspace_jail`,
+`test_artifact_root_containment`, `test_serve_model_gate`,
+`test_serve_agent_switch`, `test_serve_shutdown`,
+`test_serve_unload_on_exit`) pin the validated serve matrix and its
+transport wiring, chunked decoding, the aggregate resolved-input budget,
+native option validation, the workspace jail, artifact-root containment,
+the model allowlist, the `serve_agent` route groups, the shutdown order
+and the tracked unload. `python3 test_ollamarun.py --live`
 additionally runs a real-backend smoke test (models, completion with
 usage, streaming; tool round-trip with `OLLAMARUN_TEST_MODEL` set). The
 Phase 4 agent tests (`test_agent_turn_lifecycle`, `test_agent_turn_controls`,

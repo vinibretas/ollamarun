@@ -680,7 +680,8 @@ class OpenAIApi:
         #: one: `file` content parts resolve through it. None otherwise.
         self._artifacts = artifacts
         #: The serve model tracker (`helpers.ModelTracker`): feeds the
-        #: unused-on-exit unload. None outside `ollamarun serve`.
+        #: unload-on-exit of the models this server used. None outside
+        #: `ollamarun serve`.
         self._tracker = tracker
         #: Aggregate resolved-input caps (`serve_max_*`); the JSON body cap
         #: bounds the request as sent, these bound what parts may assemble.
