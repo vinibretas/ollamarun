@@ -9,6 +9,14 @@ plan follows the merged API plan
 (`ollamarunPhase1bPlan.md`). The CLI/TUI must keep working and
 `python3 test_ollamarun.py` stays green at every step.
 
+## Status
+
+Implemented and on `main`: the envelope vocabulary (`events.py`) and
+the turn manager (`turns.py`). The lifecycle invariants called out in
+the concurrency and replay sections are the Phase 2 completion work:
+enforce them with regression tests before the HTTP layer relies on
+them.
+
 ## Constraints
 
 - **No TUI/Textual work in this plan.** The `--ui tui` front end is
@@ -126,10 +134,12 @@ Typed errors (mapped to HTTP in Phase 4):
 - Terminal event is the last one; subscribers see `at_terminal` and end.
 - Completed turns are retained (events + snapshot) for
   `serve_turn_event_ttl`, then swept. Active turns never expire.
-- **Durability**: turn records are in-memory; the session JSON stays the
-  durable record. After a sweep, `GET /v1/agent/turns/{id}` (Phase 4)
-  cannot replay — `TurnExpired`/404 plus the session history is the
-  answer. Persisting turn records is a Phase 4 decision, not assumed.
+- **Durability**: turn records and event buffers are in-memory; a
+  server restart destroys a live turn record even though the
+  conversation stays in the session store. The session JSON is the
+  durable record: clients must not treat turns as durable jobs, and
+  `GET /v1/agent/turns/{id}` (Phase 4) answers 404/410 for whatever a
+  restart or a sweep removed.
 
 ### Buffer and replay semantics
 
@@ -144,6 +154,10 @@ Typed errors (mapped to HTTP in Phase 4):
     replay from `oldest_seq`; the client must treat missed events as
     unknown and re-read the turn/session status.
   - terminal + buffer already swept: `TurnExpired`.
+- Retention is enforced on every entry point: `subscribe()` sweeps
+  expired records before its lookup, exactly like `get()` and
+  `submit()`, so a completed turn past its TTL cannot be subscribed to
+  just because nothing else triggered a sweep.
 - Slow subscribers: a bounded queue; on overflow the subscription is
   sent a final `stream.gap` (`reason: "slow_subscriber"`) and closed.
   The turn continues; a missing subscriber never stalls it.
@@ -157,6 +171,12 @@ Typed errors (mapped to HTTP in Phase 4):
   emits `turn.cancelled` (synthesized if it cannot).
 - `shutdown(cancel=True, timeout=...)` cancels active turns, joins with a
   timeout, sweeps; idempotent.
+- Every managed turn owns a `CancelToken`: `submit()` creates one when
+  the caller does not supply it, so `handle.cancel()` and `shutdown()`
+  always have a token to cancel.
+- Worker startup is atomic with respect to shutdown: the worker thread
+  starts while the registry lock is held, so `shutdown()` can never
+  skip an accepted record because its worker had not started yet.
 - Wall-clock turn timeout is **not** enforced here — Phase 4 owns it
   (`serve_turn_timeout`), because it belongs with the request lifecycle.
 
@@ -239,6 +259,9 @@ handle = manager.submit(session_id=repl.session.id, work=work,
   a turn.
 - One active turn per session and the global cap enforced with typed
   errors.
+- Cancellation is a property of every managed turn, shutdown cannot
+  miss an accepted one, and retention applies to subscriptions too;
+  each has a regression test.
 
 ## Implementation order
 
@@ -247,5 +270,7 @@ handle = manager.submit(session_id=repl.session.id, work=work,
    typed errors (the bulk of the tests).
 3. Context decoration + the three `serve_*` config keys + the end-to-end
    headless closure test.
-4. Version bump 1.46 + changelog entry.
-5. Docs (AGENTS/CLAUDE numbering and notes).
+4. Lifecycle invariants (tokenless cancellation, startup/shutdown
+   atomicity, retention on subscribe) + regression tests.
+5. Version bump 1.47 + changelog entry.
+6. Docs (AGENTS/CLAUDE numbering and notes).
