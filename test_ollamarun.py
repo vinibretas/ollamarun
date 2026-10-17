@@ -2958,6 +2958,105 @@ def test_fit_service() -> int:
     return failures
 
 
+def test_session_context_fields() -> int:
+    """PATCH and turn settings carry first-class num_ctx/gpu_layers."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        show_data = {"model_info": {"m1.context_length": 32768,
+                                    "m1.block_count": 24}}
+        client = _ServeClient(models=["m1"],
+                              capabilities=["completion", "tools"],
+                              resident=["m1"], show_data=show_data,
+                              chat_script=[[{"message": {"content": "ok"},
+                                             "done": True}]])
+        server, api, sessions, thread = _start_agent_api(tmp, client)
+        try:
+            status, _headers, raw = _http(server, "POST", "/v1/sessions",
+                                          body={"model": "m1"})
+            session_id = json.loads(raw)["id"]
+            status, _headers, raw = _http(
+                server, "PATCH", f"/v1/sessions/{session_id}",
+                body={"num_ctx": 8192, "gpu_layers": "50%"})
+            failures = _fit_check("PATCH stores num_ctx and a resolved spec",
+                                  status == 200, f"{status} {raw[:120]!r}")
+            saved = sessions.load(session_id)
+            failures = _fit_check("the values persist on the session",
+                                  saved.parameters.get("num_ctx") == 8192
+                                  and saved.gpu_layers == "50%",
+                                  f"{saved.parameters} {saved.gpu_layers}")
+            failures = _fit_check("a placement change unloads the resident model",
+                                  "m1" in client.unloaded, str(client.unloaded))
+            status, _headers, raw = _http(
+                server, "PATCH", f"/v1/sessions/{session_id}",
+                body={"num_ctx": None, "gpu_layers": None})
+            saved = sessions.load(session_id)
+            failures = _fit_check("null clears the values",
+                                  "num_ctx" not in saved.parameters
+                                  and saved.gpu_layers is None,
+                                  f"{saved.parameters} {saved.gpu_layers}")
+            for name, body, param in (
+                ("an over-max num_ctx", {"num_ctx": 65536}, "num_ctx"),
+                ("a boolean num_ctx", {"num_ctx": True}, "num_ctx"),
+                ("a zero num_ctx", {"num_ctx": 0}, "num_ctx"),
+                ("a bad spec", {"gpu_layers": "nope"}, "gpu_layers"),
+            ):
+                status, _headers, raw = _http(
+                    server, "PATCH", f"/v1/sessions/{session_id}", body=body)
+                error = json.loads(raw).get("error", {})
+                failures = _fit_check(f"PATCH rejects {name}",
+                                      status == 400
+                                      and error.get("param") == param,
+                                      f"{status} {error}")
+
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body=_turn_request("set it",
+                                   settings={"num_ctx": 4096,
+                                             "gpu_layers": "cpu"}))
+            turn = json.loads(raw)
+            _poll_turn(server, turn["id"])
+            saved = sessions.load(turn["session_id"])
+            failures = _fit_check("turn settings store the context fields",
+                                  saved.parameters.get("num_ctx") == 4096
+                                  and saved.gpu_layers == "cpu",
+                                  f"{saved.parameters} {saved.gpu_layers}")
+            for name, settings, param in (
+                ("a negative num_ctx", {"num_ctx": -1}, "settings.num_ctx"),
+                ("a numeric gpu_layers", {"gpu_layers": 5},
+                 "settings.gpu_layers"),
+            ):
+                status, _headers, raw = _http(
+                    server, "POST", "/v1/agent/turns",
+                    body=_turn_request("bad", settings=settings))
+                error = json.loads(raw).get("error", {})
+                failures = _fit_check(f"turn settings reject {name}",
+                                      status == 400
+                                      and error.get("param") == param,
+                                      f"{status} {error}")
+        finally:
+            _stop_api(server, thread)
+
+        sparse = _ServeClient(models=["m1"],
+                              capabilities=["completion", "tools"],
+                              show_data={"model_info": {"m1.context_length": 32768}})
+        server, api, sessions, thread = _start_agent_api(tmp, sparse)
+        try:
+            status, _headers, raw = _http(server, "POST", "/v1/sessions",
+                                          body={"model": "m1"})
+            session_id = json.loads(raw)["id"]
+            status, _headers, raw = _http(
+                server, "PATCH", f"/v1/sessions/{session_id}",
+                body={"gpu_layers": "50%"})
+            error = json.loads(raw).get("error", {})
+            failures = _fit_check("a percent spec needs a resolvable layer count",
+                                  status == 400
+                                  and error.get("param") == "gpu_layers",
+                                  f"{status} {error}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
 def test_model_profile() -> int:
     """First-principles modelling: GGUF geometry, quant/params and tags facts."""
     failures = 0
@@ -11836,7 +11935,7 @@ if __name__ == "__main__":
              + test_context_usage()
              + test_cmd_num_ctx() + test_ctxfit()
              + test_ctxfit_outcome() + test_ctxfit_cancel_progress()
-             + test_fit_service()
+             + test_fit_service() + test_session_context_fields()
              + test_cmd_num_ctx_max_gpu()
              + test_ram_helpers() + test_cpu_fit() + test_cmd_num_ctx_max_cpu()
              + test_model_profile()
