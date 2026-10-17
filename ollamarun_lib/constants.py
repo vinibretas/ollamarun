@@ -337,6 +337,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "serve_artifact_max_bytes": DEFAULT_ARTIFACT_MAX_BYTES,
     "serve_artifact_quota_bytes": DEFAULT_ARTIFACT_QUOTA_BYTES,
     "serve_artifact_ttl": DEFAULT_ARTIFACT_TTL,
+    # Context fits (`fits.py` / `agent_api.py`): `serve_fit` gates the
+    # estimate/probe surface ("off"/"estimate"/"probe"), the cap bounds
+    # concurrent probing, the TTL is completed-job retention (0 = forever).
+    "serve_fit": "probe",
+    "serve_max_active_fits": 2,
+    "serve_fit_ttl": 86400,
 }
 
 THINKING_MODES = {"collapsed", "expanded", "hidden"}

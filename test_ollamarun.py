@@ -2715,7 +2715,7 @@ def test_ctxfit_outcome() -> int:
                               config=dict(orun.DEFAULT_CONFIG),
                               calibration_path=str(Path(tmp) / "c.json"))
         outcome = orun.fit_context(req, mode="gpu")
-        failures = _fit_check("fit_context returns the structured outcome",
+        failures += _fit_check("fit_context returns the structured outcome",
                               outcome.ok and outcome.num_ctx is not None
                               and outcome.mode == "gpu"
                               and outcome.source == "estimate"
@@ -2723,26 +2723,26 @@ def test_ctxfit_outcome() -> int:
                               and outcome.num_ctx == outcome.fit.ctx,
                               repr(outcome.to_dict())[:200])
         payload = outcome.to_dict()
-        failures = _fit_check("the outcome serializes as data",
+        failures += _fit_check("the outcome serializes as data",
                               payload["num_ctx"] == outcome.num_ctx
                               and payload["report"]["weights_total"] > 0
                               and payload["report"]["kv_per_token"] > 0
                               and isinstance(payload["report"]["devices"], list),
                               repr(payload)[:300])
         cpu = orun.fit_context(req, mode="cpu", percent=70)
-        failures = _fit_check("the cpu outcome carries its percentage",
+        failures += _fit_check("the cpu outcome carries its percentage",
                               cpu.ok and cpu.percent == 70
                               and cpu.bound == "max_cpu",
                               repr(cpu.to_dict())[:200])
         bad = orun.fit_context(orun.FitRequest(client=client, model="m1",
                                                machine=machine),
                                mode="cpu", percent=0)
-        failures = _fit_check("an invalid percentage is data, not a crash",
+        failures += _fit_check("an invalid percentage is data, not a crash",
                               not bad.ok and bad.error is not None
                               and "percentage" in bad.error, repr(bad))
         missing = orun.fit_context(orun.FitRequest(client=client, model="",
                                                    machine=machine), mode="gpu")
-        failures = _fit_check("a missing model is data, not a crash",
+        failures += _fit_check("a missing model is data, not a crash",
                               not missing.ok
                               and missing.error == "no model selected",
                               repr(missing))
@@ -2757,7 +2757,7 @@ def test_ctxfit_outcome() -> int:
         no_size = orun.fit_context(
             orun.FitRequest(client=_NoTags(), model="m1", machine=machine),
             mode="gpu")
-        failures = _fit_check("an unsizeable model reports the tag error",
+        failures += _fit_check("an unsizeable model reports the tag error",
                               not no_size.ok and "no entry" in (no_size.error or ""),
                               repr(no_size))
     return failures
@@ -2779,7 +2779,7 @@ def test_ctxfit_cancel_progress() -> int:
             raised = None
         except orun.FitCancelled as exc:
             raised = exc
-        failures = _fit_check("a pre-cancelled fit raises before any load",
+        failures += _fit_check("a pre-cancelled fit raises before any load",
                               raised is not None and client.load_ctxs == [],
                               repr(raised))
 
@@ -2802,11 +2802,11 @@ def test_ctxfit_cancel_progress() -> int:
             raised2 = None
         except orun.FitCancelled as exc:
             raised2 = exc
-        failures = _fit_check("a mid-probe cancel stops before the next load",
+        failures += _fit_check("a mid-probe cancel stops before the next load",
                               raised2 is not None and len(client.load_ctxs) == 1,
                               f"{raised2!r} loads={client.load_ctxs}")
         stages = [item.get("stage") for item in progress]
-        failures = _fit_check("progress fires for estimate and probe stages",
+        failures += _fit_check("progress fires for estimate and probe stages",
                               "estimate" in stages and "probe" in stages,
                               str(stages))
     return failures
@@ -2833,7 +2833,7 @@ def test_fit_service() -> int:
     orun.fits.fit_context = slow_fit
     try:
         service = orun.FitService(max_active=1, ttl=3600)
-        failures = _fit_check("cancelling an unknown fit is a no-op",
+        failures += _fit_check("cancelling an unknown fit is a no-op",
                               service.cancel("fit_nope") is None)
         gate.clear()
         job = service.submit(model="m1", mode="gpu", probe=True,
@@ -2842,7 +2842,7 @@ def test_fit_service() -> int:
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and not job.progress:
             time.sleep(0.01)
-        failures = _fit_check("a submitted fit runs and reports progress",
+        failures += _fit_check("a submitted fit runs and reports progress",
                               job.status == "running"
                               and job.progress.get("ctx") == 2048,
                               f"{job.status} {job.progress}")
@@ -2852,7 +2852,7 @@ def test_fit_service() -> int:
             cap_error = None
         except orun.TooManyFits as exc:
             cap_error = exc
-        failures = _fit_check("the global cap refuses a second job",
+        failures += _fit_check("the global cap refuses a second job",
                               cap_error is not None and cap_error.limit == 1,
                               repr(cap_error))
         try:
@@ -2861,22 +2861,22 @@ def test_fit_service() -> int:
             busy = None
         except orun.FitBusy as exc:
             busy = exc
-        failures = _fit_check("a second fit for the same session is refused",
+        failures += _fit_check("a second fit for the same session is refused",
                               busy is not None and busy.active_fit_id == job.id,
                               repr(busy))
-        failures = _fit_check("active_for names the holding job",
+        failures += _fit_check("active_for names the holding job",
                               service.active_for("s1") == job.id
                               and service.active_count() == 1,
                               f"{service.active_for('s1')} "
                               f"{service.active_count()}")
         gate.set()
         service.wait(job.id, timeout=5)
-        failures = _fit_check("a finished fit carries its outcome",
+        failures += _fit_check("a finished fit carries its outcome",
                               job.status == "completed" and job.outcome is not None
                               and job.outcome.num_ctx == 4096,
                               f"{job.status} {job.outcome}")
         body = orun.fit_body(job)
-        failures = _fit_check("the fit body carries status and result",
+        failures += _fit_check("the fit body carries status and result",
                               body["status"] == "completed"
                               and body["result"]["num_ctx"] == 4096
                               and body["object"] == "fit"
@@ -2893,7 +2893,7 @@ def test_fit_service() -> int:
         service.cancel(cancel_job.id)
         gate.set()
         service.wait(cancel_job.id, timeout=5)
-        failures = _fit_check("a cancelled job reports cancelled",
+        failures += _fit_check("a cancelled job reports cancelled",
                               cancel_job.status == "cancelled"
                               and cancel_job.error == "cancelled",
                               f"{cancel_job.status} {cancel_job.error}")
@@ -2904,7 +2904,7 @@ def test_fit_service() -> int:
             req=orun.FitRequest(client=object(), model="m1"),
             on_success=lambda finished: applied.append(finished.id))
         service.wait(apply_job.id, timeout=5)
-        failures = _fit_check("apply runs after a successful fit",
+        failures += _fit_check("apply runs after a successful fit",
                               apply_job.applied and applied == [apply_job.id],
                               f"{apply_job.applied} {applied}")
 
@@ -2916,7 +2916,7 @@ def test_fit_service() -> int:
             req=orun.FitRequest(client=object(), model="m1"),
             on_success=broken)
         service.wait(broken_job.id, timeout=5)
-        failures = _fit_check("a failed apply is reported, not fatal",
+        failures += _fit_check("a failed apply is reported, not fatal",
                               broken_job.status == "completed"
                               and broken_job.applied is False
                               and broken_job.apply_error == "nope",
@@ -2930,7 +2930,7 @@ def test_fit_service() -> int:
             req=orun.FitRequest(client=object(), model="m1"))
         ttl_service.wait(fast_job.id, timeout=5)
         clock[0] += 100
-        failures = _fit_check("a terminal job is swept after its TTL",
+        failures += _fit_check("a terminal job is swept after its TTL",
                               ttl_service.get(fast_job.id) is None,
                               "still there")
         ttl_service.shutdown()
@@ -2942,7 +2942,7 @@ def test_fit_service() -> int:
         service.shutdown(cancel=True, timeout=0.2)
         gate.set()
         service.wait(shut_job.id, timeout=5)
-        failures = _fit_check("shutdown cancels an active fit",
+        failures += _fit_check("shutdown cancels an active fit",
                               shut_job.status == "cancelled", shut_job.status)
         try:
             service.submit(model="m1", mode="gpu",
@@ -2950,7 +2950,7 @@ def test_fit_service() -> int:
             closed = None
         except orun.FitsClosed as exc:
             closed = exc
-        failures = _fit_check("a shut-down service refuses new fits",
+        failures += _fit_check("a shut-down service refuses new fits",
                               closed is not None, repr(closed))
     finally:
         gate.set()
@@ -2977,20 +2977,20 @@ def test_session_context_fields() -> int:
             status, _headers, raw = _http(
                 server, "PATCH", f"/v1/sessions/{session_id}",
                 body={"num_ctx": 8192, "gpu_layers": "50%"})
-            failures = _fit_check("PATCH stores num_ctx and a resolved spec",
+            failures += _fit_check("PATCH stores num_ctx and a resolved spec",
                                   status == 200, f"{status} {raw[:120]!r}")
             saved = sessions.load(session_id)
-            failures = _fit_check("the values persist on the session",
+            failures += _fit_check("the values persist on the session",
                                   saved.parameters.get("num_ctx") == 8192
                                   and saved.gpu_layers == "50%",
                                   f"{saved.parameters} {saved.gpu_layers}")
-            failures = _fit_check("a placement change unloads the resident model",
+            failures += _fit_check("a placement change unloads the resident model",
                                   "m1" in client.unloaded, str(client.unloaded))
             status, _headers, raw = _http(
                 server, "PATCH", f"/v1/sessions/{session_id}",
                 body={"num_ctx": None, "gpu_layers": None})
             saved = sessions.load(session_id)
-            failures = _fit_check("null clears the values",
+            failures += _fit_check("null clears the values",
                                   "num_ctx" not in saved.parameters
                                   and saved.gpu_layers is None,
                                   f"{saved.parameters} {saved.gpu_layers}")
@@ -3003,7 +3003,7 @@ def test_session_context_fields() -> int:
                 status, _headers, raw = _http(
                     server, "PATCH", f"/v1/sessions/{session_id}", body=body)
                 error = json.loads(raw).get("error", {})
-                failures = _fit_check(f"PATCH rejects {name}",
+                failures += _fit_check(f"PATCH rejects {name}",
                                       status == 400
                                       and error.get("param") == param,
                                       f"{status} {error}")
@@ -3016,7 +3016,7 @@ def test_session_context_fields() -> int:
             turn = json.loads(raw)
             _poll_turn(server, turn["id"])
             saved = sessions.load(turn["session_id"])
-            failures = _fit_check("turn settings store the context fields",
+            failures += _fit_check("turn settings store the context fields",
                                   saved.parameters.get("num_ctx") == 4096
                                   and saved.gpu_layers == "cpu",
                                   f"{saved.parameters} {saved.gpu_layers}")
@@ -3029,7 +3029,7 @@ def test_session_context_fields() -> int:
                     server, "POST", "/v1/agent/turns",
                     body=_turn_request("bad", settings=settings))
                 error = json.loads(raw).get("error", {})
-                failures = _fit_check(f"turn settings reject {name}",
+                failures += _fit_check(f"turn settings reject {name}",
                                       status == 400
                                       and error.get("param") == param,
                                       f"{status} {error}")
@@ -3048,12 +3048,436 @@ def test_session_context_fields() -> int:
                 server, "PATCH", f"/v1/sessions/{session_id}",
                 body={"gpu_layers": "50%"})
             error = json.loads(raw).get("error", {})
-            failures = _fit_check("a percent spec needs a resolvable layer count",
+            failures += _fit_check("a percent spec needs a resolvable layer count",
                                   status == 400
                                   and error.get("param") == "gpu_layers",
                                   f"{status} {error}")
         finally:
             _stop_api(server, thread)
+    return failures
+
+
+def test_fit_estimate_api() -> int:
+    """POST /v1/agent/fit: estimate, apply, validation and policy gates."""
+    failures = 0
+    machine = orun.MachineGpu(devices=[(16384, 12000)], env={}, source="local")
+    old_probe = orun.ctxfit.machine_state_for
+    old_refresh = orun.agent_api.machine_state_for
+    orun.ctxfit.machine_state_for = lambda *a, **k: machine
+    orun.agent_api.machine_state_for = lambda *a, **k: machine
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            show = {"model_info": dict(
+                CTX_SHOW["model_info"],
+                **{"qwen35.context_length": 65536})}
+            client = _ServeClient(
+                models=["m1"], capabilities=["completion", "tools"],
+                show_data=show,
+                tag_data=[{"name": "m1", "size": 2_000_000_000,
+                           "digest": "sha256:abc"}])
+            # The CPU estimate reads the machine's own /proc/meminfo.
+            client.base = "http://127.0.0.1:11434"
+            server, api, sessions, thread = _start_agent_api(tmp, client)
+            try:
+                status, _headers, raw = _http(server, "POST", "/v1/agent/fit",
+                                              body={"model": "m1",
+                                                    "mode": "gpu"})
+                body = json.loads(raw)
+                failures += _fit_check("an estimate returns the fit result",
+                                      status == 200
+                                      and body.get("object") == "fit"
+                                      and body.get("bound") == "max_gpu"
+                                      and (body.get("num_ctx") or 0) > 0
+                                      and body.get("applied") is False
+                                      and isinstance(body.get("report"), dict),
+                                      f"{status} {str(body)[:200]}")
+                status, _headers, raw = _http(server, "POST", "/v1/sessions",
+                                              body={"model": "m1"})
+                session_id = json.loads(raw)["id"]
+                status, _headers, raw = _http(server, "POST", "/v1/agent/fit",
+                                              body={"session_id": session_id,
+                                                    "mode": "gpu",
+                                                    "apply": True})
+                body = json.loads(raw)
+                saved = sessions.load(session_id)
+                failures += _fit_check("apply writes the fitted context",
+                                      status == 200
+                                      and body.get("applied") is True
+                                      and saved.parameters.get("num_ctx")
+                                      == body.get("num_ctx"),
+                                      f"{status} {body.get('applied')} "
+                                      f"{saved.parameters}")
+                status, _headers, raw = _http(server, "POST", "/v1/agent/fit",
+                                              body={"model": "m1",
+                                                    "mode": "cpu",
+                                                    "cpu_percent": 70})
+                failures += _fit_check("a cpu estimate reads the real machine",
+                                      status == 200
+                                      and json.loads(raw).get("bound")
+                                      == "max_cpu",
+                                      f"{status} {raw[:120]!r}")
+                for name, body, param in (
+                    ("an unknown field", {"model": "m1", "x": 1}, "x"),
+                    ("a bad mode", {"model": "m1", "mode": "all"}, "mode"),
+                    ("cpu without a percent",
+                     {"model": "m1", "mode": "cpu"}, "cpu_percent"),
+                    ("a bad percent", {"model": "m1", "mode": "cpu",
+                                       "cpu_percent": 0}, "cpu_percent"),
+                    ("a percent with gpu mode",
+                     {"model": "m1", "cpu_percent": 50}, "cpu_percent"),
+                    ("apply without a session",
+                     {"model": "m1", "apply": True}, "session_id"),
+                    ("a probe field on the sync route",
+                     {"model": "m1", "probe": True}, "probe"),
+                ):
+                    status, _headers, raw = _http(server, "POST",
+                                                  "/v1/agent/fit", body=body)
+                    error = json.loads(raw).get("error", {})
+                    failures += _fit_check(f"the fit API rejects {name}",
+                                          status == 400
+                                          and error.get("param") == param,
+                                          f"{status} {error}")
+                status, _headers, raw = _http(server, "POST", "/v1/agent/fit",
+                                              body={"model": "nope"})
+                failures += _fit_check("an unknown fit model is a 404",
+                                      status == 404, str(status))
+            finally:
+                _stop_api(server, thread)
+
+            blind = _ServeClient(models=["m1"], capabilities=["completion"],
+                                 show_data={})
+            server, api, sessions, thread = _start_agent_api(tmp, blind)
+            try:
+                status, _headers, raw = _http(server, "POST", "/v1/agent/fit",
+                                              body={"model": "m1",
+                                                    "mode": "gpu"})
+                error = json.loads(raw).get("error", {})
+                failures += _fit_check("an unsizeable fit is a structured 400",
+                                      status == 400
+                                      and error.get("code") == "fit_failed",
+                                      f"{status} {error}")
+            finally:
+                _stop_api(server, thread)
+
+            server, api, sessions, thread = _start_agent_api(
+                tmp, client, config_extra={"serve_fit": "off"})
+            try:
+                status, _headers, raw = _http(server, "POST", "/v1/agent/fit",
+                                              body={"model": "m1"})
+                error = json.loads(raw).get("error", {})
+                failures += _fit_check("serve_fit off refuses the estimate",
+                                      status == 403
+                                      and error.get("code") == "fit_disabled",
+                                      f"{status} {error}")
+            finally:
+                _stop_api(server, thread)
+    finally:
+        orun.ctxfit.machine_state_for = old_probe
+        orun.agent_api.machine_state_for = old_refresh
+    return failures
+
+
+def test_fit_job_api() -> int:
+    """Async fit jobs: 202 + warnings, status/progress, cancel, gates."""
+    failures = 0
+    machine = orun.MachineGpu(devices=[(16384, 12000)], env={}, source="local")
+    old_probe = orun.ctxfit.machine_state_for
+    old_refresh = orun.agent_api.machine_state_for
+    old_fit = orun.fits.fit_context
+    orun.ctxfit.machine_state_for = lambda *a, **k: machine
+    orun.agent_api.machine_state_for = lambda *a, **k: machine
+    gate = threading.Event()
+    gate.set()
+
+    def slow_fit(req, *, mode, percent=None, probe=False):
+        req.on_progress({"stage": "probe", "mode": mode, "ctx": 4096,
+                         "attempt": 1})
+        gate.wait(timeout=10)
+        if req.cancel is not None and req.cancel.cancelled:
+            raise orun.FitCancelled("fit cancelled")
+        outcome = orun.FitOutcome(mode=mode, model=req.model, probe=probe)
+        outcome.num_ctx = 8192
+        return outcome
+
+    orun.fits.fit_context = slow_fit
+
+    def _poll_fit(server, fit_id, until, timeout=10.0, ready=None):
+        deadline = time.monotonic() + timeout
+        body: dict = {}
+        while time.monotonic() < deadline:
+            _status, _headers, raw = _http(server, "GET",
+                                           f"/v1/agent/fits/{fit_id}")
+            body = json.loads(raw)
+            if body.get("status") in until and (ready is None or ready(body)):
+                return body
+            time.sleep(0.02)
+        return body
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            show = {"model_info": dict(
+                CTX_SHOW["model_info"],
+                **{"qwen35.context_length": 65536})}
+            client = _ServeClient(
+                models=["m1"], capabilities=["completion", "tools"],
+                resident=["m1"], show_data=show,
+                tag_data=[{"name": "m1", "size": 2_000_000_000,
+                           "digest": "sha256:abc"}],
+                chat_script=[[{"message": {"content": "ok"},
+                               "done": True}]])
+            server, api, sessions, thread = _start_agent_api(tmp, client)
+            try:
+                status, _headers, raw = _http(server, "POST", "/v1/sessions",
+                                              body={"model": "m1"})
+                session_id = json.loads(raw)["id"]
+                gate.clear()
+                status, _headers, raw = _http(server, "POST", "/v1/agent/fits",
+                                              body={"session_id": session_id,
+                                                    "mode": "gpu"})
+                job = json.loads(raw)
+                job_id = job.get("id")
+                failures += _fit_check("a fit job starts with 202 and its urls",
+                                      status == 202
+                                      and job.get("status") in ("queued",
+                                                                "running")
+                                      and job.get("status_url", "").endswith(
+                                          f"/v1/agent/fits/{job_id}")
+                                      and isinstance(job.get("warnings"), list),
+                                      f"{status} {str(job)[:200]}")
+                status, _headers, raw = _http(
+                    server, "POST", "/v1/agent/turns",
+                    body=_turn_request("hi", session_id=session_id))
+                error = json.loads(raw).get("error", {})
+                failures += _fit_check("a fitting session refuses a turn",
+                                      status == 409
+                                      and error.get("active_fit_id") == job_id,
+                                      f"{status} {error}")
+                status, _headers, raw = _http(
+                    server, "PATCH", f"/v1/sessions/{session_id}",
+                    body={"title": "x"})
+                error = json.loads(raw).get("error", {})
+                failures += _fit_check("a fitting session refuses edits",
+                                      status == 409
+                                      and error.get("active_fit_id") == job_id,
+                                      f"{status} {error}")
+                status, _headers, raw = _http(server, "GET",
+                                              f"/v1/agent/fits/{job_id}")
+                live = json.loads(raw)
+                failures += _fit_check("the status endpoint reports progress",
+                                      status == 200
+                                      and live.get("progress", {}).get("ctx")
+                                      == 4096,
+                                      f"{status} {str(live)[:160]}")
+                status, _headers, raw = _http(
+                    server, "POST", f"/v1/agent/fits/{job_id}/cancel")
+                failures += _fit_check("cancel is accepted with 202",
+                                      status == 202, str(status))
+                gate.set()
+                final = _poll_fit(server, job_id, until={"cancelled"},
+                                  timeout=10)
+                failures += _fit_check("the cancelled job reports cancelled",
+                                      final.get("status") == "cancelled",
+                                      str(final)[:160])
+
+                gate.clear()
+                status, _headers, raw = _http(
+                    server, "POST", "/v1/agent/fits",
+                    body={"session_id": session_id, "mode": "gpu",
+                          "apply": True})
+                applied_id = json.loads(raw)["id"]
+                gate.set()
+                applied = _poll_fit(server, applied_id, until={"completed"},
+                                    ready=lambda body: body.get("applied"))
+                saved = sessions.load(session_id)
+                failures += _fit_check("an applied job writes the fitted context",
+                                      applied.get("status") == "completed"
+                                      and applied.get("applied") is True
+                                      and saved.parameters.get("num_ctx") == 8192,
+                                      f"{applied.get('status')} "
+                                      f"{saved.parameters}")
+                status, _headers, raw = _http(
+                    server, "POST", f"/v1/agent/fits/{applied_id}/cancel")
+                error = json.loads(raw).get("error", {})
+                failures += _fit_check("cancelling a finished job is a 409",
+                                      status == 409
+                                      and error.get("code") == "fit_finished",
+                                      f"{status} {error}")
+                status, _headers, raw = _http(server, "GET",
+                                              "/v1/agent/fits/fit_nope")
+                error = json.loads(raw).get("error", {})
+                failures += _fit_check("an unknown fit is a structured 404",
+                                      status == 404
+                                      and error.get("code") == "fit_not_found",
+                                      f"{status} {error}")
+            finally:
+                _stop_api(server, thread)
+
+            # the global cap and the policy gates
+            server, api, sessions, thread = _start_agent_api(
+                tmp, client, config_extra={"serve_max_active_fits": 1})
+            try:
+                gate.clear()
+                status, _headers, raw = _http(server, "POST", "/v1/agent/fits",
+                                              body={"model": "m1",
+                                                    "mode": "gpu"})
+                gated = json.loads(raw)["id"]
+                status, _headers, raw = _http(server, "POST", "/v1/agent/fits",
+                                              body={"model": "m1",
+                                                    "mode": "gpu"})
+                error = json.loads(raw).get("error", {})
+                failures += _fit_check("the fit cap answers 429",
+                                      status == 429
+                                      and error.get("code") == "rate_limit_error",
+                                      f"{status} {error}")
+                _http(server, "POST", f"/v1/agent/fits/{gated}/cancel")
+                gate.set()
+                _poll_fit(server, gated, until={"cancelled"})
+            finally:
+                _stop_api(server, thread)
+
+            server, api, sessions, thread = _start_agent_api(
+                tmp, client, config_extra={"serve_fit": "estimate"})
+            try:
+                status, _headers, raw = _http(server, "POST", "/v1/agent/fits",
+                                              body={"model": "m1",
+                                                    "mode": "gpu"})
+                error = json.loads(raw).get("error", {})
+                failures += _fit_check("serve_fit estimate refuses probing",
+                                      status == 403
+                                      and error.get("code") == "probe_disabled",
+                                      f"{status} {error}")
+                status, _headers, raw = _http(server, "POST", "/v1/agent/fits",
+                                              body={"model": "m1",
+                                                    "mode": "gpu",
+                                                    "probe": False})
+                failures += _fit_check("an explicit estimate-only job still runs",
+                                      status == 202, f"{status} {raw[:80]!r}")
+                _http(server, "POST", f"/v1/agent/fits/"
+                                      f"{json.loads(raw).get('id')}/cancel")
+            finally:
+                _stop_api(server, thread)
+
+            server, api, sessions, thread = _start_agent_api(
+                tmp, client, config_extra={"serve_fit": "off"})
+            try:
+                status, _headers, raw = _http(server, "POST", "/v1/agent/fits",
+                                              body={"model": "m1"})
+                error = json.loads(raw).get("error", {})
+                failures += _fit_check("serve_fit off refuses jobs",
+                                      status == 403
+                                      and error.get("code") == "fit_disabled",
+                                      f"{status} {error}")
+            finally:
+                _stop_api(server, thread)
+    finally:
+        gate.set()
+        orun.ctxfit.machine_state_for = old_probe
+        orun.agent_api.machine_state_for = old_refresh
+        orun.fits.fit_context = old_fit
+    return failures
+
+
+def test_turn_start_fit() -> int:
+    """settings.num_ctx "max-gpu" estimates before round one and reports it."""
+    failures = 0
+    machine = orun.MachineGpu(devices=[(16384, 12000)], env={}, source="local")
+    old_probe = orun.ctxfit.machine_state_for
+    old_refresh = orun.agent_api.machine_state_for
+    orun.ctxfit.machine_state_for = lambda *a, **k: machine
+    orun.agent_api.machine_state_for = lambda *a, **k: machine
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            show = {"model_info": dict(
+                CTX_SHOW["model_info"],
+                **{"qwen35.context_length": 65536})}
+            client = _ServeClient(
+                models=["m1"], capabilities=["completion", "tools"],
+                show_data=show,
+                tag_data=[{"name": "m1", "size": 2_000_000_000,
+                           "digest": "sha256:abc"}],
+                chat_script=[[{"message": {"content": "ok"},
+                               "done": True}]])
+            server, api, sessions, thread = _start_agent_api(tmp, client)
+            try:
+                status, _headers, raw = _http(
+                    server, "POST", "/v1/agent/turns",
+                    body=_turn_request("fit me",
+                                       settings={"num_ctx": "max-gpu"}))
+                turn = json.loads(raw)
+                _status, body = _poll_turn(server, turn["id"])
+                events = _headless_events(api, turn["id"])
+                fits = [event.data for event in events
+                        if event.type == orun.SESSION_FIT]
+                failures += _fit_check("the turn emits one session.fit",
+                                      len(fits) == 1
+                                      and (fits[0].get("num_ctx") or 0) > 0
+                                      and fits[0].get("applied") is True,
+                                      str(fits[:1])[:200])
+                failures += _fit_check("the fit result rides the turn status",
+                                      body.get("result", {}).get("fit", {})
+                                      .get("num_ctx") == fits[0].get("num_ctx"),
+                                      str(body.get("result", {}).get("fit"))[:160])
+                session = sessions.load(turn["session_id"])
+                failures += _fit_check("the fitted context is persisted",
+                                      session.parameters.get("num_ctx")
+                                      == fits[0].get("num_ctx"),
+                                      str(session.parameters))
+                status, _headers, raw = _http(
+                    server, "POST", "/v1/agent/turns",
+                    body=_turn_request("bad",
+                                       settings={"num_ctx": "max-cpu"}))
+                error = json.loads(raw).get("error", {})
+                failures += _fit_check('"max-cpu" without cpu_percent is a 400',
+                                      status == 400
+                                      and error.get("param")
+                                      == "settings.cpu_percent",
+                                      f"{status} {error}")
+            finally:
+                _stop_api(server, thread)
+
+            blind = _ServeClient(
+                models=["m1"], capabilities=["completion", "tools"],
+                show_data={},
+                chat_script=[[{"message": {"content": "ok"},
+                               "done": True}]])
+            server, api, sessions, thread = _start_agent_api(tmp, blind)
+            try:
+                status, _headers, raw = _http(
+                    server, "POST", "/v1/agent/turns",
+                    body=_turn_request("fit fails",
+                                       settings={"num_ctx": "max-gpu"}))
+                turn = json.loads(raw)
+                _status, body = _poll_turn(server, turn["id"])
+                fits = [event.data for event in _headless_events(api, turn["id"])
+                        if event.type == orun.SESSION_FIT]
+                session = sessions.load(turn["session_id"])
+                failures += _fit_check(
+                    "a failed fit reports on the event and leaves ctx alone",
+                    len(fits) == 1 and fits[0].get("num_ctx") is None
+                    and fits[0].get("error")
+                    and body.get("status") == "completed"
+                    and "num_ctx" not in session.parameters,
+                    f"{str(fits[:1])[:120]} {session.parameters}")
+            finally:
+                _stop_api(server, thread)
+
+            server, api, sessions, thread = _start_agent_api(
+                tmp, client, config_extra={"serve_fit": "off"})
+            try:
+                status, _headers, raw = _http(
+                    server, "POST", "/v1/agent/turns",
+                    body=_turn_request("off",
+                                       settings={"num_ctx": "max-gpu"}))
+                error = json.loads(raw).get("error", {})
+                failures += _fit_check("serve_fit off refuses turn-start fits",
+                                      status == 403
+                                      and error.get("code") == "fit_disabled",
+                                      f"{status} {error}")
+            finally:
+                _stop_api(server, thread)
+    finally:
+        orun.ctxfit.machine_state_for = old_probe
+        orun.agent_api.machine_state_for = old_refresh
     return failures
 
 
@@ -11936,6 +12360,8 @@ if __name__ == "__main__":
              + test_cmd_num_ctx() + test_ctxfit()
              + test_ctxfit_outcome() + test_ctxfit_cancel_progress()
              + test_fit_service() + test_session_context_fields()
+             + test_fit_estimate_api() + test_fit_job_api()
+             + test_turn_start_fit()
              + test_cmd_num_ctx_max_gpu()
              + test_ram_helpers() + test_cpu_fit() + test_cmd_num_ctx_max_cpu()
              + test_model_profile()

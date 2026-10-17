@@ -187,6 +187,25 @@ class CtxCalibrationStore:
                 points.append((ctx, size))
         return points
 
+    def digest_points(self, digest: str) -> int:
+        """Live measured samples for a model digest, across scopes (a hint).
+
+        Best-effort: used to tell a client that a probe starts from prior
+        measurements, never to make a decision.
+        """
+        digest = str(digest or "")
+        if not digest:
+            return 0
+        try:
+            keys = [str(key) for key in self._read().get("entries", {})]
+        except (OSError, ValueError, TypeError):
+            return 0
+        total = 0
+        for key in keys:
+            if digest in key:
+                total += len(self.points(key))
+        return total
+
     def add(self, key: str, ctx: int, size: int) -> None:
         if not key or int(ctx or 0) <= 0 or int(size or 0) <= 0:
             return

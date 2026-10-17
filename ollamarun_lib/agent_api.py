@@ -39,8 +39,13 @@ from typing import Any, Callable, Optional
 
 from .artifacts import ArtifactStore, require_vision, resolve_content_parts
 from .client import OllamaError
-from .events import TERMINAL_EVENTS, TURN_WARNING, RuntimeEvent
-from .helpers import CancelToken, now_iso
+from .ctxfit import (CtxCalibrationStore, FitRequest, fit_context,
+                     machine_state_for)
+from .events import (SESSION_FIT, TERMINAL_EVENTS, TURN_WARNING, RuntimeEvent)
+from .fits import (FitBusy, FitService, FitsClosed, TERMINAL_FIT_STATUSES,
+                   TooManyFits, fit_body)
+from .helpers import (CancelToken, canonical_model_name, is_local_host,
+                      now_iso, remote_node)
 from .interactive import (model_block_count, model_context_length,
                           parse_gpu_layers_spec, resolve_gpu_layers)
 from .openai_api import (classify_backend_error, model_listed,
@@ -62,12 +67,17 @@ logger = logging.getLogger("ollamarun.agent_api")
 _APPROVAL_RETENTION = 3600.0
 #: Fields `POST /v1/files` accepts (the JSON upload form; multipart is later).
 _UPLOAD_FIELDS = frozenset({"filename", "media_type", "data_base64"})
+#: Fit request fields: the sync estimate adds `apply`, the async job `probe`.
+_FIT_BASE_FIELDS = frozenset({"model", "session_id", "mode", "cpu_percent",
+                              "gpu_layers"})
+_FIT_APPLY_FIELDS = _FIT_BASE_FIELDS | {"apply"}
+_FIT_JOB_FIELDS = _FIT_APPLY_FIELDS | {"probe"}
 
 _TURN_FIELDS = frozenset({"session_id", "model", "messages", "persist",
                           "settings"})
 _SETTINGS_FIELDS = frozenset({"tools", "max_rounds", "approval", "system",
-                              "parameters", "num_ctx", "gpu_layers",
-                              "cancel_on_disconnect"})
+                              "parameters", "num_ctx", "cpu_percent",
+                              "gpu_layers", "cancel_on_disconnect"})
 _MESSAGE_ROLES = frozenset({"user", "assistant"})
 _APPROVAL_ACTIONS = frozenset({"run", "remember", "rule", "auto", "deny"})
 
@@ -89,9 +99,11 @@ class AgentTurnRequest:
     approval: str = "policy"            # "policy" | "interactive"
     system: Optional[str] = None
     parameters: dict[str, Any] = field(default_factory=dict)
-    #: Session mutations: an explicit context and placement spec (the fit
-    #: strings from the context-control phase join here later).
-    num_ctx: Optional[int] = None
+    #: Session mutations: an explicit context (`num_ctx` int) or a turn-start
+    #: fit (`"max-gpu"`, or `"max-cpu"` with `cpu_percent`), plus a placement
+    #: spec. The dedicated fields win over `parameters`.
+    num_ctx: Any = None
+    cpu_percent: Optional[int] = None
     gpu_layers: Optional[str] = None
     cancel_on_disconnect: bool = False
 
@@ -277,10 +289,30 @@ def parse_agent_turn(body: Any, *, default_max_rounds: int = 8
         raise _invalid("settings.system must be a string or null",
                        param="settings.system")
     num_ctx = settings.get("num_ctx")
-    if num_ctx is not None and (isinstance(num_ctx, bool)
-                                or not isinstance(num_ctx, int) or num_ctx < 1):
-        raise _invalid("settings.num_ctx must be a positive integer",
+    if isinstance(num_ctx, str):
+        if num_ctx not in ("max-gpu", "max-cpu"):
+            raise _invalid('settings.num_ctx must be an integer, "max-gpu" '
+                           'or "max-cpu"',
+                           param="settings.num_ctx", code="unsupported_value")
+    elif num_ctx is not None and (isinstance(num_ctx, bool)
+                                  or not isinstance(num_ctx, int)
+                                  or num_ctx < 1):
+        raise _invalid('settings.num_ctx must be a positive integer, '
+                       '"max-gpu" or "max-cpu"',
                        param="settings.num_ctx", code="unsupported_value")
+    cpu_percent = settings.get("cpu_percent")
+    if num_ctx == "max-cpu" and cpu_percent is None:
+        raise _invalid('settings.num_ctx "max-cpu" needs settings.cpu_percent',
+                       param="settings.cpu_percent")
+    if cpu_percent is not None:
+        if isinstance(cpu_percent, bool) or not isinstance(cpu_percent, int) \
+                or not 1 <= cpu_percent <= 100:
+            raise _invalid("settings.cpu_percent must be an integer between "
+                           "1 and 100", param="settings.cpu_percent",
+                           code="unsupported_value")
+        if num_ctx != "max-cpu":
+            raise _invalid('settings.cpu_percent needs settings.num_ctx '
+                           '"max-cpu"', param="settings.cpu_percent")
     gpu_layers = settings.get("gpu_layers")
     if gpu_layers is not None and (not isinstance(gpu_layers, str)
                                    or not gpu_layers.strip()):
@@ -305,7 +337,8 @@ def parse_agent_turn(body: Any, *, default_max_rounds: int = 8
         session_id=session_id, model=model, messages=parsed_messages,
         persist=bool(persist), tools=bool(tools), max_rounds=int(max_rounds),
         approval=str(approval), system=system,
-        parameters=dict(parameters), num_ctx=num_ctx, gpu_layers=gpu_layers,
+        parameters=dict(parameters), num_ctx=num_ctx,
+        cpu_percent=cpu_percent, gpu_layers=gpu_layers,
         cancel_on_disconnect=bool(cancel_on_disconnect))
 
 
@@ -361,6 +394,10 @@ class AgentTurnState:
     cancel_on_disconnect: bool = False
     auto_approve: bool = False
     messages_pending: list[dict[str, Any]] = field(default_factory=list)
+    #: A pending turn-start fit (`("max-gpu"|"max-cpu", percent|cpu=None)`).
+    fit_plan: Optional[tuple[str, Optional[int]]] = None
+    #: The turn-start fit's outcome dict (events + `result.fit`).
+    fit: Optional[dict[str, Any]] = None
     done: threading.Event = field(default_factory=threading.Event)
 
 
@@ -379,6 +416,7 @@ def turn_body(snapshot: Any) -> dict[str, Any]:
             "usage": usage_from(stats),
             "stats": stats or None,
             "artifacts": list(snapshot.result.artifacts),
+            "fit": snapshot.result.fit,
         }
     error = snapshot.error
     if snapshot.synthetic_terminal and error:
@@ -447,7 +485,8 @@ class AgentApi:
                  store: SessionStore, client_factory: Callable[[], Any],
                  manager: Optional[TurnManager] = None,
                  cwd: Optional[str] = None,
-                 artifacts: Optional[ArtifactStore] = None):
+                 artifacts: Optional[ArtifactStore] = None,
+                 fits: Optional[FitService] = None):
         self._args = args
         self._config = dict(config or {})
         self._store = store
@@ -461,6 +500,12 @@ class AgentApi:
                               or 10000),
             completed_ttl=float(self._config.get("serve_turn_event_ttl")
                                 or 86400))
+        #: Asynchronous context fits (`fits.py`); the TTL is explicit-None
+        #: defaulted so 0 can mean "keep forever".
+        raw_fit_ttl = self._config.get("serve_fit_ttl")
+        self._fits = fits or FitService(
+            max_active=int(self._config.get("serve_max_active_fits") or 2),
+            ttl=86400.0 if raw_fit_ttl is None else float(raw_fit_ttl))
         #: How long a parked approval may wait for a decision, in seconds;
         #: an explicit 0 disables the timeout (the approval waits until it is
         #: resolved, cancelled or the server shuts down), so `0` must not be
@@ -563,6 +608,9 @@ class AgentApi:
             active = self._manager.active_for(session.id)
             if active:
                 raise _session_busy(session.id, active)
+            fitting = self._fits.active_for(session.id)
+            if fitting:
+                raise _session_fitting(session.id, fitting)
         else:
             session = Session.create(
                 spec.model or str(self._config.get("model") or ""),
@@ -581,20 +629,25 @@ class AgentApi:
         if spec.parameters:
             session.parameters = {**(session.parameters or {}),
                                   **spec.parameters}
-        if spec.num_ctx is not None or spec.gpu_layers is not None:
+        fit_plan: Optional[tuple[str, Optional[int]]] = None
+        if spec.gpu_layers is not None:
             show = _show_data(client, session.model)
-            if spec.num_ctx is not None:
-                value = _validate_num_ctx(spec.num_ctx, show_data=show,
-                                          param="settings.num_ctx")
-                session.parameters = {**(session.parameters or {})}
-                session.parameters["num_ctx"] = value
-            if spec.gpu_layers is not None:
-                value = _validate_gpu_layers(spec.gpu_layers, show_data=show,
-                                             param="settings.gpu_layers")
-                changed = value != session.gpu_layers
+            value = _validate_gpu_layers(spec.gpu_layers, show_data=show,
+                                         param="settings.gpu_layers")
+            if value != session.gpu_layers:
                 session.gpu_layers = value
-                if changed:
-                    self._unload_resident(client, session.model)
+                self._unload_resident(client, session.model)
+        if isinstance(spec.num_ctx, str):
+            if self._fit_policy() == "off":
+                raise ApiError(403, "context fitting is disabled",
+                               code="fit_disabled")
+            fit_plan = (spec.num_ctx, spec.cpu_percent)
+        elif spec.num_ctx is not None:
+            show = _show_data(client, session.model)
+            value = _validate_num_ctx(spec.num_ctx, show_data=show,
+                                      param="settings.num_ctx")
+            session.parameters = {**(session.parameters or {})}
+            session.parameters["num_ctx"] = value
 
         # Resolve every message's content parts before the turn is accepted:
         # a missing artifact id, an oversize image and a text/file mapping are
@@ -627,7 +680,7 @@ class AgentApi:
             id=turn_id, session_id=session.id, session=session, repl=repl,
             client=client, token=token, approval_mode=spec.approval,
             cancel_on_disconnect=spec.cancel_on_disconnect,
-            messages_pending=resolved_messages)
+            messages_pending=resolved_messages, fit_plan=fit_plan)
         with self._lock:
             self._turns[turn_id] = state
 
@@ -813,6 +866,8 @@ class AgentApi:
                 self._store.save(session)
 
             def on_started() -> None:
+                if state.fit_plan is not None:
+                    self._run_turn_fit(state, sink)
                 warning = repl.context_warning()
                 if warning:
                     sink(RuntimeEvent(TURN_WARNING, {"message": warning}))
@@ -834,10 +889,296 @@ class AgentApi:
             hooks.execute_tools = None
             runtime = AgentRuntime(hooks)
             result = runtime.run()
-            return runtime.to_turn_result(result, session_id=session.id,
-                                          turn_id=state.id)
+            turn_result = runtime.to_turn_result(result, session_id=session.id,
+                                                 turn_id=state.id)
+            if state.fit is not None:
+                turn_result.fit = state.fit
+            return turn_result
         finally:
             state.done.set()
+
+    def _run_turn_fit(self, state: AgentTurnState,
+                      sink: Callable[[RuntimeEvent], None]) -> None:
+        """The turn-start estimate for `settings.num_ctx: "max-gpu"|"max-cpu"`.
+
+        Estimate only -- turns never block on a probe. On success the fitted
+        num_ctx is persisted and the outcome rides `session.fit` and
+        `result.fit`; on failure the context is left unchanged and the same
+        event carries the reason.
+        """
+        mode = "cpu" if state.fit_plan[0] == "max-cpu" else "gpu"
+        percent = state.fit_plan[1]
+        try:
+            request = self._fit_request(state.client, state.session.model,
+                                        state.session)
+            outcome = fit_context(request, mode=mode, percent=percent,
+                                  probe=False)
+            payload = outcome.to_dict()
+            payload["applied"] = outcome.num_ctx is not None
+            if outcome.num_ctx is not None:
+                state.session.parameters = {**(state.session.parameters or {})}
+                state.session.parameters["num_ctx"] = outcome.num_ctx
+                state.session.touch()
+        except Exception:
+            logger.debug("turn-start fit failed", exc_info=True)
+            payload = {"model": state.session.model, "mode": mode,
+                       "num_ctx": None, "applied": False,
+                       "error": "the fit failed"}
+        state.fit = payload
+        sink(RuntimeEvent(SESSION_FIT, dict(payload)))
+
+    # ── context fits ────────────────────────────────────────────────────────
+
+    def _fit_policy(self) -> str:
+        value = str(self._config.get("serve_fit") or "probe").lower()
+        return value if value in {"off", "estimate", "probe"} else "probe"
+
+    def _fit_guard(self, session: Session) -> None:
+        """Refuse to fit (or apply) while the session is busy either way."""
+        active = self._manager.active_for(session.id)
+        if active:
+            raise _session_busy(session.id, active)
+        fitting = self._fits.active_for(session.id)
+        if fitting:
+            raise _session_fitting(session.id, fitting)
+
+    def _parse_fit_body(self, body: Any, *, fields: frozenset,
+                        allow_probe: bool) -> dict[str, Any]:
+        if not isinstance(body, dict):
+            raise _invalid("request body must be a JSON object")
+        unknown = set(body) - fields
+        if unknown:
+            raise _invalid(f"unknown field: {sorted(unknown)[0]}",
+                           param=sorted(unknown)[0], code="unknown_field")
+        mode = body.get("mode", "gpu")
+        if mode not in ("gpu", "cpu"):
+            raise _invalid('mode must be "gpu" or "cpu"', param="mode",
+                           code="unsupported_value")
+        percent = body.get("cpu_percent")
+        if mode == "cpu" and percent is None:
+            raise _invalid('mode "cpu" needs cpu_percent', param="cpu_percent")
+        if percent is not None:
+            if isinstance(percent, bool) or not isinstance(percent, int) \
+                    or not 1 <= percent <= 100:
+                raise _invalid("cpu_percent must be an integer between 1 and 100",
+                               param="cpu_percent", code="unsupported_value")
+            if mode != "cpu":
+                raise _invalid('cpu_percent needs mode "cpu"',
+                               param="cpu_percent")
+        gpu_layers = body.get("gpu_layers")
+        if gpu_layers is not None:
+            if not isinstance(gpu_layers, str) or not gpu_layers.strip():
+                raise _invalid("gpu_layers must be a spec string or null",
+                               param="gpu_layers", code="unsupported_value")
+            gpu_layers = gpu_layers.strip()
+            try:
+                parse_gpu_layers_spec(gpu_layers)
+            except ValueError as exc:
+                raise _invalid(str(exc), param="gpu_layers",
+                               code="unsupported_value")
+        apply = False
+        if "apply" in fields:
+            apply = body.get("apply", False)
+            _require_bool(apply, "apply")
+        probe = True
+        if allow_probe:
+            probe = body.get("probe", True)
+            _require_bool(probe, "probe")
+        session_id = body.get("session_id")
+        if session_id is not None:
+            session_id = _optional_string(session_id, "session_id").strip() or None
+        model = _optional_string(body.get("model"), "model").strip()
+        return {"mode": mode, "cpu_percent": percent,
+                "gpu_layers": gpu_layers, "apply": bool(apply),
+                "probe": bool(probe), "session_id": session_id,
+                "model": model}
+
+    def _fit_subject(self, spec: dict[str, Any]
+                     ) -> tuple[Optional[Session], Any, str]:
+        session = self._session(spec["session_id"]) if spec["session_id"] \
+            else None
+        client = self._client_factory()
+        model = spec["model"] or (session.model if session is not None else "")
+        if not model:
+            model = str(self._config.get("model") or "")
+        if not model:
+            raise _invalid("model is required (none in the request, the "
+                           "session or the serve config)", param="model")
+        self._ensure_model(client, model)
+        return session, client, model
+
+    def _fit_request(self, client: Any, model: str,
+                     session: Optional[Session],
+                     *, pinned: Optional[str] = None) -> FitRequest:
+        """The ctxfit request for this server's upstream (CLI parity)."""
+        remote = str(self._config.get("remote") or "") or None
+        ssh_target = remote_node(remote, self._config) if remote else None
+        ssh_user = self._config.get("remote_ssh_user")
+        base = getattr(client, "base", "") or ""
+        host_label = remote or (None if is_local_host(base) else base)
+        parameters = (session.parameters if session is not None else {}) or {}
+        pinned_spec = pinned if pinned is not None else \
+            (session.gpu_layers if session is not None else None)
+        return FitRequest(
+            client=client, model=model, config=self._config,
+            host_label=host_label, ssh_target=ssh_target, ssh_user=ssh_user,
+            pinned_spec=pinned_spec, num_gpu=parameters.get("num_gpu"),
+            base_options={key: value for key, value in parameters.items()
+                          if key != "num_ctx"},
+            keepalive=(session.keepalive if session is not None else None)
+            or self._config.get("keepalive"),
+            refresh_gpu=lambda: machine_state_for(base, ssh_target=ssh_target,
+                                                  ssh_user=ssh_user))
+
+    def _fit_warnings(self, client: Any, model: str) -> list[str]:
+        """Honest notes on cost: contention now, calibration from before."""
+        warnings: list[str] = []
+        wanted = canonical_model_name(model)
+        try:
+            others = [str(entry.get("name") or entry.get("model") or "?")
+                      for entry in client.ps() or []
+                      if int(entry.get("size_vram") or 0) > 0
+                      and canonical_model_name(str(entry.get("name")
+                                                   or entry.get("model") or ""))
+                      != wanted]
+        except (OllamaError, TypeError, ValueError):
+            others = []
+        if others:
+            warnings.append(f"{len(others)} other model(s) are resident on "
+                            f"the backend — the probe will be slower")
+        try:
+            if self._manager.active_count() > 0:
+                warnings.append("turns are active on this server — the probe "
+                                "may be slower")
+        except Exception:  # pragma: no cover - manager always answers
+            pass
+        digest = ""
+        try:
+            for entry in client.tags():
+                if canonical_model_name(entry.get("name") or "") == wanted:
+                    digest = str(entry.get("digest") or "")
+                    break
+        except (OllamaError, TypeError, ValueError):
+            digest = ""
+        if digest:
+            cached = CtxCalibrationStore().digest_points(digest)
+            if cached:
+                warnings.append(f"{cached} prior measurement(s) on this host "
+                                f"seed the probe (fewer loads)")
+        return warnings
+
+    def _apply_fit(self, job: Any) -> None:
+        """The fit service's on_success: persist the fitted num_ctx."""
+        if not job.session_id or job.outcome is None \
+                or job.outcome.num_ctx is None:
+            return
+        session = self._session(job.session_id)
+        session.parameters = {**(session.parameters or {})}
+        session.parameters["num_ctx"] = job.outcome.num_ctx
+        session.touch()
+        self._store.save(session)
+
+    def estimate_fit(self, request: Request,
+                     params: dict[str, str]) -> Response:
+        """`POST /v1/agent/fit`: synchronous estimate; optional apply."""
+        if self._fit_policy() == "off":
+            raise ApiError(403, "context fitting is disabled",
+                           code="fit_disabled")
+        spec = self._parse_fit_body(request.json, fields=_FIT_APPLY_FIELDS,
+                                    allow_probe=False)
+        session, client, model = self._fit_subject(spec)
+        if spec["apply"] and session is None:
+            raise _invalid("apply needs session_id", param="session_id")
+        if spec["apply"] and session is not None:
+            self._fit_guard(session)
+        outcome = fit_context(
+            self._fit_request(client, model, session,
+                              pinned=spec["gpu_layers"]),
+            mode=spec["mode"], percent=spec["cpu_percent"], probe=False)
+        if outcome.error is not None:
+            raise ApiError(400, outcome.error, code="fit_failed")
+        body = outcome.to_dict()
+        body["object"] = "fit"
+        body["applied"] = False
+        if spec["apply"] and session is not None \
+                and outcome.num_ctx is not None:
+            session.parameters = {**(session.parameters or {})}
+            session.parameters["num_ctx"] = outcome.num_ctx
+            session.touch()
+            self._store.save(session)
+            body["applied"] = True
+        return Response.json(body)
+
+    def start_fit(self, request: Request,
+                  params: dict[str, str]) -> Response:
+        """`POST /v1/agent/fits`: start an asynchronous probe job."""
+        policy = self._fit_policy()
+        if policy == "off":
+            raise ApiError(403, "context fitting is disabled",
+                           code="fit_disabled")
+        spec = self._parse_fit_body(request.json, fields=_FIT_JOB_FIELDS,
+                                    allow_probe=True)
+        if spec["probe"] and policy != "probe":
+            raise ApiError(403, 'probing is disabled (serve_fit is "estimate")',
+                           code="probe_disabled")
+        session, client, model = self._fit_subject(spec)
+        if spec["apply"] and session is None:
+            raise _invalid("apply needs session_id", param="session_id")
+        if session is not None:
+            self._fit_guard(session)
+        try:
+            job = self._fits.submit(
+                model=model, mode=spec["mode"],
+                req=self._fit_request(client, model, session,
+                                      pinned=spec["gpu_layers"]),
+                percent=spec["cpu_percent"], probe=spec["probe"],
+                apply=spec["apply"],
+                session_id=session.id if session is not None else None,
+                on_success=self._apply_fit)
+        except FitBusy as exc:
+            raise _session_fitting(exc.session_id, exc.active_fit_id)
+        except TooManyFits as exc:
+            raise ApiError(429, "too many active fits",
+                           type_="rate_limit_error", code="rate_limit_error",
+                           extra={"limit": exc.limit})
+        except FitsClosed:
+            raise ApiError(503, "the server is shutting down",
+                           type_="api_error", code="server_shutting_down")
+        body = {
+            "id": job.id, "object": "fit", "status": job.status,
+            "session_id": job.session_id, "model": job.model,
+            "mode": job.mode, "probe": job.probe, "apply": job.apply,
+            "created_at": job.created_at,
+            "status_url": f"/v1/agent/fits/{job.id}",
+            "cancel_url": f"/v1/agent/fits/{job.id}/cancel",
+            "warnings": self._fit_warnings(client, model),
+        }
+        return Response.json(body, status=202)
+
+    def fit_status(self, request: Request,
+                   params: dict[str, str]) -> Response:
+        fit_id = params.get("id", "")
+        job = self._fits.get(fit_id)
+        if job is None:
+            raise ApiError(404, f"fit {fit_id!r} not found",
+                           code="fit_not_found")
+        return Response.json(fit_body(job))
+
+    def cancel_fit(self, request: Request,
+                   params: dict[str, str]) -> Response:
+        fit_id = params.get("id", "")
+        job = self._fits.get(fit_id)
+        if job is None:
+            raise ApiError(404, f"fit {fit_id!r} not found",
+                           code="fit_not_found")
+        if job.status in TERMINAL_FIT_STATUSES:
+            raise ApiError(409, f"fit {fit_id!r} already finished",
+                           type_="conflict_error", code="fit_finished",
+                           extra={"status": job.status})
+        self._fits.cancel(job.id)
+        return Response.json({"id": job.id, "object": "fit",
+                              "cancel_requested": True, "status": job.status},
+                             status=202)
 
     def turn_status(self, request: Request,
                     params: dict[str, str]) -> Response:
@@ -1136,9 +1477,7 @@ class AgentApi:
     def patch_session(self, request: Request,
                       params: dict[str, str]) -> Response:
         session = self._session(params.get("id", ""))
-        active = self._manager.active_for(session.id)
-        if active:
-            raise _session_busy(session.id, active)
+        self._fit_guard(session)
         body = request.json
         if not isinstance(body, dict) or not body:
             raise _invalid("request body must be a non-empty JSON object")
@@ -1196,9 +1535,7 @@ class AgentApi:
     def delete_session(self, request: Request,
                        params: dict[str, str]) -> Response:
         session = self._session(params.get("id", ""))
-        active = self._manager.active_for(session.id)
-        if active:
-            raise _session_busy(session.id, active)
+        self._fit_guard(session)
         try:
             self._store.delete(session.id)
         except Exception as exc:
@@ -1211,11 +1548,12 @@ class AgentApi:
     # ── lifecycle ───────────────────────────────────────────────────────────
 
     def shutdown(self, *, timeout: float = 10.0) -> None:
-        """Resolve pending approvals as cancelled, then stop the manager."""
+        """Resolve pending approvals as cancelled, then stop the registries."""
         for pending in self._pending_approvals_all():
             self._first_decision(pending, ApprovalDecision(
                 run=False, note=_cancel_note("shutdown"), action="cancelled"))
         self._manager.shutdown(cancel=True, timeout=timeout)
+        self._fits.shutdown(cancel=True, timeout=timeout)
 
     def _pending_approvals_all(self) -> list[PendingApproval]:
         with self._lock:
@@ -1229,15 +1567,22 @@ def _session_busy(session_id: str, active_turn_id: str) -> ApiError:
                     extra={"active_turn_id": active_turn_id})
 
 
+def _session_fitting(session_id: str, active_fit_id: str) -> ApiError:
+    return ApiError(409, f"session {session_id!r} is fitting",
+                    type_="conflict_error", code="session_busy",
+                    extra={"active_fit_id": active_fit_id})
+
+
 def add_agent_routes(router: Router, *, args: Any, config: dict[str, Any],
                      store: SessionStore, client_factory: Callable[[], Any],
                      manager: Optional[TurnManager] = None,
                      cwd: Optional[str] = None,
-                     artifacts: Optional[ArtifactStore] = None) -> AgentApi:
+                     artifacts: Optional[ArtifactStore] = None,
+                     fits: Optional[FitService] = None) -> AgentApi:
     """Register the native endpoints on `router`; returns the API object."""
     api = AgentApi(args=args, config=config, store=store,
                    client_factory=client_factory, manager=manager, cwd=cwd,
-                   artifacts=artifacts)
+                   artifacts=artifacts, fits=fits)
     router.add("POST", "/v1/agent/turns", api.start_turn)
     router.add("GET", "/v1/agent/turns/{id}", api.turn_status)
     router.add("GET", "/v1/agent/turns/{id}/events", api.turn_events)
@@ -1246,6 +1591,10 @@ def add_agent_routes(router: Router, *, args: Any, config: dict[str, Any],
     router.add("POST", "/v1/files", api.upload_file)
     router.add("GET", "/v1/artifacts/{id}", api.artifact_download)
     router.add("GET", "/v1/artifacts/{id}/meta", api.artifact_meta)
+    router.add("POST", "/v1/agent/fit", api.estimate_fit)
+    router.add("POST", "/v1/agent/fits", api.start_fit)
+    router.add("GET", "/v1/agent/fits/{id}", api.fit_status)
+    router.add("POST", "/v1/agent/fits/{id}/cancel", api.cancel_fit)
     router.add("GET", "/v1/sessions", api.list_sessions)
     router.add("POST", "/v1/sessions", api.create_session)
     router.add("GET", "/v1/sessions/{id}", api.get_session)
