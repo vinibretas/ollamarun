@@ -358,7 +358,8 @@ class Repl:
             tool_max_output = 4000
         self.tool_ctx = ToolContext(cwd=os.getcwd(), timeout=tool_timeout,
                                     max_output=tool_max_output,
-                                    tts_remote=config.get("tts_remote") or None)
+                                    tts_remote=config.get("tts_remote") or None,
+                                    client=client, store=store)
         tts_option: Optional[bool]
         if not config.get("tts_tools", True):
             tts_option = False

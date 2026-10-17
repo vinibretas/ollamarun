@@ -425,10 +425,11 @@ def test_tool_definitions() -> int:
     names = sorted(definition.name for definition in defs)
     failures = _check(failures, "the shipped tool definitions load",
                       names == ["copy_file", "delete_file", "edit_file",
-                                "fetch_url", "list_dir", "list_voices",
-                                "make_dir", "move_file", "read_file",
-                                "run_python", "run_shell", "speak",
-                                "web_search", "write_file"], str(names))
+                                "fetch_url", "list_dir", "list_models",
+                                "list_voices", "make_dir", "move_file",
+                                "read_file", "run_python", "run_shell",
+                                "search_sessions", "speak", "web_search",
+                                "write_file"], str(names))
     failures = _check(failures, "every definition's handler resolves",
                       all(definition.handler in orun.HANDLERS
                           for definition in defs))
@@ -4016,6 +4017,86 @@ def test_file_tools() -> int:
     return failures
 
 
+def test_session_model_tools() -> int:
+    failures = 0
+    registry = orun.default_registry(tts=False)
+
+    # search_sessions reads through the store the REPL injects
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        first = orun.Session.create("m1", "http://fake:11434",
+                                    title="jupyter kernels")
+        first.add_message("user", "fix the jupyter kernel for the llm-jukebox venv")
+        first.add_message("assistant", "reinstalled ipykernel inside the venv")
+        store.save(first)
+        second = orun.Session.create("m2", "http://fake:11434", title="gardening")
+        second.add_message("user", "when to water tomatoes")
+        store.save(second)
+        ctx = orun.ToolContext(cwd=tmp, timeout=10, max_output=4000, store=store)
+        outcome = orun.execute_tool(registry["search_sessions"],
+                                    {"query": "ipykernel"}, ctx)
+        failures = _check(failures, "search_sessions finds a matching message",
+                          outcome.ok and first.id in outcome.text
+                          and "jupyter kernels" in outcome.text
+                          and "reinstalled ipykernel" in outcome.text, outcome.text)
+        empty = orun.execute_tool(registry["search_sessions"],
+                                  {"query": "zzz-nothing"}, ctx)
+        failures = _check(failures, "search_sessions reports no matches",
+                          empty.ok and "no saved session" in empty.text, empty.text)
+        bare = orun.ToolContext(cwd=tmp, timeout=10, max_output=4000)
+        none = orun.execute_tool(registry["search_sessions"], {"query": "x"}, bare)
+        failures = _check(failures, "search_sessions errors without a store",
+                          not none.ok and "unavailable" in none.text, none.text)
+
+    # list_models marks residents from /api/ps
+    client = _FakeClient(
+        tag_data=[
+            {"name": "m1", "size": 4 * 1024**3,
+             "modified_at": "2026-10-01T10:00:00-03:00",
+             "details": {"parameter_size": "8.0B", "quantization_level": "Q4_K_M"}},
+            {"name": "m2", "size": 1 * 1024**3,
+             "modified_at": "2026-09-01T10:00:00-03:00",
+             "details": {"parameter_size": "1.0B", "quantization_level": "Q8_0"}},
+        ],
+        ps_entries=[{"name": "m1", "size": 4 * 1024**3, "size_vram": 3 * 1024**3,
+                     "expires_at": "2026-10-16T23:00:00-03:00"}])
+    ctx = orun.ToolContext(cwd=".", timeout=10, max_output=4000, client=client)
+    outcome = orun.execute_tool(registry["list_models"], {}, ctx)
+    failures = _check(failures, "list_models lists installed models",
+                      outcome.ok and "m1" in outcome.text and "m2" in outcome.text
+                      and "8.0B" in outcome.text and "Q4_K_M" in outcome.text,
+                      outcome.text)
+    failures = _check(failures, "list_models marks the loaded model",
+                      "loaded (3.0 GiB VRAM of 4.0 GiB, unloads 2026-10-16 23:00:00)"
+                      in outcome.text, outcome.text)
+    loaded = orun.execute_tool(registry["list_models"], {"loaded_only": True}, ctx)
+    failures = _check(failures, "list_models loaded_only hides installed-only models",
+                      loaded.ok and "m1" in loaded.text and "m2" not in loaded.text,
+                      loaded.text)
+
+    class _DeadClient(_FakeClient):
+        def tags(self):
+            raise orun.OllamaError("cannot reach Ollama at http://fake:11434: boom")
+
+    dead = orun.ToolContext(cwd=".", timeout=10, max_output=4000,
+                            client=_DeadClient())
+    outcome = orun.execute_tool(registry["list_models"], {}, dead)
+    failures = _check(failures, "list_models surfaces server errors",
+                      not outcome.ok and "cannot reach Ollama" in outcome.text,
+                      outcome.text)
+    bare = orun.ToolContext(cwd=".", timeout=10, max_output=4000)
+    outcome = orun.execute_tool(registry["list_models"], {}, bare)
+    failures = _check(failures, "list_models errors without a client",
+                      not outcome.ok and "connection" in outcome.text, outcome.text)
+
+    failures = _check(failures, "recall and ps aliases resolve onto the new tools",
+                      orun.resolve_tool_alias("recall") == "search_sessions"
+                      and orun.resolve_tool_alias("ps") == "list_models"
+                      and orun.resolve_tool_alias("models") == "list_models")
+    return failures
+
+
 _MINIMAL_PDF = b"""%PDF-1.4
 1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
 2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
@@ -6121,7 +6202,7 @@ if __name__ == "__main__":
              + test_model_command_sort() + test_sort_flag()
              + test_gpu_layers() + test_slash_completer()
              + test_tools_policy() + test_tool_execution() + test_web_tools()
-             + test_file_tools()
+             + test_file_tools() + test_session_model_tools()
              + test_tool_loop() + test_tool_loop_separation()
              + test_tool_commands() + test_approval_rules()
              + test_tool_payloads() + test_tool_cli_flags()

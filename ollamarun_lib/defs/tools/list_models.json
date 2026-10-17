@@ -1,0 +1,14 @@
+{
+  "name": "list_models",
+  "description": "List the models installed on the Ollama server (size, parameters, quantization, modified date) and mark the ones currently loaded with their VRAM and unload time. Pass loaded_only to see just the loaded models.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "loaded_only": {"type": "boolean", "description": "only list models currently loaded in memory"}
+    },
+    "required": []
+  },
+  "handler": "list_models",
+  "read_only": true,
+  "aliases": ["models", "ollama_models", "list_ollama_models", "ps", "loaded_models"]
+}

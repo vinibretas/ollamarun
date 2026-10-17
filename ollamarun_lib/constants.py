@@ -170,6 +170,8 @@ TOOL_COLORS: dict[str, str] = {
     "copy_file": "sky_blue2",
     "delete_file": "indian_red",
     "list_dir": "magenta",
+    "search_sessions": "medium_turquoise",
+    "list_models": "wheat1",
     "fetch_url": "spring_green2",
     "web_search": "hot_pink2",
     "speak": "salmon1",
