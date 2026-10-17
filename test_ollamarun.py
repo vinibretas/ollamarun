@@ -10283,6 +10283,51 @@ def test_agent_approval_edge() -> int:
     return failures
 
 
+def test_serve_approval_timeout_zero() -> int:
+    """serve_approval_timeout: 0 disables the timeout (0 is not "unset")."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        shell = f"touch {Path(tmp) / 'never.txt'}"
+        client = _ServeClient(models=["m1"], capabilities=["completion", "tools"],
+                              chat_script=[
+                                  [{"message": {"content": "", "tool_calls": [
+                                      {"function": {"name": "run_shell",
+                                                    "arguments": {"command": shell}}}]}},
+                                   {"done": True}],
+                                  [{"message": {"content": "ok"}, "done": True}],
+                              ])
+        server, api, store, thread = _start_agent_api(
+            tmp, client, config_extra={"serve_approval_timeout": 0},
+            manager=orun.TurnManager())
+        try:
+            failures = _check(failures,
+                              "an explicit 0 disables the approval timeout",
+                              api._approval_timeout == 0.0,
+                              repr(api._approval_timeout))
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body=_turn_request("wait forever",
+                                   settings={"approval": "interactive"}))
+            turn = json.loads(raw)
+            _poll_turn(server, turn["id"], until={"waiting_approval"})
+            time.sleep(1.0)
+            events = _headless_events(api, turn["id"])
+            resolved = [event.data for event in events
+                        if event.type == "approval.resolved"]
+            failures = _check(failures,
+                              "a zero-timeout approval does not resolve itself",
+                              not resolved, str(resolved[:1]))
+            # Clean up: deny the parked call so the turn can finish.
+            notice = [event.data for event in events
+                      if event.type == "approval.required"][0]
+            _http(server, "POST", f"/v1/agent/approvals/{notice['approval_id']}",
+                  body={"action": "deny"})
+            _poll_turn(server, turn["id"])
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
 def test_agent_policy_mode() -> int:
     """The default mode runs allowlisted calls and denies the rest with a note."""
     failures = 0
@@ -10727,6 +10772,7 @@ if __name__ == "__main__":
              + test_openai_sdk()
              + test_agent_turn_lifecycle() + test_agent_turn_controls()
              + test_agent_approvals() + test_agent_approval_edge()
+             + test_serve_approval_timeout_zero()
              + test_agent_policy_mode() + test_agent_disconnect_policy()
              + test_agent_turn_timeout() + test_agent_sessions_api()
              + test_agent_turn_validation() + test_agent_turn_expiry()
