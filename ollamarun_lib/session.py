@@ -4,6 +4,7 @@ three export formats (markdown, json, html).
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -150,40 +151,88 @@ def _index_entry(session: Session) -> dict[str, Any]:
     }
 
 
+try:  # POSIX file locking: a CLI saving while serve runs must not interleave
+    import fcntl  # its index read-modify-write with ours.
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    fcntl = None
+
+_INDEX_LOCKS: dict[str, threading.RLock] = {}
+_INDEX_LOCKS_GUARD = threading.Lock()
+
+
+def _index_lock(index_path: Path) -> threading.RLock:
+    """One reentrant lock per index file, shared by every store in this process."""
+    key = str(index_path)
+    with _INDEX_LOCKS_GUARD:
+        return _INDEX_LOCKS.setdefault(key, threading.RLock())
+
+
 class SessionStore:
     def __init__(self, sessions_dir: Path = SESSIONS_DIR,
                  index_path: Path = INDEX_PATH):
         self.dir = Path(sessions_dir)
         self.index_path = Path(index_path)
         # `index.json` is a read-modify-write: two sessions saving at once
-        # (the serve mode runs turns in parallel threads) would otherwise
-        # drop each other's entries. Reentrant because save() -> _update_index().
-        self._lock = threading.RLock()
+        # (serve runs turns in parallel threads, and a CLI may run beside it)
+        # would otherwise drop each other's entries. The in-process lock is
+        # shared by every store for the same index; `_index_guard` adds an
+        # exclusive flock so separate processes serialize too.
+        self._lock = _index_lock(self.index_path)
+        self._guard_depth = 0
+        self._flock_file = None
+
+    @contextlib.contextmanager
+    def _index_guard(self):
+        """Serialize an index read-modify-write in this process and on disk.
+
+        Reentrant: nested calls (save -> _update_index, delete -> entries ->
+        rebuild_index) only count the depth and never re-acquire the flock.
+        """
+        with self._lock:
+            if self._guard_depth == 0 and fcntl is not None:
+                self._flock_file = open(f"{self.index_path}.lock", "a+")
+                fcntl.flock(self._flock_file.fileno(), fcntl.LOCK_EX)
+            self._guard_depth += 1
+            try:
+                yield
+            finally:
+                self._guard_depth -= 1
+                if self._guard_depth == 0 and self._flock_file is not None:
+                    try:
+                        fcntl.flock(self._flock_file.fileno(), fcntl.LOCK_UN)
+                    finally:
+                        self._flock_file.close()
+                        self._flock_file = None
 
     def _path(self, session_id: str) -> Path:
         return self.dir / f"{session_id}.json"
 
+    @staticmethod
+    def _tmp_path(target: Path) -> Path:
+        """A per-writer temp name: two processes may save the same target."""
+        return target.with_name(
+            f"{target.name}.{os.getpid()}-{threading.get_ident()}.tmp")
+
     def save(self, session: Session) -> None:
-        with self._lock:
-            session.touch()
-            self.dir.mkdir(parents=True, exist_ok=True)
-            target = self._path(session.id)
-            tmp = target.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(session.to_dict(), indent=2, ensure_ascii=False) + "\n",
-                           encoding="utf-8")
-            os.replace(tmp, target)
+        session.touch()
+        self.dir.mkdir(parents=True, exist_ok=True)
+        target = self._path(session.id)
+        tmp = self._tmp_path(target)
+        tmp.write_text(json.dumps(session.to_dict(), indent=2, ensure_ascii=False) + "\n",
+                       encoding="utf-8")
+        os.replace(tmp, target)
+        with self._index_guard():
             self._update_index(session)
 
     def _update_index(self, session: Session) -> None:
-        with self._lock:
-            entries = self._read_index()
-            entry = _index_entry(session)
-            by_id = {item["id"]: item for item in entries}
-            by_id[session.id] = entry
-            rows = sorted(by_id.values(),
-                          key=lambda item: (item.get("updated_at") or "", item.get("id") or ""),
-                          reverse=True)
-            self._write_index(rows)
+        entries = self._read_index()
+        entry = _index_entry(session)
+        by_id = {item["id"]: item for item in entries}
+        by_id[session.id] = entry
+        rows = sorted(by_id.values(),
+                      key=lambda item: (item.get("updated_at") or "", item.get("id") or ""),
+                      reverse=True)
+        self._write_index(rows)
 
     def _read_index(self) -> list[dict[str, Any]]:
         if not self.index_path.exists():
@@ -197,15 +246,14 @@ class SessionStore:
         return list(data.get("sessions") or [])
 
     def _write_index(self, rows: list[dict[str, Any]]) -> None:
-        with self._lock:
-            self.index_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.index_path.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps({"schema": SCHEMA_VERSION, "sessions": rows},
-                                      indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            os.replace(tmp, self.index_path)
+        self.index_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._tmp_path(self.index_path)
+        tmp.write_text(json.dumps({"schema": SCHEMA_VERSION, "sessions": rows},
+                                  indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        os.replace(tmp, self.index_path)
 
     def rebuild_index(self) -> list[dict[str, Any]]:
-        with self._lock:
+        with self._index_guard():
             rows = []
             if self.dir.exists():
                 for path in sorted(self.dir.glob("*.json")):
@@ -264,7 +312,7 @@ class SessionStore:
         return None
 
     def delete(self, ref: str, use_trash: bool = True) -> Session:
-        with self._lock:
+        with self._index_guard():
             session = self.resolve(ref)
             if session is None:
                 raise FileNotFoundError(ref)

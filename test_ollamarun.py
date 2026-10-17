@@ -6922,6 +6922,40 @@ def test_session_store_lock() -> int:
     return failures
 
 
+def test_session_store_cross_process_lock() -> int:
+    """Two processes saving through one index keep every entry (flock)."""
+    failures = 0
+    import subprocess
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = str(Path(__file__).parent)
+        template = (
+            "import sys; sys.path.insert(0, {repo!r})\n"
+            "from pathlib import Path\n"
+            "import ollamarun_lib as orun\n"
+            "store = orun.SessionStore(sessions_dir=Path({tmp!r}) / 's',"
+            " index_path=Path({tmp!r}) / 'i.json')\n"
+            "for i in range(5):\n"
+            "    store.save(orun.Session.create('m{tag}-%d' % i, 'http://h'))\n"
+        )
+        procs = [subprocess.Popen(
+                     [sys.executable, "-c",
+                      template.format(repo=repo, tmp=tmp, tag=tag)],
+                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                 for tag in ("a", "b")]
+        results = [(proc.communicate(), proc.returncode) for proc in procs]
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        entries = store.entries()
+        failures = _check(failures, "both processes saved cleanly",
+                          all(code == 0 for _out, code in results),
+                          str([(out[1].decode()[-160:], code)
+                               for out, code in results]))
+        failures = _check(failures, "every cross-process save reaches the index",
+                          len(entries) == 10, f"{len(entries)} entries")
+    return failures
+
+
 def test_ui_interactive() -> int:
     failures = 0
     failures = _check(failures, "Ui defaults to non-interactive",
@@ -7220,6 +7254,7 @@ if __name__ == "__main__":
              + test_live_stream_final_frame_is_complete()
              + test_runtime_events() + test_headless_renderer()
              + test_session_store_lock() + test_ui_interactive()
+             + test_session_store_cross_process_lock()
              + test_tool_cancellation() + test_run_once_json()
              + test_cancellation_coverage()
              + test_tool_support_warning() + test_quiet_tools_live()
