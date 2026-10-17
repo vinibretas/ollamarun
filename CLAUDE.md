@@ -182,7 +182,8 @@ a module's own docstring for what lives there before editing:
    python, files — read/write/list plus `edit_file` and the
    `make_dir`/`move_file`/`copy_file`/`delete_file` chores — `web_search`
    when `ddgs` is installed, `fetch_url`, `search_sessions`, `list_models`,
-   `system_status`, tts-remote speak/list_voices, and the chemInventoryAPI
+   `system_status`, `context_status`/`session_info`, tts-remote
+   speak/list_voices, and the chemInventoryAPI
    lookup tools when that CLI is present), the allowlist policy
    (`shell_safety`, `python_safety`, `approval_decision`), the approval-rule
    engine (`ToolRule`, `suggest_rules`, `rule_matches`, `dangerous_command`),
@@ -194,8 +195,10 @@ a module's own docstring for what lives there before editing:
    invented names like `search`/`curl` resolve onto the real tools; bad files
    warn and are skipped). `ToolContext` carries the runtime seams the REPL
    injects: `client`/`store` (list_models, system_status, search_sessions),
-   `ssh_target`/`ssh_user` for remote probes and `chem_inventory` (the CLI
-   path override). The web half
+   `ssh_target`/`ssh_user` for remote probes, `chem_inventory` (the CLI
+   path override) and `context_report`/`session_report` (the plain dicts
+   Repl.context_report()/session_report() assemble for the awareness tools).
+   The web half
    is self-contained: `_HTMLTextExtractor`/`extract_html_text` turn pages into
    readable text plus links, `extract_pdf_text` uses pypdf or pdftotext,
    `format_fetch_response` maps a response onto model-readable text (never the
@@ -282,7 +285,11 @@ a module's own docstring for what lives there before editing:
    footer/status-bar ctx counter, `/context` and the 80%/85% warnings: a
    session `num_ctx` first, then the loaded runner's `/api/ps`
    `context_length`, then `/api/show`'s model default; a show-only answer
-   stays provisional until `/api/ps` reports the runner.
+   stays provisional until `/api/ps` reports the runner. `model_show()` is
+   the run-long `/api/show` cache the length/block-count/awareness readers
+   share, and `context_report()`/`session_report()` assemble the plain
+   dicts the `context_status`/`session_info` tools format (window + usage,
+   identity + settings + tool round).
    `/system` semantics live in `_apply_system` (`clear`/`default` → built-in,
    `off` → disabled, text → custom) plus `_show_system`, shared with
    `/set system`. Then the `cmd_*` functions.
