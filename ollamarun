@@ -2,6 +2,37 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.48
+
+Summary of changes in this version:
+  - The Phase 3 review fixes landed. A malformed first message plus the
+    `system` extension is a structured 400 now (it used to raise through
+    to a 500); upstream failures no longer leak backend detail — clients
+    see stable `model_not_found`/`backend_unreachable`/`backend_error`
+    messages while the raw text goes to the `--debug` log; and the
+    `ollamarun serve` socket timeout is actually wired
+    (`HttpServer(request_timeout=…)` was dead): a stalled body gets a 408
+    while a stream that outlives the timeout still completes — it is a
+    per-operation timeout, not a deadline.
+  - Request validation went strict: `n` must be the integer 1,
+    `stream_options.include_usage` a JSON boolean, `tool_choice` requires
+    tools, unknown keys inside tools/`tool_choice`/`response_format`
+    wrappers are rejected, `strict: true` tool schemas are rejected as
+    unsupported (`false` is a no-op) and the `json_schema` wrapper is
+    validated (only its `schema` is forwarded). One image content part is
+    capped at 10 MiB decoded (`413 image_too_large`), and the model-list
+    and capability caches are single-flight, so concurrent cold requests
+    share one upstream fetch.
+  - Tests grew the malformed-request matrix with exact envelopes,
+    real-socket lifecycle coverage (stalled body 408, streams longer than
+    the timeout, shutdown mid-stream, two-stream disconnect isolation),
+    cache concurrency, SDK negative paths plus a real mid-stream
+    `openai.APIError`, and an opt-in `--live` real-backend smoke test.
+    Every remaining compatibility item moved into the plans: chunked
+    request decoding (phase 6) and `plans/phase-9-compatibility.md`
+    (embeddings, `n>1`, `parallel_tool_calls`, remote image URLs and the
+    recorded closures for backend-impossible features).
+
 Version: 1.47
 
 Summary of changes in this version:
