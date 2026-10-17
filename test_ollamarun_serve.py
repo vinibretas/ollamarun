@@ -13,6 +13,7 @@ import http.client
 import io
 import json
 import os
+import re
 import shutil
 import socket
 import struct
@@ -4488,8 +4489,266 @@ def test_serve_live() -> int:
                               and bool(calls)
                               and calls[0]["function"]["name"] == "get_weather",
                               raw[:300])
+
+        # A full agent turn against the real backend, on a temp session store.
+        # Tools ride along only when the model advertises them -- the backend
+        # rejects tools outright for models without support -- while the live
+        # tool pass-through above runs under OLLAMARUN_TEST_MODEL.
+        with tempfile.TemporaryDirectory() as tmp:
+            supports_tools = "tools" in client.capabilities(model)
+            live_client = orun.OllamaClient(host, timeout=600)
+            agent_server, agent_api, store, agent_thread = _start_agent_api(
+                tmp, live_client)
+            try:
+                status, _headers, raw = _http(
+                    agent_server, "POST", "/v1/agent/turns",
+                    body={"model": model,
+                          "settings": {"tools": supports_tools,
+                                       "parameters": {"num_predict": 24}},
+                          "messages": [{"role": "user",
+                                        "content": "Reply with exactly: ok"}]},
+                    timeout=600)
+                turn = json.loads(raw)
+                status, body = _poll_turn(agent_server, turn["id"], timeout=600)
+                stored = store.resolve(turn["session_id"])
+                roles = [message.get("role") for message in
+                         (stored.messages if stored else [])]
+                events = _headless_events(agent_api, turn["id"])
+                types = [event.type for event in events]
+                failures = _check(
+                    failures, "live: a full agent turn completes and persists",
+                    status == 200 and body.get("status") == "completed"
+                    and bool(((body.get("result") or {}).get("content") or "").strip())
+                    and types[-1:] == ["turn.completed"]
+                    and roles[:1] == ["user"] and roles[-1:] == ["assistant"],
+                    f"{body.get('status')} {types[:2]}..{types[-1:]} {roles}")
+                print(f"      --live: agent turn {turn['id']} "
+                      f"tools={supports_tools} "
+                      f"rounds={(body.get('result') or {}).get('rounds')}")
+            finally:
+                _stop_api(agent_server, agent_thread)
     finally:
         _stop_api(server, thread)
+    return failures
+
+
+def test_serve_process() -> int:
+    """The real entry point: serve, answer, drain a stream on SIGTERM, exit 0.
+
+    Everything else in this file drives an in-process `HttpServer` over a
+    fake backend; this is the one check that the shipped `ollamarun serve`
+    binary wires config, banner, signal handling, drain and the tracked
+    unload together — against a stub Ollama on a loopback port.
+    """
+    import select
+    import signal
+    import subprocess
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    failures = 0
+    seen: list = []
+    lock = threading.Lock()
+
+    class Stub(BaseHTTPRequestHandler):
+        chunks = 20
+        chunk_delay = 0.05
+
+        def log_message(self, *args):  # keep the test output quiet
+            pass
+
+        def _record(self, payload):
+            with lock:
+                seen.append((self.command, self.path, payload))
+
+        def _body(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                return json.loads(raw)
+            except ValueError:
+                return {}
+
+        def _json(self, payload, status=200):
+            data = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            self._record(None)
+            if self.path == "/api/tags":
+                self._json({"models": [{
+                    "name": "m1", "modified_at": "2026-01-01T00:00:00Z"}]})
+            elif self.path == "/api/ps":
+                self._json({"models": [{"name": "m1"}]})
+            else:
+                self._json({"error": "not found"}, status=404)
+
+        def do_POST(self):
+            payload = self._body()
+            self._record(payload)
+            if self.path == "/api/show":
+                self._json({"capabilities": ["completion", "tools"],
+                            "model_info": {"llama.context_length": 8192}})
+            elif self.path == "/api/generate":
+                self._json({})
+            elif self.path == "/api/chat" and payload.get("stream"):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/x-ndjson")
+                self.end_headers()
+                for _ in range(self.chunks):
+                    self.wfile.write(json.dumps(
+                        {"message": {"content": "x"}, "done": False}).encode()
+                        + b"\n")
+                    self.wfile.flush()
+                    time.sleep(self.chunk_delay)
+                self.wfile.write(json.dumps(
+                    {"done": True, "prompt_eval_count": 1,
+                     "eval_count": self.chunks}).encode() + b"\n")
+                self.wfile.flush()
+            elif self.path == "/api/chat":
+                self._json({"message": {"content": "ok"}, "done": True,
+                            "prompt_eval_count": 1, "eval_count": 1,
+                            "done_reason": "stop"})
+            else:
+                self._json({"error": "not found"}, status=404)
+
+    stub = ThreadingHTTPServer(("127.0.0.1", 0), Stub)
+    stub_thread = threading.Thread(target=stub.serve_forever, daemon=True)
+    stub_thread.start()
+    proc = None
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "config.json"
+            config.write_text(json.dumps({
+                "host": f"127.0.0.1:{stub.server_address[1]}",
+                "serve_artifact_root": str(Path(tmp) / "artifacts"),
+                "serve_workspace": tmp,
+                "serve_unload_on_exit": True,
+                "serve_shutdown_timeout": 5,
+            }), encoding="utf-8")
+            proc = subprocess.Popen(
+                [sys.executable,
+                 str(Path(__file__).resolve().parent / "ollamarun"),
+                 "serve", "--config", str(config),
+                 "--bind", "127.0.0.1", "--port", "0"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                env={**os.environ, "PYTHONUNBUFFERED": "1"})
+
+            port = None
+            banner = []
+            deadline = time.monotonic() + 30
+            while port is None and time.monotonic() < deadline \
+                    and proc.poll() is None:
+                ready, _w, _x = select.select([proc.stdout], [], [], 0.5)
+                if not ready:
+                    continue
+                line = proc.stdout.readline()
+                if not line:
+                    break
+                banner.append(line)
+                match = re.search(r"http://127\.0\.0\.1:(\d+)", line)
+                if match:
+                    port = int(match.group(1))
+            failures = _check(failures,
+                              "the real serve process prints its address",
+                              port is not None, "".join(banner)[:200])
+
+            if port is not None:
+                def api(method, path, body=None, timeout=30):
+                    conn = http.client.HTTPConnection("127.0.0.1", port,
+                                                      timeout=timeout)
+                    try:
+                        payload = json.dumps(body) if body is not None else None
+                        headers = ({"Content-Type": "application/json"}
+                                   if payload is not None else {})
+                        conn.request(method, path, body=payload, headers=headers)
+                        response = conn.getresponse()
+                        return response.status, response.read()
+                    finally:
+                        conn.close()
+
+                status, raw = api("GET", "/v1/models")
+                failures = _check(failures, "the real process lists models",
+                                  status == 200
+                                  and json.loads(raw)["data"][0]["id"] == "m1",
+                                  f"{status} {raw[:160]}")
+
+                status, raw = api("POST", "/v1/chat/completions", {
+                    "model": "m1", "temperature": 0,
+                    "messages": [{"role": "user", "content": "hi"}]})
+                body = json.loads(raw)
+                content = (body.get("choices") or [{}])[0].get(
+                    "message", {}).get("content")
+                failures = _check(failures, "the real process answers a completion",
+                                  status == 200 and content == "ok",
+                                  f"{status} {raw[:160]}")
+
+                # SIGTERM mid-stream: the handler must drain, so the client
+                # still reads the whole SSE body and the process exits 0.
+                streamed = {}
+
+                def read_stream():
+                    conn = http.client.HTTPConnection("127.0.0.1", port,
+                                                      timeout=30)
+                    try:
+                        conn.request("POST", "/v1/chat/completions",
+                                     body=json.dumps({
+                                         "model": "m1", "stream": True,
+                                         "messages": [{"role": "user",
+                                                       "content": "hi"}]}),
+                                     headers={"Content-Type": "application/json"})
+                        response = conn.getresponse()
+                        streamed["status"] = response.status
+                        streamed["body"] = response.read()
+                    except Exception as exc:  # the harness reports it
+                        streamed["error"] = repr(exc)
+                    finally:
+                        conn.close()
+
+                reader = threading.Thread(target=read_stream, daemon=True)
+                reader.start()
+                time.sleep(0.4)
+                proc.send_signal(signal.SIGTERM)
+                reader.join(30)
+                failures = _check(
+                    failures, "the drain lets an in-flight stream finish",
+                    streamed.get("status") == 200
+                    and b"[DONE]" in streamed.get("body", b""),
+                    str(streamed)[:200])
+
+            out = "".join(banner) + (proc.stdout.read() or "")
+            err = proc.stderr.read() or ""
+            code = proc.wait(timeout=30)
+            failures = _check(failures, "SIGTERM stops the process cleanly",
+                              code == 0 and "Traceback" not in err
+                              and "stopped" in out,
+                              f"rc={code} err={err[-200:]!r}")
+            unload = [payload for method, path, payload in seen
+                      if path == "/api/generate"]
+            failures = _check(
+                failures, "the real process unloads only the used model",
+                bool(unload) and unload[-1].get("model") == "m1"
+                and unload[-1].get("keep_alive") == 0
+                and "unloaded m1" in out,
+                f"{unload[-1:]!r} {out[-200:]!r}")
+            if port is not None:
+                try:
+                    socket.create_connection(("127.0.0.1", port), timeout=1)
+                    released = False
+                except OSError:
+                    released = True
+                failures = _check(failures, "the listener port is released",
+                                  released, str(port))
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
+        stub.shutdown()
+        stub.server_close()
+        stub_thread.join(timeout=5)
     return failures
 
 
@@ -6121,6 +6380,7 @@ def run_all(*, live: bool = False) -> int:
         + test_serve_shutdown()
         + test_serve_unload_on_exit()
         + test_serve_cli()
+        + test_serve_process()
         + test_openai_sdk()
         + test_turn_mode_isolation()
         + test_agent_turn_lifecycle() + test_agent_turn_controls()
