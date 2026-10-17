@@ -36,6 +36,7 @@ Phase index
 | 7 | pending | `plans/phase-7-testing.md` | Runtime/lifecycle/HTTP/artifact/compatibility test coverage; OpenAI SDK round-trip |
 | 8 | pending | `plans/phase-8-documentation.md` | Compatibility + agent API documentation and example clients |
 | 9 | pending | `plans/phase-9-compatibility.md` | Compatibility completion: `/v1/embeddings`, `n>1`, `parallel_tool_calls`, remote image URLs (Phase 5 handoff) and the recorded closures for backend-impossible features |
+| 10 | pending | `plans/phase-10-context-control.md` | Context and placement control over the API: first-class `num_ctx`/`gpu_layers`, a synchronous fit estimate, asynchronous probe jobs and turn-start estimation |
 
 Locked decisions (cross-phase)
 
@@ -65,6 +66,11 @@ Locked decisions (cross-phase)
   one turn and one tool operation, the first resolution wins, a timeout
   defaults to denial, and cancellation/shutdown resolve waiting approvals as
   cancelled.
+- Context fitting and placement control are native-surface features. The
+  OpenAI-compatible surface stays a stateless translation proxy and never
+  gains `num_ctx`/`gpu_layers` fields (one request is one inference call;
+  there is no session to configure and fitting per request would mean
+  load churn per completion).
 
 Definition of done
 
