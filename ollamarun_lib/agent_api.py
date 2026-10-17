@@ -358,8 +358,13 @@ class AgentApi:
                               or 10000),
             completed_ttl=float(self._config.get("serve_turn_event_ttl")
                                 or 86400))
-        self._approval_timeout = float(
-            self._config.get("serve_approval_timeout") or 300)
+        #: How long a parked approval may wait for a decision, in seconds;
+        #: an explicit 0 disables the timeout (the approval waits until it is
+        #: resolved, cancelled or the server shuts down), so `0` must not be
+        #: conflated with "unset" the way `or 300` would.
+        raw_approval_timeout = self._config.get("serve_approval_timeout")
+        self._approval_timeout = 300.0 if raw_approval_timeout is None \
+            else float(raw_approval_timeout)
         self._turn_timeout = float(self._config.get("serve_turn_timeout") or 0)
         #: Serve never takes `auto` from the config: the client opts into
         #: broad execution per turn (`approval: "interactive"` + an `auto`
