@@ -100,7 +100,7 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"1.47"` — keep this
+  constant in `ollamarun_lib/constants.py`, currently `"1.48"` — keep this
   line current when you bump it) and prepend a new bullet list under
   `Summary of changes in this version:` in the top-level `ollamarun` entry
   script's module docstring — read the existing entries there before adding
@@ -434,12 +434,13 @@ a module's own docstring for what lives there before editing:
    `completion_body()`/`_stream_completion()`/`stream_chunk()` shape the
    OpenAI response and SSE (role chunk, deltas, thinking as
    `delta.reasoning_content`, the tool calls as one indexed array chunk,
-   finish reason, optional usage chunk, `[DONE]`); `OpenAIApi` caches the
-   model list and capabilities briefly and builds one `OllamaClient` per
-   request so a disconnecting client cancels only its own stream. The
+   finish reason, optional usage chunk, `[DONE]`); `OpenAIApi` keeps
+   single-flight model-list/capability caches and builds one `OllamaClient`
+   per request so a disconnecting client cancels only its own stream. The
    `system` extension (`"auto"` = built-in default, text = replace) is
-   off unless asked. `translate_error()` maps upstream failures onto
-   404/502 envelopes.
+   off unless asked. `translate_error()`/`stream_backend_error()` map
+   upstream failures onto sanitized 404/502 envelopes with stable messages
+   (raw backend detail goes to the `--debug` log).
 23. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
    every `ollama run` flag), `resolve_model`/`resolve_session` (figuring out
    what model/session a given invocation means, including the `-c`/`-r`/
@@ -544,10 +545,15 @@ and the destructive-tool refusal after a stop. The Phase 2 tests
 envelopes, lifecycle, replay/gap/truncation, session exclusivity, the
 active cap, cancellation, overflow and shutdown. The Phase 3 serve tests
 (`test_openai_mapping`, `test_serve_http`, `test_serve_disconnect`,
-`test_serve_cli`, `test_openai_sdk`) pin request validation and
-message/tool mapping, the live HTTP surface over a fake backend (models,
-non-stream and SSE chat, tool calls, the vision gate, the body cap and the
-error envelopes), client-disconnect cancellation, the serve parser,
-config defaults and `main()` dispatch, and the official OpenAI SDK
-round-trip (the SDK test skips when the package is absent; it is a
-test-only dependency).
+`test_serve_sockets`, `test_serve_cache_concurrency`, `test_serve_cli`,
+`test_openai_sdk`) pin request validation and message/tool mapping (strict
+types, exact error envelopes), the live HTTP surface over a fake backend
+(models, non-stream and SSE chat, tool calls, the vision gate, body and
+image caps), client-disconnect cancellation with stream isolation, the
+wired request timeout (stalled body 408, streams outliving it),
+single-flight caches, the serve parser, config defaults and `main()`
+dispatch, and the official OpenAI SDK round-trip including negative and
+mid-stream-failure paths (the SDK test skips when the package is absent;
+it is a test-only dependency). `python3 test_ollamarun.py --live`
+additionally runs a real-backend smoke test (models, completion with
+usage, streaming; tool round-trip with `OLLAMARUN_TEST_MODEL` set).

@@ -306,20 +306,26 @@ Supported fields: `temperature`, `top_p`, `max_tokens` /
 Ollama `think`), `tools`, `tool_choice` (`auto`, `none`, or a specific
 function), `stream`, `stream_options.include_usage`, and the extension
 `system` (`"auto"` = the built-in default prompt, text = replace it, absent
-= none; a client-sent system message always wins).
+= none; a client-sent system message always wins). `user` and `metadata`
+are accepted and ignored (tracking hints).
 
-Compatibility gaps are rejected explicitly with structured `400`s instead
-of being silently ignored: `n > 1`, `logprobs` / `top_logprobs`,
-`logit_bias`, `audio`, non-text `modalities`, unknown fields and
-`tool_choice: "required"` (the backend cannot force a call). `image_url`
-content parts must be `data:` URIs for now (remote image URLs land with the
-artifacts phase), are validated against the model's `capabilities` and
-refused with `model_does_not_support_images` when vision is absent.
-`response_format` schema support is Ollama-dependent. Errors use the OpenAI
-envelope with proper status codes (400/404/405/413/502); oversized bodies
-are rejected before parsing, and responses never carry tracebacks or
-internal paths (`--debug` logs requests and tracebacks to
-`~/etc/logs/ollamarun.log`).
+Request validation is strict, and every rejection is a structured error
+rather than a silent ignore: unknown fields anywhere (top level, tools,
+`tool_choice`, `response_format` wrappers), `n` other than the integer `1`,
+`logprobs`/`top_logprobs`, `logit_bias`, `audio`, non-text `modalities`
+and `tool_choice: "required"` are rejected with `400`s; `strict: true` on a
+function tool is rejected because the backend does not enforce
+tool-argument schemas (`strict: false` is a no-op). `image_url` content
+parts must be `data:` URIs of at most 10 MiB, are validated against the
+model's `capabilities` and refused with `model_does_not_support_images`
+when vision is absent. `json_schema` enforcement uses Ollama's grammar
+(`format`); only the `schema` object is forwarded. Errors use the OpenAI
+envelope with proper status codes (400/404/405/408/413/502); upstream
+failures surface as stable `model_not_found` / `backend_unreachable` /
+`backend_error` messages, oversized bodies and stalled uploads are rejected
+before parsing, and responses never carry tracebacks or internal paths —
+`--debug` logs requests, upstream detail and tracebacks to
+`~/etc/logs/ollamarun.log`.
 
 ## Prompts and tool definitions
 
