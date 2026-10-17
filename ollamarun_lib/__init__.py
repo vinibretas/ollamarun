@@ -15,6 +15,7 @@ from .mathrender import *  # noqa: F401,F403
 from .files import *  # noqa: F401,F403
 from .images import *  # noqa: F401,F403
 from .prompts import *  # noqa: F401,F403
+from .events import *  # noqa: F401,F403
 from .renderer import *  # noqa: F401,F403
 from .client import *  # noqa: F401,F403
 from .tools import *  # noqa: F401,F403
@@ -23,6 +24,7 @@ from .emit import *  # noqa: F401,F403
 from .ui import *  # noqa: F401,F403
 from .interactive import *  # noqa: F401,F403
 from .ctxfit import *  # noqa: F401,F403
+from .runtime import *  # noqa: F401,F403
 from .repl import *  # noqa: F401,F403
 if HAS_TEXTUAL:
     # `tui.py` imports the Textual classes at module level; without the

@@ -17,7 +17,7 @@ import time
 import tty
 from collections import deque
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Iterator, Optional
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Optional
 
 from rich.align import Align
 from rich.console import Console, Group
@@ -29,6 +29,7 @@ from rich.spinner import Spinner
 from rich.text import Text
 
 from .constants import CTRL_T, THINKING_MODES, tool_color
+from .events import MESSAGE_DELTA, RuntimeEvent
 from .helpers import (CancelToken, diff_preview, format_context, human_chars,
                       human_duration, short_stamp)
 from .mathrender import render_content, render_thinking
@@ -137,6 +138,31 @@ def format_stats(stats: dict[str, Any]) -> str:
     if stats.get("total_duration") is not None:
         bits.append(f"total {human_duration(stats['total_duration'])}")
     return " · ".join(bits)
+
+
+def consume_chunk(result: "GenerationResult", event: dict[str, Any],
+                  estimator: Optional["TpsEstimator"] = None) -> tuple[str, str]:
+    """Apply one streamed chat chunk to `result`; returns (thinking, content).
+
+    Shared by the terminal `Renderer.stream()` and the headless renderer, so
+    both accumulate exactly the same `GenerationResult` from the same NDJSON.
+    """
+    message = event.get("message") or {}
+    thinking = message.get("thinking") or ""
+    content = message.get("content") or ""
+    if thinking:
+        result.thinking += thinking
+        if estimator is not None:
+            estimator.add()
+    if content:
+        result.content += content
+        if estimator is not None:
+            estimator.add()
+    if message.get("tool_calls"):
+        result.tool_calls.extend(message["tool_calls"])
+    if event.get("done"):
+        result.stats = stats_from_final(event)
+    return thinking, content
 
 
 def thinking_panel(text: str, title: str = "thinking",
@@ -467,12 +493,8 @@ class Renderer:
                     if event.get("error"):
                         result.error = str(event["error"])
                         break
-                    message = event.get("message") or {}
-                    thinking = message.get("thinking")
-                    content = message.get("content") or ""
+                    thinking, content = consume_chunk(result, event, self.estimator)
                     if thinking:
-                        result.thinking += thinking
-                        self.estimator.add()
                         if use_live or sink is not None:
                             refresh(0.10)
                         elif self.thinking_visible() and self.mode != "raw" \
@@ -482,8 +504,6 @@ class Renderer:
                                 printed_thinking_header = True
                             self.console.print(f"[dim italic]{escape(thinking)}[/dim italic]", end="")
                     if content:
-                        result.content += content
-                        self.estimator.add()
                         if use_live or sink is not None:
                             heavy = len(result.content) > self.max_render_chars
                             refresh(1.0 if heavy else 0.10)
@@ -491,10 +511,6 @@ class Renderer:
                             self.console.print(escape(content), end="",
                                                soft_wrap=self.nowordwrap, markup=False,
                                                highlight=False)
-                    if message.get("tool_calls"):
-                        result.tool_calls.extend(message["tool_calls"])
-                    if event.get("done"):
-                        result.stats = stats_from_final(event)
                     handle_keys()
             except KeyboardInterrupt:
                 result.cancelled = True
@@ -612,6 +628,54 @@ class Renderer:
             function = call.get("function", {}) if isinstance(call, dict) else {}
             self.console.print(tool_call_panel(function.get("name", "tool"),
                                                function.get("arguments", {})))
+
+
+class HeadlessRenderer:
+    """A terminal-free `Renderer` for hosts driven by events (the API server).
+
+    Consumes the same chat chunks and returns the same `GenerationResult`, but
+    prints nothing, starts no `rich.Live` and polls no keyboard. Every delta is
+    handed to `on_event` as a `message.delta` runtime event, so a front end can
+    stream content/thinking without owning the chunk parsing (shared with
+    `Renderer.stream` through `consume_chunk`).
+    """
+
+    def __init__(self, *, on_event: Optional[Callable[[RuntimeEvent], None]] = None,
+                 thinking_mode: str = "hidden", after_tools: bool = False):
+        self.estimator = TpsEstimator()
+        self.on_event = on_event
+        self.after_tools = after_tools
+        self.mode = "plain"
+        self.render_frames = False
+        self.thinking_mode = thinking_mode if thinking_mode in THINKING_MODES else "hidden"
+        self.tps_footer = False
+        self.context_used: Optional[int] = None
+        self.context_total: Optional[int] = None
+        self._committed_final = False
+
+    def _emit(self, event_type: str, **data: Any) -> None:
+        if self.on_event is not None:
+            self.on_event(RuntimeEvent(event_type, data))
+
+    def stream(self, events: Iterator[dict[str, Any]],
+               cancel: Optional[CancelToken] = None,
+               sink: Optional[StreamSink] = None) -> GenerationResult:
+        result = GenerationResult()
+        for event in events:
+            if cancel is not None and cancel.cancelled:
+                result.cancelled = True
+                break
+            if event.get("error"):
+                result.error = str(event["error"])
+                break
+            thinking, content = consume_chunk(result, event, self.estimator)
+            if thinking:
+                self._emit(MESSAGE_DELTA, channel="thinking", text=thinking)
+            if content:
+                self._emit(MESSAGE_DELTA, channel="content", text=content)
+        if cancel is not None and cancel.cancelled:
+            result.cancelled = True
+        return result
 
 
 def render_transcript(session: "Session", console: Console, *, show_stats: bool = True,
