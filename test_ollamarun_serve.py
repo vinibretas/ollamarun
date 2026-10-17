@@ -594,6 +594,30 @@ def test_turn_buffer_truncation() -> int:
     failures = _check(failures, "the gap is followed by the surviving events",
                       [event.seq for event in events[1:]] == [4, 5],
                       str([event.seq for event in events[1:]]))
+
+    # The same gap over the events endpoint, through the HTTP surface.
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _ServeClient(models=["m1"], capabilities=["completion", "tools"],
+                              chunk_count=6)
+        server, _api, _store, thread = _start_agent_api(
+            tmp, client, config_extra={"serve_turn_event_buffer": 3})
+        try:
+            status, _headers, raw = _http(server, "POST", "/v1/agent/turns",
+                                          body=_turn_request("stream"))
+            turn = json.loads(raw)
+            _poll_turn(server, turn["id"])
+            status, _headers, raw = _http(
+                server, "GET", f"/v1/agent/turns/{turn['id']}/events?after=0")
+            payloads = [json.loads(item) for item in _sse_events(raw)]
+            failures = _check(
+                failures, "a truncated HTTP replay starts with stream.gap",
+                status == 200 and payloads
+                and payloads[0].get("type") == "stream.gap"
+                and payloads[0].get("data", {}).get("reason") == "truncated_buffer"
+                and payloads[-1].get("type") == "turn.completed",
+                str(payloads[:2])[:240])
+        finally:
+            _stop_api(server, thread)
     return failures
 
 
@@ -2812,6 +2836,19 @@ def test_serve_http() -> int:
                           and payload["data"][0]["object"] == "model"
                           and payload["data"][0]["owned_by"] == "ollamarun",
                           raw[:160])
+        # The locked contract: LAN-accessible, no authentication at all.
+        status, headers, raw = _http(server, "GET", "/v1/models")
+        failures = _check(failures, "no credentials are required",
+                          status == 200
+                          and not any(key.lower() == "www-authenticate"
+                                      for key in headers),
+                          f"{status} {dict(headers)}")
+        status, _headers, with_token = _http(
+            server, "GET", "/v1/models",
+            headers={"Authorization": "Bearer nope"})
+        failures = _check(failures, "an arbitrary token changes nothing",
+                          status == 200 and with_token == raw,
+                          f"{status} {with_token[:80]!r}")
         status, _headers, raw = _http(server, "GET", "/v1/models/m1")
         failures = _check(failures, "GET /v1/models/{id} finds the model",
                           status == 200 and json.loads(raw)["id"] == "m1",
@@ -4520,6 +4557,82 @@ def _headless_events(api, turn_id, after=0):
     return _collect(api.manager.subscribe(turn_id, after=after))
 
 
+def test_turn_mode_isolation() -> int:
+    """The same tool call: returned to the client vs executed by the agent."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "executed.txt"
+        client = _ServeClient(models=["m1"],
+                              capabilities=["completion", "tools"],
+                              show_data={"model_info": {
+                                  "llama.context_length": 8192}})
+        server, api, store, thread = _start_agent_api(tmp, client)
+        try:
+            # A model turn: the call is translated, never executed.
+            client.chat_once_data = {
+                "message": {"content": "", "tool_calls": [
+                    {"function": {"name": "run_shell",
+                                  "arguments": {"command": f"touch {marker}"}}}]},
+                "done": True, "prompt_eval_count": 5, "eval_count": 2,
+                "done_reason": "stop"}
+            status, _headers, raw = _http(
+                server, "POST", "/v1/chat/completions", body={
+                    "model": "m1",
+                    "messages": [{"role": "user", "content": "touch it"}],
+                    "tools": [{"type": "function", "function": {
+                        "name": "run_shell", "description": "shell",
+                        "parameters": {"type": "object", "properties": {
+                            "command": {"type": "string"}},
+                            "required": ["command"]}}}]})
+            body = json.loads(raw)
+            choices = body.get("choices") or []
+            calls = (choices[0]["message"].get("tool_calls") or []) \
+                if choices else []
+            failures = _check(
+                failures, "a model turn returns the call and never runs it",
+                status == 200 and bool(calls)
+                and choices[0].get("finish_reason") == "tool_calls"
+                and calls[0]["function"]["name"] == "run_shell"
+                and not marker.exists()
+                and len(client.chat_once_payloads) == 1
+                and client.chat_calls == 0,
+                f"{status} {raw[:200]} marker={marker.exists()}")
+
+            # An agent turn: the same tool executes inside the loop.
+            client.chat_once_data = None
+            client.chat_script = [
+                [{"message": {"content": "", "tool_calls": [
+                    {"function": {"name": "run_shell",
+                                  "arguments": {"command": "echo mode-agent"}}}]}},
+                 {"done": True}],
+                [{"message": {"content": "ran it"}, "done": True}],
+            ]
+            client.chat_calls = 0
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns", body=_turn_request("run it"))
+            turn = json.loads(raw)
+            status, body = _poll_turn(server, turn["id"])
+            results = [event.data for event in _headless_events(api, turn["id"])
+                       if event.type == "tool.result"]
+            stored = store.resolve(turn["session_id"])
+            messages = stored.messages if stored else []
+            roles = [message.get("role") for message in messages]
+            failures = _check(
+                failures, "the agent turn executes the call through the loop",
+                status == 200 and body.get("status") == "completed"
+                and (body.get("result") or {}).get("content") == "ran it"
+                and client.chat_calls == 2
+                and results and results[0].get("ok") is True
+                and "mode-agent" in str(results[0].get("text"))
+                and roles == ["user", "assistant", "tool", "assistant"]
+                and any("mode-agent" in str(message.get("content"))
+                        for message in messages),
+                f"{body.get('status')} {results[:1]} {roles}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
 def test_agent_turn_lifecycle() -> int:
     """POST a turn, watch it finish, replay its events and read the session."""
     failures = 0
@@ -4621,6 +4734,32 @@ def test_agent_turn_lifecycle() -> int:
                               and session["history"][1]["content"] == "hello"
                               and session["turns"] == 1,
                               str(session.get("history"))[:200])
+
+            # A backend failure mid-turn: failed status, terminal turn.error
+            # and a session that keeps only what the turn actually saw.
+            client.chat_script = [[{"error": "boom"}]]
+            client.chat_calls = 0
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns", body=_turn_request("break"))
+            broken = json.loads(raw)
+            status, body = _poll_turn(server, broken["id"])
+            failures = _check(failures, "a backend failure fails the turn",
+                              status == 200 and body["status"] == "failed"
+                              and body.get("error") == "boom"
+                              and not (body.get("result") or {}).get("content"),
+                              str(body)[:240])
+            events = _headless_events(api, broken["id"])
+            types = [event.type for event in events]
+            failures = _check(failures, "the failure is a terminal turn.error",
+                              types and types[-1] == "turn.error"
+                              and events[-1].data.get("message") == "boom",
+                              f"{types} {events[-1].data}")
+            stored = store.resolve(broken["session_id"])
+            contents = [message.get("content") for message in
+                        (stored.messages if stored else [])]
+            failures = _check(failures, "the failed session keeps the user turn only",
+                              stored is not None and contents == ["break"],
+                              str(contents)[:200])
         finally:
             _stop_api(server, thread)
     return failures
@@ -4688,6 +4827,19 @@ def test_agent_turn_controls() -> int:
             failures = _check(failures, "the cancellation reason is user",
                               cancelled and cancelled[0].data.get("reason") == "user",
                               str([event.data for event in cancelled]))
+            status, _headers, raw = _http(
+                server, "GET", f"/v1/sessions/{session_id}")
+            history = json.loads(raw)["history"]
+            partial = history[1].get("content", "") if len(history) > 1 else ""
+            failures = _check(
+                failures, "the cancelled turn's session keeps its shape",
+                status == 200
+                and [message.get("role") for message in history]
+                == ["user", "assistant"]
+                and history[0].get("content") == "slow one"
+                and partial and set(partial) == {"x"}
+                and history[1].get("cancelled") is True,
+                str(history)[:200])
             status, _headers, raw = _http(
                 server, "POST", f"/v1/agent/turns/{first['id']}/cancel")
             failures = _check(failures, "cancelling a finished turn is a 409",
@@ -5048,6 +5200,30 @@ def test_agent_policy_mode() -> int:
                               and resolved and resolved[0].get("action") == "deny"
                               and "not allowed by policy" in str(results[0].get("text")),
                               f"{types} {results[:1]} marker={marker.exists()}")
+
+            # A tool that errors: an ok:false result, and the model continues.
+            client.chat_script = [
+                [{"message": {"content": "", "tool_calls": [
+                    {"function": {"name": "read_file",
+                                  "arguments": {"path": "definitely-missing.txt"}}}]}},
+                 {"done": True}],
+                [{"message": {"content": "handled"}, "done": True}],
+            ]
+            client.chat_calls = 0
+            status, _headers, raw = _http(server, "POST", "/v1/agent/turns",
+                                          body=_turn_request("missing"))
+            turn3 = json.loads(raw)
+            status, body = _poll_turn(server, turn3["id"])
+            results = [event.data for event in _headless_events(api, turn3["id"])
+                       if event.type == "tool.result"]
+            failures = _check(
+                failures, "a failing tool is ok:false and the model continues",
+                body.get("status") == "completed"
+                and (body.get("result") or {}).get("content") == "handled"
+                and client.chat_calls == 2
+                and results and results[0].get("ok") is False
+                and "not a file" in str(results[0].get("text")),
+                f"{body.get('status')} {results[:1]}")
         finally:
             _stop_api(server, thread)
     return failures
@@ -5946,6 +6122,7 @@ def run_all(*, live: bool = False) -> int:
         + test_serve_unload_on_exit()
         + test_serve_cli()
         + test_openai_sdk()
+        + test_turn_mode_isolation()
         + test_agent_turn_lifecycle() + test_agent_turn_controls()
         + test_agent_approvals() + test_agent_approval_edge()
         + test_serve_approval_timeout_zero()
