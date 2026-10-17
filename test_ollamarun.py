@@ -3923,6 +3923,54 @@ def test_prompt_toolkit_fallback() -> int:
     return failures
 
 
+def test_textual_optional() -> int:
+    """Importing without textual must degrade, not crash.
+
+    `tui.py` imports the Textual classes at module level, so the package
+    re-export is conditional on `HAS_TEXTUAL`; without that guard a machine
+    with no `textual` package could not run any command (`--version`
+    included), even though the inline REPL is the documented fallback.
+    """
+    import subprocess
+    failures = 0
+    repo = Path(__file__).parent
+
+    code = (
+        "import sys\n"
+        "sys.modules['textual'] = None\n"
+        f"sys.path.insert(0, {str(repo)!r})\n"
+        "import ollamarun_lib as orun\n"
+        "assert orun.HAS_TEXTUAL is False\n"
+        "assert not hasattr(orun, 'OllamarunTui')\n"
+        "assert callable(orun.main)\n"
+        "print(orun.VERSION)\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code],
+                            capture_output=True, text=True)
+    if result.returncode == 0 and result.stdout.strip() == orun.VERSION:
+        print("PASS  package imports with textual unavailable")
+    else:
+        print(f"FAIL  textual fallback import: rc={result.returncode} "
+              f"stderr={result.stderr.strip().splitlines()[-1:]}")
+        failures += 1
+
+    code = (
+        "import sys, runpy\n"
+        "sys.modules['textual'] = None\n"
+        "sys.argv = ['ollamarun', '--version']\n"
+        f"runpy.run_path({str(repo / 'ollamarun')!r}, run_name='__main__')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code],
+                            capture_output=True, text=True)
+    if result.returncode == 0 and orun.VERSION in result.stdout:
+        print("PASS  CLI starts without textual")
+    else:
+        print(f"FAIL  textual fallback --version: rc={result.returncode} "
+              f"stderr={result.stderr.strip().splitlines()[-1:]}")
+        failures += 1
+    return failures
+
+
 class _FakeResponse:
     def __init__(self, status=200, payload=None, text="", lines=None):
         self.status_code = status
@@ -6612,7 +6660,7 @@ if __name__ == "__main__":
              + test_model_sort() + test_model_picker_sort()
              + test_model_command_sort() + test_sort_flag()
              + test_gpu_layers() + test_slash_completer()
-             + test_prompt_toolkit_fallback()
+             + test_prompt_toolkit_fallback() + test_textual_optional()
              + test_tools_policy() + test_tool_execution() + test_web_tools()
              + test_file_tools() + test_session_model_tools()
              + test_system_status_tool() + test_chem_tools()
