@@ -477,4 +477,13 @@ across ANSI color codes. The Phase 1/1b runtime tests (`test_runtime_events`,
 `AgentRuntime` event stream, the terminal-free turn path, the
 in-process/cross-process store locks, turn cancellation (including the
 ssh/chem/tts/trash coverage), `@file` inlining, the approval event
-contract and the 3.10 syntax guard.
+contract and the 3.10 syntax guard. The audit guards
+(`test_runtime_event_contract`, `test_approval_runtime_contract`,
+`test_unattended_turn_denial`, `test_cancel_reaches_production_tools`,
+`test_quiet_tools_real_turn`, `test_session_store_process_gate`,
+`test_session_store_same_session_writers`,
+`test_session_store_without_fcntl`, `test_cancellation_destructive_guard`)
+pin the event vocabulary/serialization and terminal-event contract, the
+approval order with its interrupt/stopped paths, the cancel token actually
+reaching a production turn's tool, the store flock gating another process,
+and the destructive-tool refusal after a stop.

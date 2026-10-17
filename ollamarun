@@ -2,6 +2,26 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.45
+
+Summary of changes in this version:
+  - Fix: stopping a turn really kills the tool that is running now. The
+    Phase 1b helpers were correct, but `Repl` built its `ToolContext`
+    before the `CancelToken` existed and never handed the token over, so
+    every handler ran with `cancel=None` in a real turn: Esc during a
+    `run_shell` waited for the command, kept its output and recorded it
+    as a success. One assignment wires it; an end-to-end regression test
+    fails without it.
+  - The Phase 1 audit tests that found it ride along and lock the rest
+    down: the event vocabulary, JSON-ready payloads and single-terminal
+    contract (error and cancellation included), the approval order on
+    the allowed/denied/interrupted/stopped paths, an unattended turn
+    refusing a risky call without ever parking, mid-turn `/render raw`
+    silencing that round's tool event panels, the `<index>.lock` flock
+    blocking another process (with the no-`fcntl` fallback), two writers
+    of one session keeping a valid file with no temp leftovers, and
+    `delete_file` refusing to trash anything after a stop.
+
 Version: 1.44
 
 Summary of changes in this version:
