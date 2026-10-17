@@ -3872,6 +3872,76 @@ def test_slash_completer() -> int:
         else:
             print(f"FAIL  SlashCompleter all sort keys: {names}")
             failures += 1
+
+        names = {c.text for c in completer.get_completions(_Doc("/tools "), None)}
+        if {"web_search", "run_shell", "policy", "help"} <= names and "call" not in names:
+            print("PASS  /tools completes subcommands and tool names")
+        else:
+            print(f"FAIL  /tools first token: {sorted(names)}")
+            failures += 1
+
+        names = {c.text for c in completer.get_completions(_Doc("/tools we"), None)}
+        if "web_search" in names and "web" in names:
+            print("PASS  /tools completes with tool aliases")
+        else:
+            print(f"FAIL  /tools alias completion: {sorted(names)}")
+            failures += 1
+
+        names = {c.text for c in completer.get_completions(_Doc("/tools web_search "), None)}
+        if names == {"on", "off", "help", "call"}:
+            print("PASS  /tools NAME completes its actions")
+        else:
+            print(f"FAIL  /tools NAME actions: {sorted(names)}")
+            failures += 1
+
+        names = {c.text for c in completer.get_completions(_Doc("/tools search o"), None)}
+        if names == {"on", "off"}:
+            print("PASS  /tools ALIAS completes its actions")
+        else:
+            print(f"FAIL  /tools ALIAS actions: {sorted(names)}")
+            failures += 1
+
+        names = {c.text for c in completer.get_completions(_Doc("/tools enable we"), None)}
+        if "web_search" in names:
+            print("PASS  /tools enable completes tool names")
+        else:
+            print(f"FAIL  /tools enable: {sorted(names)}")
+            failures += 1
+
+        names = {c.text for c in completer.get_completions(_Doc("/tools policy "), None)}
+        if names == {"auto", "allowlist", "ask"}:
+            print("PASS  /tools policy completes the modes")
+        else:
+            print(f"FAIL  /tools policy: {sorted(names)}")
+            failures += 1
+
+        names = {c.text for c in completer.get_completions(_Doc("/tools rules "), None)}
+        if names == {"add", "rm"}:
+            print("PASS  /tools rules completes its subcommands")
+        else:
+            print(f"FAIL  /tools rules: {sorted(names)}")
+            failures += 1
+
+        names = {c.text for c in completer.get_completions(_Doc("/tools rules add "), None)}
+        if names == {"shell", "path", "python", "call"}:
+            print("PASS  /tools rules add completes the rule kinds")
+        else:
+            print(f"FAIL  /tools rules add: {sorted(names)}")
+            failures += 1
+
+        names = {c.text for c in completer.get_completions(_Doc("/tools help re"), None)}
+        if "read_file" in names and "read_url" in names:
+            print("PASS  /tools help completes tool names and aliases")
+        else:
+            print(f"FAIL  /tools help: {sorted(names)}")
+            failures += 1
+
+        names = {c.text for c in completer.get_completions(_Doc("/tools web_search call "), None)}
+        if names == set():
+            print("PASS  /tools NAME call stops completing (free-form arguments)")
+        else:
+            print(f"FAIL  /tools call arguments: {sorted(names)}")
+            failures += 1
     return failures
 
 
@@ -5028,6 +5098,113 @@ def test_tool_commands() -> int:
             orun.cmd_tools(repl, "allow")
         failures = _check(failures, "/tools allow shows the shell allowlist",
                           "ls" in _plain(cap.get()) and "git" in _plain(cap.get()))
+
+        # ── name-first per-tool control, help pages and direct calls ───────
+        with orun.console.capture():
+            orun.cmd_tools(repl, "on")
+        with orun.console.capture():
+            orun.cmd_tools(repl, "web_search off")
+        names = [schema["function"]["name"] for schema in repl.active_tool_schemas()]
+        failures = _check(failures, "/tools NAME off drops just that schema",
+                          "web_search" not in names and "fetch_url" in names, str(names))
+        with orun.console.capture():
+            orun.cmd_tools(repl, "search on")  # an invented alias resolves
+        names = [schema["function"]["name"] for schema in repl.active_tool_schemas()]
+        failures = _check(failures, "/tools ALIAS on restores the schema",
+                          "web_search" in names, str(names))
+
+        with orun.console.capture() as cap:
+            orun.cmd_tools(repl, "web_search help")
+        out = _plain(cap.get())
+        failures = _check(failures, "/tools NAME help states the parameters",
+                          "model calls it with" in out and "web_search(query" in out
+                          and "required" in out and "optional" in out, out)
+        failures = _check(failures, "/tools NAME help lists aliases and approval",
+                          "aliases: search" in out and "read-only" in out, out)
+        with orun.console.capture() as cap:
+            orun.cmd_tools(repl, "web_search")
+        failures = _check(failures, "/tools NAME alone shows the same page",
+                          "model calls it with" in _plain(cap.get()))
+
+        with orun.console.capture() as cap:
+            orun.cmd_tools(repl, "help")
+        out = _plain(cap.get())
+        failures = _check(failures, "/tools help documents every form",
+                          "NAME call ARGS" in out and "policy" in out
+                          and "rules" in out, out)
+        with orun.console.capture() as cap:
+            orun.cmd_tools(repl, "help web_search")
+        failures = _check(failures, "/tools help NAME is the per-tool page",
+                          "max_results" in _plain(cap.get()))
+        with orun.console.capture() as cap:
+            orun.cmd_help(repl, "tools")
+        failures = _check(failures, "/help tools reaches the same reference",
+                          "NAME call ARGS" in _plain(cap.get()))
+
+        with orun.console.capture() as cap:
+            orun.cmd_tools(repl, "not_a_tool help")
+        out = _plain(cap.get())
+        failures = _check(failures, "an unknown tool is refused",
+                          "unknown tool" in out and "usage: /tools" in out, out)
+        with orun.console.capture() as cap:
+            orun.cmd_tools(repl, "web_serch help")
+        out = _plain(cap.get())
+        failures = _check(failures, "a near-miss tool name gets a suggestion",
+                          "did you mean" in out and "web_search" in out, out)
+
+        # a definition whose `requires` is unmet still gets a help page
+        spec = repl.tool_registry.pop("web_search")
+        with orun.console.capture() as cap:
+            orun.cmd_tools(repl, "web_search help")
+        out = _plain(cap.get())
+        failures = _check(failures, "a not-installed tool still explains itself",
+                          "not installed" in out and "ddgs" in out
+                          and "max_results" in out, out)
+        with orun.console.capture() as cap:
+            orun.cmd_tools(repl, "web_search off")
+        failures = _check(failures, "a not-installed tool cannot be toggled",
+                          "not installed" in _plain(cap.get()))
+        repl.tool_registry["web_search"] = spec
+
+        # ── /tools NAME call: JSON, key=value, bare value, validation ──────
+        with orun.console.capture():
+            orun.cmd_tools(repl, "policy allowlist")
+        notes = Path(tmp) / "notes.txt"
+        notes.write_text("hello tools\n")
+        with orun.console.capture() as cap:
+            orun.cmd_tools(repl, f"read_file call {notes}")
+        out = _plain(cap.get())
+        failures = _check(failures, "call runs a read-only tool and shows the result",
+                          "hello tools" in out and "tool · read_file" in out, out)
+        with orun.console.capture() as cap:
+            orun.cmd_tools(repl, f'read_file call path="{notes}"')
+        failures = _check(failures, "call accepts key=value arguments",
+                          "hello tools" in _plain(cap.get()))
+        with orun.console.capture() as cap:
+            orun.cmd_tools(repl, 'read_file call {"path": "' + str(notes) + '"}')
+        failures = _check(failures, "call accepts JSON arguments",
+                          "hello tools" in _plain(cap.get()))
+        with orun.console.capture() as cap:
+            orun.cmd_tools(repl, 'read_file call {"path": "x", "bogus": 1}')
+        out = _plain(cap.get())
+        failures = _check(failures, "call refuses unknown parameters by name",
+                          "unknown parameter" in out and "bogus" in out
+                          and "path" in out, out)
+        with orun.console.capture() as cap:
+            orun.cmd_tools(repl, "read_file call")
+        out = _plain(cap.get())
+        failures = _check(failures, "call names the missing required parameter",
+                          "missing required" in out and "path" in out, out)
+
+        # a state-changing call still goes through the approval gate
+        target = Path(tmp) / "written.txt"
+        with orun.console.capture() as cap:
+            orun.cmd_tools(repl, f'write_file call path="{target}" content="x"')
+        out = _plain(cap.get())
+        failures = _check(failures, "call goes through the approval gate",
+                          "not run:" in out and not target.exists(), out)
+        failures = _check(failures, "call leaves the conversation untouched",
+                          repl.session.messages == [], str(repl.session.messages))
     return failures
 
 

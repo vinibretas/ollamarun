@@ -16,6 +16,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
+from difflib import get_close_matches
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -92,12 +93,15 @@ from .interactive import (
     sort_models,
 )
 from .renderer import (GenerationResult, Renderer, StreamSink, thinking_panel,
-                       tool_result_panel, user_message_box)
+                       tool_call_panel, tool_result_panel, user_message_box)
 from .session import Session, SessionStore, export_html, export_json, export_markdown
 from .tools import (
     DEFAULT_SHELL_ALLOW,
+    REQUIREMENT_HINTS,
     ToolContext,
+    ToolDefinition,
     ToolRule,
+    ToolSpec,
     approval_decision,
     call_detail,
     call_fingerprint,
@@ -111,6 +115,7 @@ from .tools import (
     run_tts_say,
     speech_hosts,
     suggest_rules,
+    tool_definitions,
     tool_schemas as build_tool_schemas,
 )
 from .ui import (ConsoleUi, StatusSnapshot, Ui, _prompt_approval)
@@ -135,7 +140,8 @@ COMMAND_INFO: dict[str, tuple[str, str]] = {
                  "context window: N, the largest that keeps the GPU, or N% of DRAM"),
     "/gpu-layers": ("[N|N%|+N|-N|all|cpu|auto]", "GPU layers for this model"),
     "/params": ("", "show session parameters"),
-    "/tools": ("[on|off|policy MODE|enable|disable NAME…|allow|rules]", "tool harness, approval rules and per-tool control"),
+    "/tools": ("[on|off|policy MODE|enable|disable NAME…|NAME on|off|NAME help|NAME call ARGS|allow|rules|help]",
+               "tool harness, per-tool control and help"),
     "/tts": ("[on|off|voice NAME|lang CODE|tools on|off|voices]", "auto-speak via tts-remote"),
     "/think": ("[on|off|low|medium|high]", "thinking mode"),
     "/thinking": ("[show|collapse|hide|toggle|full]", "thinking display (Ctrl+T while streaming)"),
@@ -157,6 +163,32 @@ COMMAND_INFO: dict[str, tuple[str, str]] = {
     "/queue": ("[list|clear|rm N]", "messages and commands typed while busy"),
     "/bye, /exit": ("", "leave"),
 }
+
+
+#: `/tools` subcommands (the first token), in help/table order.
+TOOLS_SUBCOMMANDS: tuple[str, ...] = (
+    "on", "off", "policy", "enable", "disable", "allow", "rules", "help",
+    "list", "status")
+
+#: actions after a tool name: `/tools NAME <action>`.
+TOOLS_TOOL_ACTIONS: tuple[str, ...] = ("on", "off", "help", "call")
+
+#: `/tools policy` modes (same values `approval_decision` knows).
+TOOLS_POLICIES: tuple[str, ...] = ("auto", "allowlist", "ask")
+
+#: `/tools help` reference rows: syntax -> what it does.
+TOOLS_HELP_ROWS: tuple[tuple[str, str], ...] = (
+    ("(none) · list · status", "table of tools with state and approval mode"),
+    ("on | off", "enable or disable the whole tool harness"),
+    ("policy auto|allowlist|ask", "global approval policy"),
+    ("enable NAME… | disable NAME…", "toggle several tools at once"),
+    ("NAME on | off", "toggle one tool, e.g. `/tools web_search off`"),
+    ("NAME help", "description, parameters (required/optional), aliases"),
+    ("NAME call ARGS", 'run it yourself: call {"query": "x"} · call query=x'),
+    ("help [NAME]", "this reference, or one tool's page"),
+    ("allow", "safe shell command allowlist"),
+    ("rules [add|rm]", "stored approval rules"),
+)
 
 
 def completion_fragment(text: str) -> str:
@@ -193,6 +225,8 @@ def completion_candidates(repl: "Repl", text: str) -> list[str]:
     if command in {"/model", "/models"} and argument.startswith("--sort "):
         fragment = argument[len("--sort "):]
         return [key for key in MODEL_SORT_KEYS if key.startswith(fragment)]
+    if command == "/tools":
+        return _tools_completion(repl, argument)
     if " " in argument:
         return []
     candidates: list[str] = []
@@ -210,6 +244,51 @@ def completion_candidates(repl: "Repl", text: str) -> list[str]:
         candidates += [word for word in ("show", "collapse", "hide", "toggle", "full")
                        if word.startswith(argument)]
     return candidates
+
+
+def tool_name_candidates(repl: "Repl", partial: str) -> list[str]:
+    """Tool names for a `/tools` completion, plus aliases once a prefix exists.
+
+    An empty `partial` lists just the registry's own names — the alias lists
+    are long (they collect every invented name a model might use) and would
+    flood a bare Tab; a typed prefix is a clear intent, so aliases join in.
+    """
+    names: set[str] = set(repl.tool_registry)
+    if partial:
+        for spec in repl.tool_registry.values():
+            names.update(spec.aliases)
+    return sorted(name for name in names if name.startswith(partial))
+
+
+def _tools_completion(repl: "Repl", argument: str) -> list[str]:
+    """Tab completion inside `/tools …`: subcommands, tool names, per-tool
+    actions and the `rules`/`policy` keywords. `argument` keeps its trailing
+    space, so the token being typed is the last one (possibly empty)."""
+    tokens = argument.split(" ")
+    partial = tokens[-1].lower()
+    if len(tokens) == 1:
+        return ([word for word in TOOLS_SUBCOMMANDS if word.startswith(partial)]
+                + tool_name_candidates(repl, partial))
+    first = tokens[0].lower()
+    if first in {"enable", "disable"}:
+        return tool_name_candidates(repl, partial)
+    if first == "help":
+        return tool_name_candidates(repl, partial) if len(tokens) == 2 else []
+    if first == "policy":
+        return ([mode for mode in TOOLS_POLICIES if mode.startswith(partial)]
+                if len(tokens) == 2 else [])
+    if first == "rules":
+        if len(tokens) == 2:
+            return [word for word in ("add", "rm") if word.startswith(partial)]
+        if len(tokens) == 3 and tokens[1].lower() == "add":
+            return [word for word in ("shell", "path", "python", "call")
+                    if word.startswith(partial)]
+        return []
+    if resolve_tool_alias(first) not in repl.tool_registry:
+        return []
+    if len(tokens) == 2:
+        return [action for action in TOOLS_TOOL_ACTIONS if action.startswith(partial)]
+    return []
 
 
 class SlashCompleter(Completer):  # type: ignore[misc]
@@ -1326,6 +1405,9 @@ class Repl:
 # ── commands ────────────────────────────────────────────────────────────────
 
 def cmd_help(repl: Repl, argument: str) -> None:
+    if argument == "tools":
+        _cmd_tools_help_table()
+        return
     if argument == "shortcuts":
         table = Table(title="shortcuts", box=box.ROUNDED, header_style="bold magenta")
         table.add_column("key")
@@ -1524,6 +1606,252 @@ def _cmd_tools_rules(repl: Repl, parts: list[str]) -> None:
                   "session[/dim]")
 
 
+def _find_tool(repl: Repl, name: str
+               ) -> tuple[Optional[ToolSpec], Optional[ToolDefinition]]:
+    """(registry spec, definition) for a tool name or alias; each may be None.
+
+    The definition exists even when the tool is not installed (its `requires`
+    is unmet), so a help page can still explain what it would do.
+    """
+    key = str(name or "").strip().lower().replace("-", "_")
+    canonical = resolve_tool_alias(key)
+    spec = repl.tool_registry.get(canonical)
+    definition = next((item for item in tool_definitions()
+                       if item.name == canonical), None)
+    return spec, definition
+
+
+def _apply_tool_toggle(repl: Repl, name: str, on: bool) -> None:
+    """Record NAME on/off in the session (the one place that edits it)."""
+    disabled = list(repl.session.tools_disabled)
+    if on:
+        if name in disabled:
+            disabled.remove(name)
+    elif name not in disabled:
+        disabled.append(name)
+    repl.session.tools_disabled = disabled
+    repl.session.touch()
+
+
+def _missing_requirement(definition: Optional[ToolDefinition]) -> str:
+    needs = definition.requires if definition is not None else None
+    return REQUIREMENT_HINTS.get(needs, needs or "?")
+
+
+def _tool_state(repl: Repl, spec: Optional[ToolSpec],
+                definition: Optional[ToolDefinition]) -> str:
+    """The state label a tool's help header and toggle share."""
+    if spec is None:
+        missing = escape(_missing_requirement(definition))
+        return f"[err]not installed[/err] — needs {missing}"
+    if not repl.tools_enabled:
+        return "[dim]harness off[/dim]"
+    if spec.name in repl.session.tools_disabled:
+        return "[warn]disabled for the model[/warn]"
+    return "[ok]on[/ok]"
+
+
+def _tool_approval_line(spec: ToolSpec) -> str:
+    """How a call to SPEC is approved, in the same words as the /tools table."""
+    if spec.read_only:
+        return "auto — read-only, never asks"
+    if spec.always_safe:
+        return "auto — runs without confirmation"
+    if spec.name == "run_shell":
+        return ("safe-command allowlist and stored rules, else asks "
+                "(/tools allow, /tools rules)")
+    if spec.name == "run_python":
+        return "AST-safe snippets and stored rules, else asks (/tools rules)"
+    return "stored rules, else asks (/tools rules)"
+
+
+def _print_tool_help(repl: Repl, spec: Optional[ToolSpec],
+                     definition: Optional[ToolDefinition]) -> None:
+    """One tool's page: state, description, parameters and approval."""
+    source = spec if spec is not None else definition
+    if source is None:
+        return
+    canonical = source.name
+    aliases = spec.aliases if spec is not None else definition.aliases
+    color = tool_color(canonical)
+    header = (f"[{color}]{escape(canonical)}[/{color}] — "
+              f"{_tool_state(repl, spec, definition)}")
+    if aliases:
+        header += " · aliases: " + escape(", ".join(aliases))
+    console.print(header)
+    console.print(escape(source.description))
+    parameters = source.parameters or {}
+    properties = parameters.get("properties") or {}
+    required = [key for key in (parameters.get("required") or [])]
+    order = list(properties)
+    signature = ", ".join(key + ("" if key in required else "?") for key in order)
+    console.print(f"[key]model calls it with[/key] {canonical}({signature})"
+                  + ("" if order else " — no arguments"))
+    if order:
+        table = Table(box=box.SIMPLE, header_style="bold", pad_edge=False)
+        table.add_column("parameter", style=color)
+        table.add_column("type", style="dim")
+        table.add_column("", style="dim")
+        table.add_column("description")
+        for key in order:
+            prop = properties.get(key) or {}
+            table.add_row(escape(key), escape(str(prop.get("type") or "any")),
+                          "required" if key in required else "optional",
+                          escape(str(prop.get("description") or "")))
+        console.print(table)
+    if spec is not None:
+        console.print(f"[key]approval[/key] {_tool_approval_line(spec)}")
+    console.print(f"[dim]/tools {escape(canonical)} "
+                  f"{escape('[on|off|help|call ARGS]')}[/dim]")
+
+
+def _tool_call_args(spec: ToolSpec, raw: str) -> dict[str, Any]:
+    """Arguments for `/tools NAME call`: JSON, key=value pairs, or one bare
+    value when exactly one parameter is required (`call notes.txt`).
+
+    Everything is checked against the tool's schema: unknown or missing
+    parameters are refused with the valid names spelled out.
+    """
+    text = raw.strip()
+    parameters = spec.parameters or {}
+    properties = parameters.get("properties") or {}
+    required = [key for key in (parameters.get("required") or [])]
+    if not text:
+        args: dict[str, Any] = {}
+    elif text.startswith("{"):
+        try:
+            value = json.loads(text)
+        except ValueError as exc:
+            raise ValueError(f"invalid JSON arguments: {exc}") from exc
+        if not isinstance(value, dict):
+            raise ValueError("JSON arguments must be an object")
+        args = value
+    else:
+        try:
+            tokens = shlex.split(text)
+        except ValueError as exc:
+            raise ValueError(f"unparsable arguments: {exc}") from exc
+        keyed = [token for token in tokens if "=" in token]
+        if keyed and len(keyed) == len(tokens):
+            args = {}
+            for token in tokens:
+                key, _, value = token.partition("=")
+                if not key:
+                    raise ValueError(f"missing parameter name in {token!r}")
+                args[key] = coerce_value(value)
+        elif not keyed and len(required) == 1:
+            args = {required[0]: " ".join(tokens)}
+        else:
+            raise ValueError(
+                'usage: /tools NAME call \'{"parameter": value}\' | parameter=value …'
+                + (f" | VALUE (for {required[0]})" if len(required) == 1 else ""))
+    unknown = [key for key in args if key not in properties]
+    if unknown:
+        takes = (f"{spec.name} takes: " + ", ".join(properties)
+                 if properties else f"{spec.name} takes no arguments")
+        raise ValueError(f"unknown parameter(s) {', '.join(unknown)} — {takes}")
+    missing = [key for key in required if key not in args]
+    if missing:
+        raise ValueError(f"missing required parameter(s): {', '.join(missing)}"
+                         f" (/tools {spec.name} help)")
+    return args
+
+
+def _cmd_tools_call(repl: Repl, spec: ToolSpec, raw: str) -> None:
+    """Run one tool exactly like the model would: approve, execute, render.
+
+    The result is shown but never added to the conversation: a manual call
+    must not change what the model sees (or how much context it carries).
+    """
+    try:
+        args = _tool_call_args(spec, raw)
+    except ValueError as exc:
+        console.print(f"[err]{escape(str(exc))}[/err]")
+        return
+    detail = call_detail(spec.name, args)
+    console.print(tool_call_panel(spec.name, args))
+    if spec.name in repl.session.tools_disabled:
+        console.print(f"[warn]{escape(spec.name)} is disabled for the model "
+                      f"— this manual call does not change that[/warn]")
+    try:
+        run, note = repl._approve_tool_call(spec, args,
+                                            call_fingerprint(spec.name, args))
+    except KeyboardInterrupt:
+        console.print("[warn]cancelled[/warn]")
+        return
+    if not run:
+        console.print(tool_result_panel(spec.name, detail=detail,
+                                        text=f"not run: {note}", ok=False))
+        return
+    repl.set_state("tool", detail or spec.name)
+    repl.ui.notify("tool_start", name=spec.name, detail=detail)
+    started = time.monotonic()
+    try:
+        outcome = execute_tool(spec, args, repl.tool_ctx)
+    except KeyboardInterrupt:
+        console.print(tool_result_panel(spec.name, detail=detail,
+                                        text="interrupted by user", ok=False))
+        repl.set_state("ready")
+        return
+    repl.ui.notify("tool_done", name=spec.name, ok=outcome.ok,
+                   duration=outcome.duration or (time.monotonic() - started))
+    console.print(tool_result_panel(spec.name, detail=detail, text=outcome.text,
+                                    ok=outcome.ok, duration=outcome.duration,
+                                    note=outcome.title_note))
+    repl.set_state("ready")
+
+
+def _cmd_tools_named(repl: Repl, name: str, parts: list[str]) -> None:
+    """`/tools NAME [on|off|help|call ARGS]` for one tool (aliases resolve)."""
+    spec, definition = _find_tool(repl, name)
+    if spec is None and definition is None:
+        console.print(f"[err]unknown tool {escape(name)}[/err]")
+        suggestions = get_close_matches(name.lower(),
+                                        tool_name_candidates(repl, ""), n=3)
+        if suggestions:
+            console.print("[dim]did you mean: " + ", ".join(suggestions) + "?[/dim]")
+        console.print("[dim]/tools lists every tool[/dim]")
+        return
+    canonical = spec.name if spec is not None else definition.name
+    action = parts[0].lower() if parts else ""
+    if action in {"", "help", "info", "?"}:
+        _print_tool_help(repl, spec, definition)
+        return
+    if action in {"on", "off", "enable", "disable"}:
+        if spec is None:
+            console.print(f"[err]{escape(canonical)} is not installed[/err] — "
+                          f"needs {escape(_missing_requirement(definition))}")
+            return
+        on = action in {"on", "enable"}
+        _apply_tool_toggle(repl, spec.name, on)
+        console.print(f"[ok]{escape(spec.name)} {'on' if on else 'off'}[/ok]")
+        if not repl.tools_enabled:
+            console.print("[dim]note: the tool harness is off globally — "
+                          "/tools on to bring it back[/dim]")
+        return
+    if action == "call":
+        if spec is None:
+            console.print(f"[err]{escape(canonical)} is not installed[/err] — "
+                          f"needs {escape(_missing_requirement(definition))}")
+            return
+        _cmd_tools_call(repl, spec, " ".join(parts[1:]))
+        return
+    console.print(f"[err]usage: /tools {escape(name)} "
+                  f"{escape('[on|off|help|call ARGS]')}[/err]")
+
+
+def _cmd_tools_help_table() -> None:
+    """`/tools help`: every form the command accepts, in one table."""
+    table = Table(title="/tools", box=box.ROUNDED, header_style="bold magenta")
+    table.add_column("form")
+    table.add_column("what it does")
+    for form, what in TOOLS_HELP_ROWS:
+        table.add_row(escape(form), what)
+    console.print(table)
+    console.print("[dim]NAME is any tool name or alias (Tab completes them) · "
+                  "/tools NAME help shows its parameters[/dim]")
+
+
 def cmd_tools(repl: Repl, argument: str) -> None:
     parts = argument.split()
     topic = parts[0].lower() if parts else ""
@@ -1558,6 +1886,14 @@ def cmd_tools(repl: Repl, argument: str) -> None:
                       f"{repl.tools_max_rounds} · [key]timeout[/key] "
                       f"{repl.tool_ctx.timeout:.0f}s · [key]output cap[/key] "
                       f"{repl.tool_ctx.max_output} chars")
+        console.print("[dim]/tools NAME help shows one tool's parameters · "
+                      "/tools help explains every form[/dim]")
+        return
+    if topic == "help":
+        if len(parts) > 1:
+            _cmd_tools_named(repl, parts[1], parts[2:])
+        else:
+            _cmd_tools_help_table()
         return
     if topic == "on":
         repl.tools_enabled = True
@@ -1580,20 +1916,20 @@ def cmd_tools(repl: Repl, argument: str) -> None:
         if not names:
             console.print(f"[err]usage: /tools {topic} NAME…[/err]")
             return
-        disabled = list(repl.session.tools_disabled)
         for name in names:
-            if name not in repl.tool_registry:
-                console.print(f"[err]unknown tool {escape(name)}[/err]")
+            spec, definition = _find_tool(repl, name)
+            if spec is None:
+                hint = (f" — {escape(definition.name)} is not installed"
+                        if definition is not None else "")
+                console.print(f"[err]unknown tool {escape(name)}[/err]{hint}")
                 continue
-            if topic == "disable" and name not in disabled:
-                disabled.append(name)
-            if topic == "enable" and name in disabled:
-                disabled.remove(name)
-        repl.session.tools_disabled = disabled
-        repl.session.touch()
+            _apply_tool_toggle(repl, spec.name, topic == "enable")
         console.print(f"[ok]{topic}d[/ok] active: "
-                      + (", ".join(sorted(set(repl.tool_registry) - set(disabled)))
+                      + (", ".join(sorted(set(repl.tool_registry)
+                                         - set(repl.session.tools_disabled)))
                          or "[dim]none[/dim]"))
+        if not repl.tools_enabled:
+            console.print("[dim]note: the tool harness is off globally — /tools on[/dim]")
         return
     if topic == "allow":
         console.print("safe shell commands: " + ", ".join(sorted(repl.shell_allow)))
@@ -1601,8 +1937,21 @@ def cmd_tools(repl: Repl, argument: str) -> None:
     if topic == "rules":
         _cmd_tools_rules(repl, parts[1:])
         return
-    console.print("[err]usage: /tools [on|off|policy auto|allowlist|ask|"
-                  "enable NAME…|disable NAME…|allow|rules][/err]")
+    # any other first token is a tool name or an alias for one
+    spec, definition = _find_tool(repl, parts[0])
+    if spec is not None or definition is not None:
+        _cmd_tools_named(repl, parts[0], parts[1:])
+        return
+    console.print(f"[err]unknown tool or subcommand {escape(parts[0])}[/err]")
+    suggestions = get_close_matches(
+        parts[0].lower(),
+        list(TOOLS_SUBCOMMANDS) + tool_name_candidates(repl, ""), n=3)
+    if suggestions:
+        console.print("[dim]did you mean: " + ", ".join(suggestions) + "?[/dim]")
+    console.print("[err]usage: /tools "
+                  + escape("[on|off|policy MODE|enable|disable NAME…|"
+                           "NAME on|off|NAME help|NAME call ARGS|allow|rules|help]")
+                  + "[/err]")
 
 
 def cmd_tts(repl: Repl, argument: str) -> None:

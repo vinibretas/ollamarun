@@ -241,6 +241,10 @@ class ToolSpec:
     handler: Callable[[dict[str, Any], ToolContext], str]
     read_only: bool = False
     always_safe: bool = False
+    #: capability the tool needed to appear (None, "search", "tts" or "chem")
+    requires: Optional[str] = None
+    #: names models tend to invent for this tool, from the definition file
+    aliases: list[str] = field(default_factory=list)
 
 
 # ── output plumbing ─────────────────────────────────────────────────────────
@@ -2301,6 +2305,13 @@ HANDLERS: dict[str, Callable[[dict[str, Any], ToolContext], str]] = {
 
 REQUIREMENTS = {"search", "tts", "chem"}
 
+#: `requires` value -> what `/tools NAME help` says a missing tool needs.
+REQUIREMENT_HINTS: dict[str, str] = {
+    "search": "the ddgs package (pip install ddgs)",
+    "tts": "the tts-remote command",
+    "chem": "the chemInventoryAPI command (config: chem_inventory)",
+}
+
 _NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 _DEFS_CACHE: Optional[list[ToolDefinition]] = None
@@ -2432,7 +2443,8 @@ def default_registry(*, tts: Optional[bool] = None,
         registry[definition.name] = ToolSpec(
             definition.name, definition.description, definition.parameters,
             HANDLERS[definition.handler],
-            read_only=definition.read_only, always_safe=definition.always_safe)
+            read_only=definition.read_only, always_safe=definition.always_safe,
+            requires=definition.requires, aliases=list(definition.aliases))
     return registry
 
 
