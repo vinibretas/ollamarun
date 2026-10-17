@@ -50,7 +50,8 @@ from .helpers import (
     tailscale_peer_state,
 )
 from .images import encode_image
-from .agent_api import add_agent_routes
+from .agent_api import (add_agent_routes, add_artifact_routes,
+                        build_agent_api)
 from .openai_api import build_router
 from .server import HttpServer, run_forever
 from .ctxfit import (
@@ -482,10 +483,13 @@ def serve_main(argv: Optional[list[str]] = None) -> int:
     router = build_router(client_factory, config=settings, timeout=timeout,
                           keepalive=settings.get("keepalive"),
                           artifacts=artifact_store)
-    agent_api = add_agent_routes(
-        router, args=build_parser().parse_args([]), config=settings,
+    agent_api = build_agent_api(
+        args=build_parser().parse_args([]), config=settings,
         store=SessionStore(), client_factory=client_factory,
         cwd=settings["serve_workspace"], artifacts=artifact_store)
+    add_artifact_routes(router, agent_api)
+    if settings["serve_agent"]:
+        add_agent_routes(router, agent_api)
     try:
         server = HttpServer(router, bind=bind, port=port,
                             body_limit=settings["serve_body_limit"],
@@ -504,11 +508,15 @@ def serve_main(argv: Optional[list[str]] = None) -> int:
     console.print(f"  listening [ok]http://{escape(bound_host)}:{bound_port}[/ok]"
                   f"[dim]{scope}[/dim]")
     console.print(f"  upstream  [dim]{escape(client.base)}[/dim]")
-    if settings["serve_workspace"]:
-        console.print("  workspace [dim]"
-                      f"{escape(settings['serve_workspace'])}[/dim]")
-    console.print("[dim]  models /v1/models · chat /v1/chat/completions · "
-                  "agent turns /v1/agent/turns · sessions /v1/sessions[/dim]")
+    workspace = settings["serve_workspace"] or os.getcwd()
+    console.print(f"  workspace [dim]{escape(workspace)}[/dim]")
+    if settings["serve_agent"]:
+        console.print("[dim]  models /v1/models · chat /v1/chat/completions · "
+                      "agent turns /v1/agent/turns · sessions /v1/sessions"
+                      "[/dim]")
+    else:
+        console.print("[dim]  models /v1/models · chat /v1/chat/completions · "
+                      "files /v1/files (agent routes disabled)[/dim]")
     console.print("[warn]trusted-network-only: no authentication — never expose "
                   "this port to the internet[/warn]")
     console.print("[dim]Ctrl-C stops the server (active turns are cancelled)[/dim]")

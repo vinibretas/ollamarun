@@ -47,7 +47,7 @@ from .events import (SESSION_FIT, TERMINAL_EVENTS, TURN_WARNING, RuntimeEvent)
 from .fits import (FitBusy, FitService, FitsClosed, TERMINAL_FIT_STATUSES,
                    TooManyFits, fit_body)
 from .helpers import (CancelToken, canonical_model_name, is_local_host,
-                      now_iso, remote_node)
+                      model_allowed, now_iso, remote_node)
 from .interactive import (model_block_count, model_context_length,
                           parse_gpu_layers_spec, resolve_gpu_layers)
 from .openai_api import (classify_backend_error, model_listed,
@@ -662,6 +662,12 @@ class AgentApi:
             str(item) for item in (self._config.get("tools_shell_allow") or [])
             if item}
         self._cwd = str(cwd or os.getcwd())
+        #: The API tool workspace (always set: the configured serve_workspace
+        #: or the startup cwd). Path-argument tools refuse escapes; it is an
+        #: argument/default-cwd policy, never subprocess confinement.
+        self._workspace = self._cwd
+        #: The optional `serve_models` allowlist ([] = every model).
+        self._models_allow = list(self._config.get("serve_models") or [])
         #: Aggregate resolved-input caps (`serve_max_*`): shared with the
         #: OpenAI surface through the same budget accounting.
         self._limits = input_limits(self._config)
@@ -693,7 +699,10 @@ class AgentApi:
             entries = client.tags()
         except OllamaError as exc:
             raise translate_error(exc)
-        if not model_listed(model, entries):
+        # The serve_models allowlist answers exactly like an unknown model:
+        # never reveal installed-but-forbidden.
+        if not model_allowed(model, self._models_allow) \
+                or not model_listed(model, entries):
             raise ApiError(404, f"model {model!r} not found",
                            code="model_not_found", param="model")
 
@@ -951,6 +960,11 @@ class AgentApi:
         # and the runtime's cancel check; Repl built its own for the CLI.
         repl.cancel_token = token
         repl.tool_ctx.cancel = token
+        # The API tool context is jailed to the workspace: path arguments
+        # resolve under it and escapes are refused (the CLI leaves
+        # `workspace` unset and is unchanged).
+        repl.tool_ctx.workspace = self._workspace
+        repl.tool_ctx.cwd = self._workspace
         return repl
 
     def _context_block(self, repl: Repl) -> dict[str, Any]:
@@ -1726,24 +1740,37 @@ def _session_fitting(session_id: str, active_fit_id: str) -> ApiError:
                     extra={"active_fit_id": active_fit_id})
 
 
-def add_agent_routes(router: Router, *, args: Any, config: dict[str, Any],
-                     store: SessionStore, client_factory: Callable[[], Any],
-                     manager: Optional[TurnManager] = None,
-                     cwd: Optional[str] = None,
-                     artifacts: Optional[ArtifactStore] = None,
-                     fits: Optional[FitService] = None) -> AgentApi:
-    """Register the native endpoints on `router`; returns the API object."""
-    api = AgentApi(args=args, config=config, store=store,
-                   client_factory=client_factory, manager=manager, cwd=cwd,
-                   artifacts=artifacts, fits=fits)
+def build_agent_api(*, args: Any, config: dict[str, Any],
+                    store: SessionStore, client_factory: Callable[[], Any],
+                    manager: Optional[TurnManager] = None,
+                    cwd: Optional[str] = None,
+                    artifacts: Optional[ArtifactStore] = None,
+                    fits: Optional[FitService] = None) -> "AgentApi":
+    """The one `AgentApi` the route-registration functions share."""
+    return AgentApi(args=args, config=config, store=store,
+                    client_factory=client_factory, manager=manager, cwd=cwd,
+                    artifacts=artifacts, fits=fits)
+
+
+def add_artifact_routes(router: Router, api: "AgentApi") -> None:
+    """Register the shared file/artifact endpoints.
+
+    These serve both API surfaces: the OpenAI `file` parts and every
+    artifact download stay available when the native agent routes are
+    switched off (`serve_agent: false`).
+    """
+    router.add("POST", "/v1/files", api.upload_file)
+    router.add("GET", "/v1/artifacts/{id}", api.artifact_download)
+    router.add("GET", "/v1/artifacts/{id}/meta", api.artifact_meta)
+
+
+def add_agent_routes(router: Router, api: "AgentApi") -> None:
+    """Register the native agent endpoints (turns, approvals, sessions, fits)."""
     router.add("POST", "/v1/agent/turns", api.start_turn)
     router.add("GET", "/v1/agent/turns/{id}", api.turn_status)
     router.add("GET", "/v1/agent/turns/{id}/events", api.turn_events)
     router.add("POST", "/v1/agent/turns/{id}/cancel", api.cancel_turn)
     router.add("POST", "/v1/agent/approvals/{id}", api.resolve_approval)
-    router.add("POST", "/v1/files", api.upload_file)
-    router.add("GET", "/v1/artifacts/{id}", api.artifact_download)
-    router.add("GET", "/v1/artifacts/{id}/meta", api.artifact_meta)
     router.add("POST", "/v1/agent/fit", api.estimate_fit)
     router.add("POST", "/v1/agent/fits", api.start_fit)
     router.add("GET", "/v1/agent/fits/{id}", api.fit_status)
@@ -1753,4 +1780,3 @@ def add_agent_routes(router: Router, *, args: Any, config: dict[str, Any],
     router.add("GET", "/v1/sessions/{id}", api.get_session)
     router.add("PATCH", "/v1/sessions/{id}", api.patch_session)
     router.add("DELETE", "/v1/sessions/{id}", api.delete_session)
-    return api

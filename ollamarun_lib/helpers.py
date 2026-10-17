@@ -4,6 +4,7 @@ the `CancelToken` the UI threads use to stop a running turn.
 from __future__ import annotations
 
 import difflib
+import fnmatch
 import json
 import logging
 import math
@@ -663,6 +664,31 @@ def canonical_model_name(name: str) -> str:
     if ":" not in name.rsplit("/", 1)[-1]:
         name += ":latest"
     return name
+
+
+_GLOB_CHARS_RE = re.compile(r"[*?\[]")
+
+
+def model_allowed(model: str, patterns: Optional[list[str]]) -> bool:
+    """Whether `model` is served under an optional `serve_models` allowlist.
+
+    Empty/unset means every model. A literal pattern is tag-normalized so a
+    bare `qwen3` matches `qwen3:latest`; a glob pattern (`*`, `?`, `[...]`)
+    matches the canonical model name as written. Used everywhere a model is
+    selected, listed or used, so the list is one API-wide policy.
+    """
+    if not patterns:
+        return True
+    candidate = canonical_model_name(model)
+    for pattern in patterns:
+        text = str(pattern or "").strip()
+        if not text:
+            continue
+        if not _GLOB_CHARS_RE.search(text):
+            text = canonical_model_name(text)
+        if fnmatch.fnmatchcase(candidate, text):
+            return True
+    return False
 
 
 def human_bytes(num: Optional[float]) -> str:

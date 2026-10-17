@@ -198,6 +198,9 @@ class ArtifactStore:
                  sweep_interval: float = SWEEP_INTERVAL,
                  clock: Callable[[], float] = time.time):
         self.root = Path(root)
+        #: The resolved root: every storage path read back from the index or
+        #: a manifest must resolve (symlinks followed) under it.
+        self._root_resolved = self.root.resolve()
         self.max_bytes = int(max_bytes)
         self.quota_bytes = int(quota_bytes)
         self.ttl = float(ttl)
@@ -263,6 +266,25 @@ class ArtifactStore:
     def _manifest_path(self, artifact_id: str) -> Path:
         return self.meta_dir / f"{artifact_id}.json"
 
+    def _contained(self, rel: str) -> Optional[Path]:
+        """The resolved storage path for one manifest rel-path, or None.
+
+        The rel-paths are store-generated, but the index and manifests are
+        read back from disk: the resolved path (symlinks followed) must stay
+        under the resolved root, else the entry is treated as absent — a
+        symlinked directory under the root can never redirect a read or a
+        sweep outside it.
+        """
+        safe = _safe_rel(rel)
+        if safe is None:
+            return None
+        path = (self.root / safe).resolve()
+        if path != self._root_resolved \
+                and self._root_resolved not in path.parents:
+            logger.warning("artifact path escapes the store root: %r", rel)
+            return None
+        return path
+
     def _write_manifest(self, ref: ArtifactRef, rel_path: str) -> None:
         self.meta_dir.mkdir(parents=True, exist_ok=True)
         target = self._manifest_path(ref.id)
@@ -292,7 +314,7 @@ class ArtifactStore:
         if ref is None:
             return None
         rel = _safe_rel(data.get("path"))
-        if rel is None:
+        if rel is None or self._contained(rel) is None:
             return None
         return ref, rel
 
@@ -307,8 +329,11 @@ class ArtifactStore:
         if loaded is None:
             return None
         ref, rel = loaded
+        path = self._contained(rel)
+        if path is None:
+            return None
         try:
-            data = (self.root / rel).read_bytes()
+            data = path.read_bytes()
         except OSError:
             return None
         return ref, data
@@ -420,7 +445,8 @@ class ArtifactStore:
                 continue
             ref = _ref_from_manifest(data)
             rel = _safe_rel(data.get("path"))
-            if ref is None or ref.id != artifact_id or rel is None:
+            if ref is None or ref.id != artifact_id or rel is None \
+                    or self._contained(rel) is None:
                 continue
             try:
                 stored_at = float(data.get("stored_at") or 0)
@@ -460,7 +486,9 @@ class ArtifactStore:
                             <= STALE_AFTER:
                         continue  # a registration in flight
                     del entries[artifact_id]
-                    self._unlink_quiet(self.root / str(entry.get("path") or ""))
+                    stale = self._contained(str(entry.get("path") or ""))
+                    if stale is not None:
+                        self._unlink_quiet(stale)
                     removed += 1
                     changed = True
                     continue
@@ -474,14 +502,17 @@ class ArtifactStore:
                     changed = True
                 if self.ttl > 0 and now - float(entry["created_at"]) > self.ttl:
                     del entries[artifact_id]
-                    self._unlink_quiet(self.root / rel)
+                    expired = self._contained(rel)
+                    if expired is not None:
+                        self._unlink_quiet(expired)
                     self._unlink_quiet(self._manifest_path(artifact_id))
                     removed += 1
                     changed = True
             for artifact_id, (ref, rel, stored_at) in manifests.items():
                 if artifact_id in entries:
                     continue
-                if not (self.root / rel).is_file():
+                stored = self._contained(rel)
+                if stored is None or not stored.is_file():
                     self._unlink_quiet(self._manifest_path(artifact_id))
                     changed = True
                     continue

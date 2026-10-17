@@ -35,7 +35,7 @@ from .artifacts import (MAX_IMAGE_BYTES, InputBudget, InputLimits,
                         input_limits, require_vision, resolve_content_parts)
 from .client import OllamaError, build_chat_payload
 from .constants import DEFAULT_TIMEOUT
-from .helpers import CancelToken, canonical_model_name
+from .helpers import CancelToken, canonical_model_name, model_allowed
 from .prompts import default_system_prompt
 from .renderer import GenerationResult, consume_chunk, stats_from_final
 from .server import ApiError, Request, Response, Router, SseWriter, StreamResponse
@@ -681,6 +681,8 @@ class OpenAIApi:
         #: Aggregate resolved-input caps (`serve_max_*`); the JSON body cap
         #: bounds the request as sent, these bound what parts may assemble.
         self._limits = input_limits(self.config)
+        #: The optional `serve_models` allowlist ([] = every model).
+        self._models_allow = list(self.config.get("serve_models") or [])
         self.timeout: float = (timeout if timeout is not None else
                                self.config.get("timeout") or DEFAULT_TIMEOUT)
         self.keepalive = (keepalive if keepalive is not None
@@ -696,13 +698,19 @@ class OpenAIApi:
     # ── models ──────────────────────────────────────────────────────────────
 
     def list_models(self, request: Request, params: dict[str, str]) -> Response:
-        entries = self._safe_models()
+        entries = [entry for entry in self._safe_models()
+                   if model_allowed(str(entry.get("name")
+                                        or entry.get("model") or ""),
+                                    self._models_allow)]
         return Response.json({"object": "list",
                               "data": [model_object(entry)
                                        for entry in entries]})
 
     def get_model(self, request: Request, params: dict[str, str]) -> Response:
         name = params.get("model", "")
+        if not model_allowed(name, self._models_allow):
+            raise ApiError(404, f"model {name!r} not found",
+                           code="model_not_found", param="model")
         wanted = canonical_model_name(name)
         for entry in self._safe_models():
             candidate = entry.get("name") or entry.get("model") or ""
@@ -740,7 +748,8 @@ class OpenAIApi:
             raise translate_error(exc)
 
     def _ensure_model(self, model: str) -> None:
-        if not model_listed(model, self._safe_models()):
+        allowed = model_allowed(model, self._models_allow)
+        if not allowed or not model_listed(model, self._safe_models()):
             raise ApiError(404, f"model {model!r} not found",
                            code="model_not_found", param="model")
 
