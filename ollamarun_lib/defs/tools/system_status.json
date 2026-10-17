@@ -1,0 +1,14 @@
+{
+  "name": "system_status",
+  "description": "Report RAM, GPU VRAM and model-disk free space for the machine running Ollama (probed over ssh when the session uses --remote). Pass target=\"local\" to report this machine instead.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "target": {"type": "string", "enum": ["ollama", "local"], "description": "which machine to report (default: ollama, the server; local, this machine)"}
+    },
+    "required": []
+  },
+  "handler": "system_status",
+  "read_only": true,
+  "aliases": ["sysinfo", "system_info", "resources", "machine_status", "gpu_status"]
+}

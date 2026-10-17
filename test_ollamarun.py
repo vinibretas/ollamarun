@@ -428,8 +428,8 @@ def test_tool_definitions() -> int:
                                 "fetch_url", "list_dir", "list_models",
                                 "list_voices", "make_dir", "move_file",
                                 "read_file", "run_python", "run_shell",
-                                "search_sessions", "speak", "web_search",
-                                "write_file"], str(names))
+                                "search_sessions", "speak", "system_status",
+                                "web_search", "write_file"], str(names))
     failures = _check(failures, "every definition's handler resolves",
                       all(definition.handler in orun.HANDLERS
                           for definition in defs))
@@ -4097,6 +4097,87 @@ def test_session_model_tools() -> int:
     return failures
 
 
+def test_system_status_tool() -> int:
+    failures = 0
+    registry = orun.default_registry(tts=False)
+    tools_mod = orun.tools
+    probe_names = ("local_ram_probe", "local_gpu_probe", "local_free_disk",
+                   "ssh_ram_probe", "ssh_gpu_probe", "ssh_free_disk")
+    saved = {name: getattr(tools_mod, name) for name in probe_names}
+    ssh_calls = []
+    try:
+        tools_mod.local_ram_probe = lambda: (16 * 1024**3, 8 * 1024**3)
+        tools_mod.local_gpu_probe = lambda: ([(12288, 6144)], {})
+        tools_mod.local_free_disk = lambda: (500 * 1024**3, 1000 * 1024**3, "/home")
+
+        def fake_ssh_ram(target, *, user=None, **kw):
+            ssh_calls.append(("ram", target, user))
+            return (32 * 1024**3, 4 * 1024**3)
+
+        def fake_ssh_gpu(target, *, user=None, **kw):
+            ssh_calls.append(("gpu", target, user))
+            return ([(24576, 1024)], {})
+
+        def fake_ssh_disk(target, *, user=None, **kw):
+            ssh_calls.append(("disk", target, user))
+            return (100 * 1024**3, 1000 * 1024**3, "/mnt")
+
+        tools_mod.ssh_ram_probe = fake_ssh_ram
+        tools_mod.ssh_gpu_probe = fake_ssh_gpu
+        tools_mod.ssh_free_disk = fake_ssh_disk
+
+        client = _FakeClient()
+        client.base = "http://127.0.0.1:11434"
+        ctx = orun.ToolContext(cwd=".", timeout=10, max_output=4000, client=client)
+        outcome = orun.execute_tool(registry["system_status"], {}, ctx)
+        failures = _check(failures, "system_status reports the local ollama host",
+                          outcome.ok
+                          and "this machine (ollama at http://127.0.0.1:11434)" in outcome.text
+                          and "RAM: 8.0 GiB free of 16.0 GiB" in outcome.text
+                          and "GPU 0: 6.0 GiB free of 12.0 GiB" in outcome.text
+                          and "disk (models): 500.0 GiB free of 1000.0 GiB at /home"
+                          in outcome.text,
+                          outcome.text)
+
+        remote = _FakeClient()
+        remote.base = "http://10.9.9.9:11434"
+        ctx = orun.ToolContext(cwd=".", timeout=10, max_output=4000, client=remote,
+                               ssh_target="kiddo", ssh_user="vinibretas")
+        outcome = orun.execute_tool(registry["system_status"], {}, ctx)
+        failures = _check(failures, "system_status ssh-probes a remote ollama host",
+                          outcome.ok
+                          and "kiddo (ollama at http://10.9.9.9:11434)" in outcome.text
+                          and "RAM: 4.0 GiB free of 32.0 GiB" in outcome.text
+                          and "GPU 0: 1.0 GiB free of 24.0 GiB" in outcome.text
+                          and "disk (models): 100.0 GiB free of 1000.0 GiB at /mnt"
+                          in outcome.text
+                          and ssh_calls == [("ram", "kiddo", "vinibretas"),
+                                            ("gpu", "kiddo", "vinibretas"),
+                                            ("disk", "kiddo", "vinibretas")],
+                          f"{outcome.text} / {ssh_calls}")
+
+        outcome = orun.execute_tool(registry["system_status"],
+                                    {"target": "local"}, ctx)
+        failures = _check(failures, "system_status target=local stays on this machine",
+                          outcome.ok and "this machine" in outcome.text,
+                          outcome.text)
+
+        no_ssh = orun.ToolContext(cwd=".", timeout=10, max_output=4000, client=remote)
+        outcome = orun.execute_tool(registry["system_status"], {}, no_ssh)
+        failures = _check(failures, "system_status explains a remote host without --remote",
+                          not outcome.ok and "--remote" in outcome.text, outcome.text)
+
+        outcome = orun.execute_tool(registry["system_status"],
+                                    {"target": "elsewhere"}, ctx)
+        failures = _check(failures, "system_status rejects a bad target",
+                          not outcome.ok and "'ollama' or 'local'" in outcome.text,
+                          outcome.text)
+    finally:
+        for name, probe in saved.items():
+            setattr(tools_mod, name, probe)
+    return failures
+
+
 _MINIMAL_PDF = b"""%PDF-1.4
 1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
 2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
@@ -6203,6 +6284,7 @@ if __name__ == "__main__":
              + test_gpu_layers() + test_slash_completer()
              + test_tools_policy() + test_tool_execution() + test_web_tools()
              + test_file_tools() + test_session_model_tools()
+             + test_system_status_tool()
              + test_tool_loop() + test_tool_loop_separation()
              + test_tool_commands() + test_approval_rules()
              + test_tool_payloads() + test_tool_cli_flags()
