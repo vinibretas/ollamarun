@@ -304,6 +304,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tts_tools": True,
     "chem_inventory": "chemInventoryAPI",
     "chem_tools": True,
+    # Turn manager (`turns.py`): the serve front end's event buffers. The
+    # HTTP listener keys land with the server phase.
+    "serve_max_active_turns": 4,
+    "serve_turn_event_buffer": 10000,
+    "serve_turn_event_ttl": 86400,
 }
 
 THINKING_MODES = {"collapsed", "expanded", "hidden"}

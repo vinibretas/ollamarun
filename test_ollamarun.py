@@ -7508,6 +7508,105 @@ def test_turn_manager_shutdown() -> int:
     return failures
 
 
+def test_turn_manager_context() -> int:
+    """The context block rides on turn.started/turn.completed and the snapshot."""
+    failures = 0
+    manager = orun.TurnManager()
+
+    def work(sink, cancel):
+        sink(orun.RuntimeEvent(orun.TURN_STARTED, {}))
+        sink(orun.RuntimeEvent(orun.TURN_COMPLETED, {}))
+        return orun.TurnResult(id="x", session_id="s", status="completed")
+
+    handle = manager.submit(session_id="s", work=work,
+                            context=lambda: {"used": 10, "total": 100,
+                                             "source": "loaded runner"})
+    snapshot = manager.wait(handle.id, timeout=5)
+    events = _collect(manager.subscribe(handle.id, after=0))
+    failures = _check(failures, "the snapshot keeps the context block",
+                      snapshot is not None and snapshot.context is not None
+                      and snapshot.context["used"] == 10
+                      and snapshot.context["source"] == "loaded runner",
+                      str(snapshot))
+    decorated = {event.type: event.data.get("context") for event in events}
+    failures = _check(failures, "started and completed carry the context",
+                      decorated.get(orun.TURN_STARTED, {}).get("total") == 100
+                      and decorated.get(orun.TURN_COMPLETED, {}).get("used") == 10,
+                      str(decorated))
+
+    broken = manager.submit(session_id="s2", work=work,
+                            context=lambda: 1 / 0)
+    snapshot2 = manager.wait(broken.id, timeout=5)
+    failures = _check(failures, "a broken provider never blocks the turn",
+                      snapshot2 is not None and snapshot2.status == "completed"
+                      and snapshot2.context is None, str(snapshot2))
+    return failures
+
+
+def test_turn_manager_headless_turn() -> int:
+    """The Phase 4 seam: a headless Repl turn enveloped by the manager."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain", "--no-save"])
+        client = _FakeClient(models=["m1"], capabilities=["completion", "tools"],
+                             chat_script=[[{"message": {"content": "hello"},
+                                            "done": True,
+                                            "prompt_eval_count": 4,
+                                            "eval_count": 2}]])
+        session = orun.Session.create("m1", client.base)
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store, session)
+        repl._build_prompt_session = lambda: None
+        repl.headless = True
+        manager = orun.TurnManager()
+
+        def work(sink, cancel):
+            hooks = repl._turn_hooks()
+            hooks.on_event = sink
+            hooks.cancel = cancel
+            renderer = orun.HeadlessRenderer(on_event=sink)
+
+            def present(payload, after_tools, cancel_token):
+                return renderer.stream(client.chat(payload, cancel=cancel_token),
+                                       cancel=cancel_token)
+
+            hooks.present_round = present
+            runtime = orun.AgentRuntime(hooks)
+            result = runtime.run()
+            return runtime.to_turn_result(result, session_id=session.id)
+
+        handle = manager.submit(session_id=session.id, work=work,
+                                context=lambda: {"used": 3, "total": 100,
+                                                 "source": "num_ctx"})
+        snapshot = manager.wait(handle.id, timeout=5)
+        events = _collect(manager.subscribe(handle.id, after=0))
+        types = [event.type for event in events]
+        failures = _check(failures, "the enveloped turn completes",
+                          snapshot is not None and snapshot.status == "completed"
+                          and snapshot.result is not None
+                          and snapshot.result.final_message["content"] == "hello",
+                          str(snapshot))
+        failures = _check(failures, "the event stream is complete and ordered",
+                          types[0] == orun.TURN_STARTED
+                          and orun.MESSAGE_DELTA in types
+                          and types[-1] == orun.TURN_COMPLETED
+                          and [event.seq for event in events]
+                          == list(range(1, len(events) + 1)),
+                          str(types))
+        started = [event for event in events
+                   if event.type == orun.TURN_STARTED][0]
+        failures = _check(failures, "the context block rides on turn.started",
+                          started.data.get("context", {}).get("source") == "num_ctx",
+                          str(started.data))
+        failures = _check(failures, "the assistant message reached the session",
+                          session.messages
+                          and session.messages[-1].get("role") == "assistant"
+                          and session.messages[-1].get("content") == "hello",
+                          str(session.messages[-1] if session.messages else None))
+    return failures
+
+
 def test_tool_support_warning() -> int:
     """The capability warning fires once per model, after turn.started."""
     failures = 0
@@ -8264,7 +8363,8 @@ if __name__ == "__main__":
              + test_turn_buffer_truncation() + test_turn_expired()
              + test_turn_manager_session_busy() + test_turn_manager_max_active()
              + test_turn_manager_cancel() + test_turn_subscriber_overflow()
-             + test_turn_manager_shutdown())
+             + test_turn_manager_shutdown()
+             + test_turn_manager_context() + test_turn_manager_headless_turn())
     if total:
         print(f"\n{total} failure(s)")
         sys.exit(1)
