@@ -4232,12 +4232,15 @@ def test_serve_cli() -> int:
 
 
 def test_openai_sdk() -> int:
-    """The official OpenAI SDK against the local API (skipped when absent)."""
+    """The official OpenAI SDK against the local API (a required gate)."""
     try:
+        import openai
         from openai import OpenAI
     except ImportError:
-        print("SKIP  the openai SDK is not installed")
-        return 0
+        print("FAIL  the openai SDK is not installed (install the test "
+              "dependency: pip install --user openai)")
+        return 1
+    print(f"      the openai SDK {openai.__version__} is under test")
     failures = 0
     script = [[
         {"message": {"content": "Hello"}, "done": False},
