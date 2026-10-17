@@ -27,6 +27,7 @@ record was swept.
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -57,6 +58,8 @@ logger = logging.getLogger("ollamarun.agent_api")
 
 #: A pending approval older than this (resolved) is dropped from the registry.
 _APPROVAL_RETENTION = 3600.0
+#: Fields `POST /v1/files` accepts (the JSON upload form; multipart is later).
+_UPLOAD_FIELDS = frozenset({"filename", "media_type", "data_base64"})
 
 _TURN_FIELDS = frozenset({"session_id", "model", "messages", "persist",
                           "settings"})
@@ -340,6 +343,13 @@ def session_body(session: Session, *, active_turn: Optional[str] = None
     }
 
 
+def _download_name(filename: str) -> str:
+    """An ASCII-safe Content-Disposition name (quotes and bars never leak)."""
+    cleaned = "".join(ch for ch in str(filename or "")
+                      if ch.isprintable() and ch not in '"\\')
+    return cleaned.encode("ascii", "replace").decode("ascii") or "artifact"
+
+
 def _after_seq(request: Request) -> Optional[int]:
     raw = (request.query.get("after") or [""])[0]
     if raw != "":
@@ -557,6 +567,78 @@ class AgentApi:
             "cancel_url": f"/v1/agent/turns/{turn_id}/cancel",
         }
         return Response.json(body, status=202)
+
+    # ── files and artifacts ─────────────────────────────────────────────────
+
+    def _require_artifacts(self) -> ArtifactStore:
+        if self._artifacts is None:
+            raise ApiError(503, "the artifact store is not available",
+                           type_="api_error", code="artifacts_unavailable")
+        return self._artifacts
+
+    def upload_file(self, request: Request,
+                    params: dict[str, str]) -> Response:
+        """`POST /v1/files`: one JSON upload as an artifact (source user)."""
+        store = self._require_artifacts()
+        body = request.json
+        if not isinstance(body, dict):
+            raise _invalid("request body must be a JSON object")
+        unknown = set(body) - _UPLOAD_FIELDS
+        if unknown:
+            raise _invalid(f"unknown field: {sorted(unknown)[0]}",
+                           param=sorted(unknown)[0], code="unknown_field")
+        filename = body.get("filename")
+        if not isinstance(filename, str) or not filename.strip():
+            raise _invalid("filename must be a non-empty string",
+                           param="filename")
+        media_type = body.get("media_type")
+        if not isinstance(media_type, str) or not media_type.strip():
+            raise _invalid("media_type must be a non-empty string",
+                           param="media_type")
+        data_b64 = body.get("data_base64")
+        if not isinstance(data_b64, str) or not data_b64:
+            raise _invalid("data_base64 must be a base64 string",
+                           param="data_base64")
+        # Bound the decoded size before allocating (base64 is ~4/3 of it).
+        if 0 < store.max_bytes < (len(data_b64) * 3) // 4:
+            raise ApiError(
+                413, f"artifact exceeds the {store.max_bytes} byte limit",
+                param="data_base64", code="artifact_too_large")
+        try:
+            payload = base64.b64decode(data_b64, validate=True)
+        except (ValueError, TypeError):
+            raise _invalid("data_base64 is not valid base64",
+                           param="data_base64")
+        ref = store.register(payload, filename=filename.strip(),
+                             media_type=media_type.strip(), source="user")
+        return Response.json(ref.to_dict(), status=201)
+
+    def artifact_download(self, request: Request,
+                          params: dict[str, str]) -> Response:
+        """`GET /v1/artifacts/{id}`: the stored bytes, with its media type."""
+        store = self._require_artifacts()
+        artifact_id = params.get("id", "")
+        loaded = store.read(artifact_id)
+        if loaded is None:
+            raise ApiError(404, f"artifact {artifact_id!r} not found",
+                           code="artifact_not_found")
+        ref, payload = loaded
+        return Response(
+            status=200, body=payload, media_type=ref.media_type,
+            headers=[("Content-Disposition",
+                      f'attachment; filename="{_download_name(ref.filename)}"'),
+                     ("X-Content-Type-Options", "nosniff")])
+
+    def artifact_meta(self, request: Request,
+                      params: dict[str, str]) -> Response:
+        """`GET /v1/artifacts/{id}/meta`: the full ref."""
+        store = self._require_artifacts()
+        artifact_id = params.get("id", "")
+        ref = store.resolve(artifact_id)
+        if ref is None:
+            raise ApiError(404, f"artifact {artifact_id!r} not found",
+                           code="artifact_not_found")
+        return Response.json(ref.to_dict())
 
     def _make_repl(self, session: Session, client: Any,
                    spec: AgentTurnRequest, token: CancelToken,
@@ -1039,6 +1121,9 @@ def add_agent_routes(router: Router, *, args: Any, config: dict[str, Any],
     router.add("GET", "/v1/agent/turns/{id}/events", api.turn_events)
     router.add("POST", "/v1/agent/turns/{id}/cancel", api.cancel_turn)
     router.add("POST", "/v1/agent/approvals/{id}", api.resolve_approval)
+    router.add("POST", "/v1/files", api.upload_file)
+    router.add("GET", "/v1/artifacts/{id}", api.artifact_download)
+    router.add("GET", "/v1/artifacts/{id}/meta", api.artifact_meta)
     router.add("GET", "/v1/sessions", api.list_sessions)
     router.add("POST", "/v1/sessions", api.create_session)
     router.add("GET", "/v1/sessions/{id}", api.get_session)

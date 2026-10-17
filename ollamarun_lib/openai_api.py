@@ -845,10 +845,11 @@ class OpenAIApi:
 def build_router(client_factory: Callable[[], Any], *,
                  config: Optional[dict[str, Any]] = None,
                  timeout: Optional[float] = None,
-                 keepalive: Optional[str] = None) -> Router:
+                 keepalive: Optional[str] = None,
+                 artifacts: Optional[Any] = None) -> Router:
     """The `/v1` router: models, one model, chat completions."""
     api = OpenAIApi(client_factory, config=config, timeout=timeout,
-                    keepalive=keepalive)
+                    keepalive=keepalive, artifacts=artifacts)
     router = Router()
     router.add("GET", "/v1/models", api.list_models)
     router.add("GET", "/v1/models/{model}", api.get_model)

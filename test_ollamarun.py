@@ -9389,6 +9389,129 @@ def test_artifact_remote_fetch() -> int:
     return failures
 
 
+def test_artifact_upload_api() -> int:
+    """POST /v1/files validates strictly and returns the full ref."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        artifact_store = orun.ArtifactStore(Path(tmp) / "artifacts", max_bytes=64)
+        client = _ServeClient(models=["m1"])
+        server, api, sessions, thread = _start_agent_api(
+            tmp, client, artifacts=artifact_store)
+        try:
+            data = base64.b64encode(b"hello upload").decode()
+            status, _headers, raw = _http(server, "POST", "/v1/files", body={
+                "filename": "notes/../notes.txt", "media_type": "text/plain",
+                "data_base64": data})
+            ref = json.loads(raw)
+            failures = _check(failures, "an upload returns the full ref",
+                              status == 201 and ref.get("source") == "user"
+                              and ref.get("filename") == "notes.txt"
+                              and ref.get("size") == 12
+                              and ref.get("sha256")
+                              == hashlib.sha256(b"hello upload").hexdigest()
+                              and ref.get("url")
+                              == f"/v1/artifacts/{ref.get('id')}",
+                              f"{status} {ref}")
+            over = base64.b64encode(b"x" * 100).decode()
+            for name, body, code in (
+                ("an unknown field",
+                 {"filename": "a", "media_type": "text/plain",
+                  "data_base64": data, "x": 1}, "unknown_field"),
+                ("a missing filename",
+                 {"media_type": "text/plain", "data_base64": data}, None),
+                ("a bad media type",
+                 {"filename": "a", "media_type": "nope",
+                  "data_base64": data}, "unsupported_value"),
+                ("bad base64",
+                 {"filename": "a", "media_type": "text/plain",
+                  "data_base64": "!!!"}, None),
+                ("oversize before decode",
+                 {"filename": "a", "media_type": "text/plain",
+                  "data_base64": over}, "artifact_too_large"),
+            ):
+                status, _headers, raw = _http(server, "POST", "/v1/files",
+                                              body=body)
+                error = json.loads(raw).get("error", {})
+                failures = _check(failures, f"the upload API rejects {name}",
+                                  status in (400, 413)
+                                  and (code is None or error.get("code") == code),
+                                  f"{status} {error}")
+        finally:
+            _stop_api(server, thread)
+
+        tiny = orun.ArtifactStore(Path(tmp) / "quota", quota_bytes=5)
+        server, api, sessions, thread = _start_agent_api(tmp, client,
+                                                         artifacts=tiny)
+        try:
+            status, _headers, raw = _http(server, "POST", "/v1/files", body={
+                "filename": "a.txt", "media_type": "text/plain",
+                "data_base64": base64.b64encode(b"123456").decode()})
+            error = json.loads(raw).get("error", {})
+            failures = _check(failures, "an upload over the quota is a 507",
+                              status == 507
+                              and error.get("code") == "artifact_quota_exceeded",
+                              f"{status} {error}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
+def test_artifact_fetch_api() -> int:
+    """Downloads serve the stored bytes with the recorded type; missing 404s."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        artifact_store = orun.ArtifactStore(Path(tmp) / "artifacts")
+        payload = b"\x89PNG\r\n\x1a\nfetch-me"
+        ref = artifact_store.register(payload, filename="pic.png",
+                                      media_type="image/png", source="user")
+        client = _ServeClient(models=["m1"])
+        server, api, sessions, thread = _start_agent_api(
+            tmp, client, artifacts=artifact_store)
+        try:
+            status, headers, raw = _http(server, "GET",
+                                         f"/v1/artifacts/{ref.id}")
+            failures = _check(failures, "a download carries the bytes and type",
+                              status == 200 and raw == payload
+                              and headers.get("Content-Type") == "image/png"
+                              and 'filename="pic.png"'
+                              in headers.get("Content-Disposition", ""),
+                              f"{status} {headers}")
+            status, headers, raw = _http(server, "GET",
+                                         f"/v1/artifacts/{ref.id}/meta")
+            meta = json.loads(raw)
+            failures = _check(failures, "the meta route returns the full ref",
+                              status == 200 and meta == ref.to_dict(),
+                              f"{status} {meta}")
+            for path, code in (
+                (f"/v1/artifacts/art_{'0' * 32}", "artifact_not_found"),
+                (f"/v1/artifacts/art_{'0' * 32}/meta", "artifact_not_found"),
+                ("/v1/artifacts/../../etc/passwd", "not_found"),
+            ):
+                status, _headers, raw = _http(server, "GET", path)
+                error = json.loads(raw).get("error", {})
+                failures = _check(failures, f"a missing artifact 404s ({path[-28:]})",
+                                  status == 404
+                                  and error.get("code") == code,
+                                  f"{status} {error}")
+        finally:
+            _stop_api(server, thread)
+
+        server, api, sessions, thread = _start_agent_api(tmp, client)
+        try:
+            status, _headers, raw = _http(server, "POST", "/v1/files", body={
+                "filename": "a.txt", "media_type": "text/plain",
+                "data_base64": base64.b64encode(b"x").decode()})
+            error = json.loads(raw).get("error", {})
+            failures = _check(failures,
+                              "an upload without a store is a structured 503",
+                              status == 503
+                              and error.get("code") == "artifacts_unavailable",
+                              f"{status} {error}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
 def test_cancellation_destructive_guard() -> int:
     """A stopped turn must not trash anything, even inside the handler."""
     failures = 0
@@ -11504,6 +11627,7 @@ if __name__ == "__main__":
              + test_tool_artifact_registration()
              + test_artifact_events() + test_artifact_session_persistence()
              + test_artifact_content_parts() + test_artifact_remote_fetch()
+             + test_artifact_upload_api() + test_artifact_fetch_api()
              + test_python310_syntax() + test_turn_result_mapping()
              + test_turn_event_envelope()
              + test_turn_manager_lifecycle()
