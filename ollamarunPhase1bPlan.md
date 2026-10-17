@@ -6,6 +6,15 @@ item that was still open in the Phase 1 report: nothing stays
 unresolved — each item is either a small Phase 1b task (finished before
 Phase 2 starts), a numbered future phase, or a locked decision.
 
+## Status
+
+All eight tasks landed on branch `phase-1b-completion`, one commit per
+concern, and go to `main` through the Phase 1b pull request: runtime
+capability check + live `quiet_tools` + the approval contract, full
+cancellation coverage, the cross-process store lock, the `@file` fix,
+the 3.10 syntax guard and the `TurnRequest`/`TurnResult` tests, plus the
+version bump and docs. The full suite passes on the branch tip.
+
 Phase 1b deliberately does not change the CLI/TUI surface, except for
 the `@file` bug fix and restoring mid-turn `/render` parity. Every task
 keeps the full suite green.
