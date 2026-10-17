@@ -83,6 +83,21 @@ Endpoint	Purpose
 GET /v1/models	List available or configured models
 POST /v1/chat/completions	Run a model turn using familiar OpenAI-compatible schemas
 
+Security baseline
+
+The API executes tools and modifies files, so the baseline ships
+with the first HTTP phase rather than at hardening time:
+
+* Bind to 127.0.0.1 by default.
+* Keep non-loopback binding disabled until authentication and
+  authorization are implemented (Phase 6 completes them; external
+  reachability must not precede its controls).
+* Reject oversized request bodies before parsing them.
+* Apply request and upstream timeouts, and propagate cancellation
+  to inference when the client cancels or disconnects.
+* Return sanitized, structured errors: no internal tracebacks, no
+  filesystem paths.
+
 Support the common request fields used by existing clients, with explicit handling of unsupported parameters rather than silently ignoring them.
 
 For non-streaming requests, return a compatible completion structure. For streaming requests, use Server-Sent Events (SSE) and emit the expected chunk structure and termination marker.
@@ -100,6 +115,23 @@ Maintain the distinction between:
 
 Do not make these two execution modes indistinguishable. A client using the standard completion endpoint should not unexpectedly receive privileged agent execution merely because it submitted tool definitions.
 
+Two streaming contracts, one runtime
+
+The compatible endpoints speak OpenAI SSE only: role and content
+deltas, finish reasons and the terminal marker. The typed event
+stream (`turn.started`, `tool.result`, `turn.completed`, …) with
+per-turn sequence numbers, replay and gap notifications belongs to
+the native agent endpoints (Phase 4) and must not leak into the
+OpenAI wire format.
+
+Disconnect policy differs by contract:
+
+* A model-only completion has no recoverable job behind it, so
+  cancelling upstream generation on client disconnect is
+  acceptable; document and test it.
+* A native agent turn keeps running by default. A disconnect is an
+  unsubscribe; cancellation stays an explicit operation.
+
 Acceptance criteria
 
 * Standard clients can discover models and submit chat-completion requests.
@@ -107,6 +139,9 @@ Acceptance criteria
 * Tool calls follow the expected message structure.
 * Errors use structured responses with appropriate HTTP status codes.
 * Unsupported features are documented and handled explicitly.
+* The OpenAI SSE contract and the native agent event protocol are kept
+  separate; no native envelopes appear in chat-completion streams.
+* The security baseline above is in place.
 
 Phase 4 — Add Native Agent Endpoints
 
@@ -116,6 +151,7 @@ Proposed endpoints:
 
 Endpoint	Purpose
 POST /v1/agent/turns	Start a complete agent turn, including the internal tool loop
+GET /v1/agent/turns/{id}	Retrieve one turn's snapshot: status, session, timestamps, sequence, result, error
 GET /v1/agent/turns/{id}/events	Subscribe to turn events over SSE
 POST /v1/agent/turns/{id}/cancel	Request cancellation
 GET /v1/sessions	List persistent sessions
@@ -128,12 +164,70 @@ Adjust routes to match the existing session model where appropriate. Avoid addin
 
 Agent events should expose tool progress, approval requirements, execution errors, cancellation, and completion in a structured format. The backend must not depend on a client remaining connected for an agent turn to remain coherent unless that behavior is explicitly designed and documented.
 
+Turn status and recovery
+
+`GET /v1/agent/turns/{id}` is the source of truth whenever a client is
+not (or no longer) subscribed:
+
+* 200 with the snapshot: lifecycle status, session, timestamps, latest
+  event sequence, terminal result and error when available.
+* 404 for a turn that never existed.
+* 410 (expired) for a turn whose retained record was deliberately swept,
+  distinct from 404; session history remains the durable record.
+* After a `stream.gap`, clients re-read this endpoint instead of
+  inferring state from incomplete events.
+
+Approval lifecycle
+
+* Every pending approval has its own ID, tied to one turn and one exact
+  tool operation.
+* A turn enters `waiting_approval` only when a decision is genuinely
+  pending; the runtime's approver callback parks on that decision.
+* Approval and rejection are explicit transitions. A duplicate, expired
+  or already-resolved decision must not execute the operation a second
+  time (the first resolution wins; later posts are rejected).
+* A timeout defaults to denial, never implicit approval.
+* The worker waits for a decision without holding the manager's
+  registry lock.
+* Pending approvals count toward the global active-turn limit, like any
+  running turn.
+* Cancellation and shutdown while waiting resolve the approval as
+  cancelled and stop the worker.
+
+Durability
+
+Turn records and event buffers are in-memory: a server restart destroys
+a live turn record even though session history persists. Clients must
+not treat turns as durable jobs; an expired or missing turn is recovered
+from the session store.
+
+Session exclusivity
+
+The turn manager enforces one active turn per session inside its own
+process. It does not prevent a CLI process from concurrently modifying
+the same persistent session, so the initial contract is single-writer:
+a persistent session must not be actively modified by the CLI and the
+API at the same time. Shared cross-process session locking is a later
+upgrade; distributed coordination is out of scope.
+
+Disconnect policy
+
+A native agent turn keeps running when its event subscriber
+disconnects; cancellation remains an explicit request. Clients recover
+through `GET /v1/agent/turns/{id}` and event replay.
+
 Acceptance criteria
 
 * Clients can run full agent turns without implementing their own tool loop.
 * Clients can observe progress and distinguish execution from generation.
 * Pending approvals have explicit states and cannot be confused with successful execution.
 * Disconnected clients do not leave uncontrolled or orphaned execution behind.
+* The turn status endpoint distinguishes retained, expired and unknown
+  turns, and supports recovery after a replay gap.
+* Approval timeout, duplicate decisions, cancellation while waiting and
+  shutdown while waiting are covered by tests.
+* A disconnected subscriber leaves the turn running and an explicit
+  cancel stops it.
 
 Phase 5 — Add File, Image, and Artifact Handling
 
@@ -171,11 +265,17 @@ Phase 6 — Security and Operational Controls
 
 Treat the API as a remote control surface for an agent capable of executing code and modifying files.
 
+The Phase 3 baseline (loopback binding, body limits, timeouts, sanitized
+errors) already ships with the server; this phase completes the controls
+rather than making the service safe for the first time.
+
 Tasks
 
-* Bind to 127.0.0.1 by default.
-* Require explicit configuration to listen on external interfaces.
-* Introduce authentication before exposing the service to other machines or networks.
+* Keep non-loopback binding disabled until authentication and
+  authorization are in place; then require explicit configuration to
+  listen on external interfaces.
+* Complete authentication and authorization for agent execution, session
+  management, approvals, and artifact access.
 * Apply authorization to agent execution, session management, approvals, and artifact access.
 * Preserve tool-level permissions and approval policies.
 * Validate request sizes, message lengths, file sizes, and parameter ranges.
@@ -205,6 +305,16 @@ Runtime tests
 * Approval-required operations.
 * Session persistence and recovery.
 * Cancellation and interrupted streams.
+
+Lifecycle tests
+
+* Turn state transitions end to end (created → running →
+  waiting_approval → completed/failed/cancelled), not only individual
+  methods.
+* Replay, `stream.gap` recovery and the turn status endpoint after a gap.
+* Client disconnect and reconnect policies differ for model-only and
+  native agent turns, and both are exercised.
+* Approval timeout, duplicate resolution and shutdown while waiting.
 
 HTTP tests
 
