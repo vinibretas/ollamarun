@@ -101,7 +101,7 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"1.43"` — keep this
+  constant in `ollamarun_lib/constants.py`, currently `"1.44"` — keep this
   line current when you bump it) and prepend a new bullet list under
   `Summary of changes in this version:` in the top-level `ollamarun` entry
   script's module docstring — read the existing entries there before adding
@@ -150,7 +150,9 @@ a module's own docstring for what lives there before editing:
 2. **`helpers.py`** — small helpers: ISO timestamps, id generation,
    bool/host/think coercion, `--remote` resolution (`resolve_remote`,
    `remote_node`, `tailscale_map`, `tailscale_peer_state`, `is_local_host`),
-   disk-space probes (`local_free_disk`, `ssh_free_disk`), config load
+   disk-space probes (`local_free_disk`, `ssh_free_disk` — the ssh probes
+   take a `cancel` token), `run_cancellable()`/`CommandCancelled` (the
+   process-group-killing subprocess runner every tool shares), config load
    (`load_config`) and the response-timings policy (`resolve_show_stats`),
    logging setup, and the count formatters shared by both front ends
    (`human_tokens`/`format_context` for the ctx counter, `human_chars`,
@@ -242,9 +244,11 @@ a module's own docstring for what lives there before editing:
    calls into it lives in `runtime.py` (approve → execute → append a
    `role: tool` message → ask the model again), auto-speak lives in
    `Repl.speak_text`, and rendering of calls/results is `renderer.py`.
-   `ToolContext.cancel` + `run_cancellable()` kill a subprocess's process
-   group on a stop, and `ToolRunner` abandons network tools (`fetch_url`,
-   `web_search`) on cancel so the result is discarded instead of waited on.
+   `ToolContext.cancel` reaches every subprocess-backed tool (shell,
+   python, the ssh probes, chemInventoryAPI, tts-remote, trash-put)
+   through `helpers.run_cancellable()`, and `ToolRunner` abandons network
+   tools (`fetch_url`, `web_search`) on cancel so the result is discarded
+   instead of waited on.
 9. **`prompts.py`** — the prompt files: `load_prompt()` (override layer first,
    shipped default after, cached per process; missing/unreadable warns and
    reads as None), `default_system_prompt()` (composes `system.md` +
@@ -260,8 +264,9 @@ a module's own docstring for what lives there before editing:
 11. **`session.py`** — `Session` (in-memory conversation model: messages,
    model, system prompt, options) and `SessionStore` (atomic read/write of
    the JSON files + `index.json`, list/search/export/delete; its index
-   read-modify-write runs under an `RLock` so parallel turns cannot lose
-   entries).
+   read-modify-write runs under a shared `RLock` plus an exclusive `flock`
+   on `<index>.lock` (so a CLI saving while serve runs cannot lose entries)
+   and its temp files are named per writer.
    `export_markdown`/`export_json`/`export_html` are the three export
    formats.
 12. **`emit.py`** — `emit()` plus the `cli_list`/`cli_search`/`cli_show`/
@@ -324,7 +329,9 @@ a module's own docstring for what lives there before editing:
    helpers. It never prints and never touches a terminal; the CLI
    supplies a `rich` presenter and keeps thin wrappers with the old
    signatures, while `HeadlessRenderer` + an event sink drive it with no
-   terminal at all.
+   terminal at all. The runtime owns the tool-support capability check
+   (once per model, after `turn.started`, warned as a `turn.warning`), and
+   `quiet_tools` is read live so `/render raw` mid-turn takes effect.
 17. **`repl.py`** — `SlashCompleter`/`completion_candidates` (completion for
    `/commands`, session ids, models, `@files`, shared with the TUI input),
    the `Repl` class (the CLI adapter over `runtime.AgentRuntime`:
@@ -460,7 +467,14 @@ methods those layers actually call) instead. Console output assertions that
 capture the shared `console` singleton (`with orun.console.capture() as cap:`)
 should go through the `_plain()` helper before substring-matching, since
 `rich`'s automatic number/keyword highlighting can split a literal substring
-across ANSI color codes. The Phase 1 runtime tests (`test_runtime_events`,
-`test_headless_renderer`, `test_session_store_lock`, `test_ui_interactive`,
-`test_tool_cancellation`) cover the `AgentRuntime` event stream, the
-terminal-free turn path, the session-store lock and turn cancellation.
+across ANSI color codes. The Phase 1/1b runtime tests (`test_runtime_events`,
+`test_headless_renderer`, `test_session_store_lock`,
+`test_session_store_cross_process_lock`, `test_ui_interactive`,
+`test_tool_cancellation`, `test_cancellation_coverage`,
+`test_file_mention_inlining`, `test_tool_support_warning`,
+`test_quiet_tools_live`, `test_approval_event_contract`,
+`test_python310_syntax`, `test_turn_result_mapping`) cover the
+`AgentRuntime` event stream, the terminal-free turn path, the
+in-process/cross-process store locks, turn cancellation (including the
+ssh/chem/tts/trash coverage), `@file` inlining, the approval event
+contract and the 3.10 syntax guard.
