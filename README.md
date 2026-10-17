@@ -384,6 +384,17 @@ session whose model fell out of the list is refused before it runs) and
 the fit endpoints — and a model outside it answers exactly like an unknown
 one (`404 model_not_found`).
 
+**Compatibility testing.** The surface is pinned by the project's test
+suite, which a client can trust as the compatibility contract: a required
+round-trip through the official `openai` SDK (completions, streaming with
+usage, typed tool calls, the 400 mappings, a mid-stream failure) plus the
+deterministic request/response matrix and a real-process smoke of
+`ollamarun serve` — `python3 test_ollamarun.py`, with `--live` adding a
+real-backend pass. There is no claim of complete OpenAI compatibility:
+everything accepted is listed above, everything rejected fails with a
+structured 400 (never a silent ignore), and behavior beyond that matrix is
+undefined until the compatibility phase closes it.
+
 ## Agent API (turns, events, approvals, sessions)
 
 The same `ollamarun serve` process also exposes ollamarun's own endpoints:

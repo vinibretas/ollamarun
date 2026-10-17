@@ -2,6 +2,41 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.57
+
+Summary of changes in this version:
+  - Phase 7: the test suite is split in two. The CLI/shared half stays in
+    `test_ollamarun.py` (it owns `_plain`/`_check`/`_FakeClient` and the
+    CLI, renderer and tool tests) and the API-layer half — the runtime
+    contract, turn manager, server, OpenAI surface, agent API, artifacts
+    and context fitting — moved to `test_ollamarun_serve.py`. The
+    canonical command is unchanged: `python3 test_ollamarun.py` runs both
+    files and prints one verdict, and the new file also runs standalone.
+  - Two required test gates. `test_pyflakes_clean` runs pyflakes over
+    `ollamarun_lib/`, the entry script and both test files, tolerating
+    only the deliberate re-export sites (`constants.py`'s hub names,
+    `__init__.py`, and `repl._prompt_approval`'s compatibility
+    re-export); the findings it drove out are fixed (`ui.py`'s unused
+    imports, two placeholder-less f-strings, dead test locals, an
+    undefined `Any` annotation, the Textual probe). `test_openai_sdk` no
+    longer skips when the package is absent: it fails with the install
+    hint and prints the SDK version it exercised.
+  - Coverage-audit gap tests: the model-turn/agent-turn contrast (client
+    tool calls are returned, never executed; the same call runs through
+    the agent loop), an agent turn's backend failure (failed status, a
+    terminal `turn.error`, a session holding only the user turn), a tool
+    that errors (`ok: false`, the model continues), the HTTP replay of a
+    truncated event buffer starting with `stream.gap`, the no-auth
+    trusted-network pin, and a cancelled mid-stream turn's persisted
+    partial-assistant session shape.
+  - `test_serve_process`: the real-process smoke that spawns the shipped
+    `ollamarun serve` against a stub Ollama, reads the bound address from
+    the startup banner, sends SIGTERM mid-stream, and pins the drained
+    stream, the clean exit, the tracked-model unload and the released
+    port. The `--live` smoke gains one full agent turn (tools ride along
+    only when the model advertises them — the backend hard-rejects tools
+    for models without support).
+
 Version: 1.56
 
 Summary of changes in this version:
