@@ -617,7 +617,8 @@ class AgentApi:
                  manager: Optional[TurnManager] = None,
                  cwd: Optional[str] = None,
                  artifacts: Optional[ArtifactStore] = None,
-                 fits: Optional[FitService] = None):
+                 fits: Optional[FitService] = None,
+                 tracker: Optional[Any] = None):
         self._args = args
         self._config = dict(config or {})
         self._store = store
@@ -625,6 +626,9 @@ class AgentApi:
         #: The serve artifact store: `file`/image parts resolve through it,
         #: turn tools publish into it, and the artifact routes read from it.
         self._artifacts = artifacts
+        #: The serve model tracker (`helpers.ModelTracker`): feeds the
+        #: unused-on-exit unload. None outside `ollamarun serve`.
+        self._tracker = tracker
         # Every turn-manager key is explicit-None defaulted: a configured 0
         # must not be conflated with "unset" (`or 4` would).
         raw_max_active = self._config.get("serve_max_active_turns")
@@ -706,6 +710,11 @@ class AgentApi:
             raise ApiError(404, f"model {model!r} not found",
                            code="model_not_found", param="model")
 
+    def _note_model(self, model: str) -> None:
+        """Remember a model this server used (unload-on-exit; never raises)."""
+        if self._tracker is not None:
+            self._tracker.note(model)
+
     def _unload_resident(self, client: Any, model: str) -> None:
         """Unload a resident model after a placement change (never raises).
 
@@ -774,6 +783,7 @@ class AgentApi:
                 "model is required (none in the request, the session or the "
                 "serve config)", param="model")
         self._ensure_model(client, session.model)
+        self._note_model(session.model)
         if spec.system is not None:
             session.system = spec.system
         if spec.parameters:
@@ -1279,6 +1289,8 @@ class AgentApi:
             raise ApiError(403, 'probing is disabled (serve_fit is "estimate")',
                            code="probe_disabled")
         session, client, model = self._fit_subject(spec)
+        if spec["probe"]:
+            self._note_model(model)  # a probe loads the model; estimates don't
         if spec["apply"] and session is None:
             raise _invalid("apply needs session_id", param="session_id")
         if session is not None:
@@ -1714,8 +1726,20 @@ class AgentApi:
 
     # ── lifecycle ───────────────────────────────────────────────────────────
 
+    def begin_shutdown(self) -> None:
+        """Refuse new turns and fits; cancelling and joining come after.
+
+        Called before the pending work is cancelled so an in-flight HTTP
+        handler racing the shutdown cannot start a new turn or fit — its
+        submit answers 503 `server_shutting_down` through the typed errors
+        the registries already raise once closed.
+        """
+        self._manager.begin_shutdown()
+        self._fits.begin_shutdown()
+
     def shutdown(self, *, timeout: float = 10.0) -> None:
         """Resolve pending approvals as cancelled, then stop the registries."""
+        self.begin_shutdown()
         for pending in self._pending_approvals_all():
             self._first_decision(pending, ApprovalDecision(
                 run=False, note=_cancel_note("shutdown"), action="cancelled"))
@@ -1745,11 +1769,12 @@ def build_agent_api(*, args: Any, config: dict[str, Any],
                     manager: Optional[TurnManager] = None,
                     cwd: Optional[str] = None,
                     artifacts: Optional[ArtifactStore] = None,
-                    fits: Optional[FitService] = None) -> "AgentApi":
+                    fits: Optional[FitService] = None,
+                    tracker: Optional[Any] = None) -> "AgentApi":
     """The one `AgentApi` the route-registration functions share."""
     return AgentApi(args=args, config=config, store=store,
                     client_factory=client_factory, manager=manager, cwd=cwd,
-                    artifacts=artifacts, fits=fits)
+                    artifacts=artifacts, fits=fits, tracker=tracker)
 
 
 def add_artifact_routes(router: Router, api: "AgentApi") -> None:

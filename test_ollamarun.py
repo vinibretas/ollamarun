@@ -11301,6 +11301,9 @@ def test_serve_config_matrix() -> int:
                                 request_timeout=request_timeout)
                 self.address = (bind, port)
 
+            def drain(self, timeout):
+                return True
+
             def close(self):
                 pass
 
@@ -12010,6 +12013,138 @@ def test_serve_agent_switch() -> int:
     return failures
 
 
+def test_serve_shutdown() -> int:
+    """begin_shutdown refuses new work; drain is bounded; sessions persist."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        shell = f"touch {Path(tmp) / 'never.txt'}"
+        client = _ServeClient(models=["m1"], capabilities=["completion", "tools"],
+                              chat_script=[
+                                  [{"message": {"content": "", "tool_calls": [
+                                      {"function": {"name": "run_shell",
+                                                    "arguments": {
+                                                        "command": shell}}}]}},
+                                   {"done": True}],
+                                  [{"message": {"content": "ok"}, "done": True}],
+                              ])
+        server, api, store, thread = _start_agent_api(
+            tmp, client, manager=orun.TurnManager())
+        try:
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body=_turn_request("shut down",
+                                   settings={"approval": "interactive"}))
+            turn = json.loads(raw)
+            _poll_turn(server, turn["id"], until={"waiting_approval"})
+
+            api.begin_shutdown()
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns", body=_turn_request("later"))
+            failures = _check(
+                failures, "begin_shutdown refuses a new turn with 503",
+                status == 503
+                and json.loads(raw)["error"]["code"] == "server_shutting_down",
+                f"{status} {raw[:140]}")
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/fits",
+                body={"model": "m1", "mode": "gpu"})
+            failures = _check(
+                failures, "begin_shutdown refuses a new fit with 503",
+                status == 503, f"{status} {raw[:140]}")
+
+            started = time.monotonic()
+            api.shutdown(timeout=3)
+            elapsed = time.monotonic() - started
+            snapshot = api.manager.get(turn["id"])
+            failures = _check(failures, "shutdown cancels the parked turn",
+                              elapsed < 4.0 and snapshot is not None
+                              and snapshot.status == "cancelled",
+                              f"{elapsed:.2f}s {snapshot}")
+
+            events = _headless_events(api, turn["id"])
+            resolved = [event.data for event in events
+                        if event.type == "approval.resolved"]
+            failures = _check(
+                failures, "the parked approval resolved as cancelled",
+                resolved and resolved[0].get("note")
+                == "cancelled (server shutting down)", str(resolved[:1]))
+
+            session_id = snapshot.session_id if snapshot else ""
+            stored = store.resolve(session_id)
+            contents = [message.get("content") for message in
+                        (stored.messages if stored else [])]
+            failures = _check(
+                failures, "the cancelled turn's session is on disk",
+                stored is not None and "shut down" in contents
+                and "ok" not in contents, str(contents)[:200])
+            failures = _check(failures, "the drain sees no stray handlers",
+                              server.drain(2) is True,
+                              f"{server.active_handlers}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
+def test_serve_unload_on_exit() -> int:
+    """Only the models this server used are unloaded; embeddings stay."""
+    failures = 0
+
+    class _UnloadClient:
+        def __init__(self):
+            self.capabilities_map = {"m1": ["completion"],
+                                     "embed": ["embedding"]}
+            self.resident = {"m1", "embed", "untouched"}
+            self.unloaded = []
+
+        def capabilities(self, model):
+            return list(self.capabilities_map.get(model, []))
+
+        def is_resident(self, model):
+            return model in self.resident
+
+        def unload(self, model):
+            self.unloaded.append(model)
+
+    import ollamarun_lib.cli as cli
+    fake = _UnloadClient()
+    tracker = orun.ModelTracker()
+    tracker.note("m1")
+    tracker.note("m1")  # deduped
+    tracker.note("embed")
+    tracker.note("m2")  # not resident
+    tracker.note("")
+    failures = _check(failures, "the tracker dedupes and keeps order",
+                      tracker.models() == ["embed", "m1", "m2"],
+                      str(tracker.models()))
+    cli._unload_served_models(lambda: fake, tracker)
+    failures = _check(
+        failures, "unload-on-exit touches only used, resident, non-embedding",
+        fake.unloaded == ["m1"], str(fake.unloaded))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # Both surfaces note what they actually used.
+        tracker = orun.ModelTracker()
+        client = _ServeClient(models=["m1"], capabilities=["completion", "tools"])
+        server, api, store, thread = _start_agent_api(tmp, client,
+                                                      tracker=tracker)
+        try:
+            status, _headers, raw = _http(
+                server, "POST", "/v1/chat/completions",
+                body={"model": "m1",
+                      "messages": [{"role": "user", "content": "hi"}]})
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body=_turn_request("hi"))
+            turn = json.loads(raw)
+            _poll_turn(server, turn["id"])
+            failures = _check(failures, "chat and turns note their model",
+                              tracker.models() == ["m1"],
+                              str(tracker.models()))
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
 def test_serve_cli() -> int:
     """The `serve` subcommand: parser, config defaults and dispatch."""
     failures = 0
@@ -12268,7 +12403,7 @@ def test_serve_live() -> int:
 
 def _start_agent_api(tmp, client, *, config_extra=None, manager=None,
                      store=None, args_extra=(), config=None, artifacts=None,
-                     agent_routes=True):
+                     agent_routes=True, tracker=None):
     """An API server with the native agent routes over a fake backend."""
     if store is None:
         store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
@@ -12279,12 +12414,13 @@ def _start_agent_api(tmp, client, *, config_extra=None, manager=None,
     settings.update(config_extra or {})
     args = orun.build_parser().parse_args(
         ["m1", "--render", "plain", "--no-save", *args_extra])
-    router = orun.build_router(lambda: client, config=settings)
+    router = orun.build_router(lambda: client, config=settings,
+                               tracker=tracker)
     api = orun.build_agent_api(args=args, config=settings, store=store,
                                client_factory=lambda: client,
                                manager=manager,
                                cwd=settings.get("serve_workspace"),
-                               artifacts=artifacts)
+                               artifacts=artifacts, tracker=tracker)
     orun.add_artifact_routes(router, api)
     if agent_routes:
         orun.add_agent_routes(router, api)
@@ -13268,6 +13404,8 @@ if __name__ == "__main__":
              + test_artifact_root_containment()
              + test_serve_model_gate()
              + test_serve_agent_switch()
+             + test_serve_shutdown()
+             + test_serve_unload_on_exit()
              + test_serve_cli()
              + test_openai_sdk()
              + test_agent_turn_lifecycle() + test_agent_turn_controls()

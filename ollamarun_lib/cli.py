@@ -12,7 +12,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from rich.markup import escape
 
@@ -36,6 +36,7 @@ from .constants import (
 )
 from .emit import cli_delete, cli_export, cli_list, cli_search, cli_show
 from .helpers import (
+    ModelTracker,
     is_local_host,
     load_config,
     parse_bool,
@@ -429,6 +430,36 @@ config: ~/etc/config_files/ollamarun.json — the validated serve_* matrix
     return parser
 
 
+def _unload_served_models(client_factory: Callable[[], OllamaClient],
+                          tracker: ModelTracker) -> None:
+    """Unload the models this serve process used (best effort, never raises).
+
+    Embedding models stay resident (house rule) and only tracked models are
+    touched, so a parallel CLI session's model is never evicted.
+    """
+    models = tracker.models()
+    if not models:
+        return
+    try:
+        client = client_factory()
+    except (OllamaError, TypeError, ValueError):  # pragma: no cover - defensive
+        return
+    unloaded: list[str] = []
+    for model in models:
+        try:
+            if "embedding" in client.capabilities(model):
+                continue
+            if client.is_resident(model):
+                client.unload(model)
+                unloaded.append(model)
+        except (OllamaError, TypeError, ValueError):
+            continue
+    if unloaded:
+        console.print("[dim]unloaded " + ", ".join(escape(name)
+                                                   for name in unloaded)
+                      + " (--keep-loaded keeps them)[/dim]")
+
+
 def serve_main(argv: Optional[list[str]] = None) -> int:
     """`ollamarun serve`: run the OpenAI-compatible API until a signal."""
     parser = build_serve_parser()
@@ -480,13 +511,15 @@ def serve_main(argv: Optional[list[str]] = None) -> int:
     def client_factory() -> OllamaClient:
         return OllamaClient(host, insecure=args.insecure, timeout=timeout)
 
+    tracker = ModelTracker()
     router = build_router(client_factory, config=settings, timeout=timeout,
                           keepalive=settings.get("keepalive"),
-                          artifacts=artifact_store)
+                          artifacts=artifact_store, tracker=tracker)
     agent_api = build_agent_api(
         args=build_parser().parse_args([]), config=settings,
         store=SessionStore(), client_factory=client_factory,
-        cwd=settings["serve_workspace"], artifacts=artifact_store)
+        cwd=settings["serve_workspace"], artifacts=artifact_store,
+        tracker=tracker)
     add_artifact_routes(router, agent_api)
     if settings["serve_agent"]:
         add_agent_routes(router, agent_api)
@@ -519,12 +552,28 @@ def serve_main(argv: Optional[list[str]] = None) -> int:
                       "files /v1/files (agent routes disabled)[/dim]")
     console.print("[warn]trusted-network-only: no authentication — never expose "
                   "this port to the internet[/warn]")
-    console.print("[dim]Ctrl-C stops the server (active turns are cancelled)[/dim]")
+    if settings["serve_unload_on_exit"]:
+        console.print("[dim]Ctrl-C stops the server (active turns are cancelled; "
+                      "the models this server used are unloaded)[/dim]")
+    else:
+        console.print("[dim]Ctrl-C stops the server (active turns are cancelled; "
+                      "loaded models are kept)[/dim]")
+    shutdown_timeout = settings["serve_shutdown_timeout"]
     try:
         run_forever(server)
     finally:
+        # Shutdown order: the listener stopped accepting inside run_forever;
+        # refuse new background work (racing handlers answer 503), resolve
+        # approvals and cancel/join turns and fits, drain in-flight HTTP
+        # handlers (bounded), optionally unload the tracked models, close.
+        agent_api.begin_shutdown()
+        agent_api.shutdown(timeout=shutdown_timeout)
+        if not server.drain(shutdown_timeout):
+            console.print("[dim]shutdown deadline reached; in-flight "
+                          "connections were dropped[/dim]")
+        if settings["serve_unload_on_exit"]:
+            _unload_served_models(client_factory, tracker)
         server.close()
-        agent_api.shutdown()
     console.print("[dim]stopped[/dim]")
     return 0
 

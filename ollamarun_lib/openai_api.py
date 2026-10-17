@@ -672,12 +672,16 @@ class OpenAIApi:
                  config: Optional[dict[str, Any]] = None,
                  timeout: Optional[float] = None,
                  keepalive: Optional[str] = None,
-                 artifacts: Optional[Any] = None):
+                 artifacts: Optional[Any] = None,
+                 tracker: Optional[Any] = None):
         self._client_factory = client_factory
         self.config = dict(config or {})
         #: The artifact store (`artifacts.ArtifactStore`) when serve runs
         #: one: `file` content parts resolve through it. None otherwise.
         self._artifacts = artifacts
+        #: The serve model tracker (`helpers.ModelTracker`): feeds the
+        #: unused-on-exit unload. None outside `ollamarun serve`.
+        self._tracker = tracker
         #: Aggregate resolved-input caps (`serve_max_*`); the JSON body cap
         #: bounds the request as sent, these bound what parts may assemble.
         self._limits = input_limits(self.config)
@@ -784,6 +788,8 @@ class OpenAIApi:
                                   limits=self._limits)
         client = self._client_factory()
         self._ensure_model(plan.model)
+        if self._tracker is not None:
+            self._tracker.note(plan.model)
         if plan.has_images:
             require_vision(self._capabilities(client, plan.model))
         payload = ollama_payload(plan, keepalive=self.keepalive)
@@ -869,10 +875,11 @@ def build_router(client_factory: Callable[[], Any], *,
                  config: Optional[dict[str, Any]] = None,
                  timeout: Optional[float] = None,
                  keepalive: Optional[str] = None,
-                 artifacts: Optional[Any] = None) -> Router:
+                 artifacts: Optional[Any] = None,
+                 tracker: Optional[Any] = None) -> Router:
     """The `/v1` router: models, one model, chat completions."""
     api = OpenAIApi(client_factory, config=config, timeout=timeout,
-                    keepalive=keepalive, artifacts=artifacts)
+                    keepalive=keepalive, artifacts=artifacts, tracker=tracker)
     router = Router()
     router.add("GET", "/v1/models", api.list_models)
     router.add("GET", "/v1/models/{model}", api.get_model)
