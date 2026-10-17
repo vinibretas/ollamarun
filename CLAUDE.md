@@ -1,15 +1,36 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository. `AGENTS.md` is a mirror copy for other agents — **edit both together**; they must stay identical.
 
 ## What this is
 
-`ollamarun` is a Python CLI that fully wraps `ollama run`: every upstream
-flag plus persistent sessions, a prompt_toolkit REPL, live markdown/2D-math
-rendering, and token/s stats. It talks to the Ollama HTTP API directly
-(`requests`, not the `ollama` Python package) so it rides transparently
-through `llm-jukebox`, the scheduler this user runs in front of Ollama on
-`:11434`.
+`ollamarun` is a full terminal agent harness for Ollama: a drop-in superset of
+`ollama run` that can also give the model tools. Beyond every upstream flag it
+adds an approval-gated tool-calling loop over Ollama function calling (22
+built-in tools, defined as data under `defs/`), persistent sessions, live
+markdown/2D-math rendering with a collapsible thinking panel and a tok/s +
+context footer, two front ends (the inline prompt_toolkit REPL and the
+optional Textual TUI), remote inference on tailnet machines, and context/GPU
+placement fitting. It talks to the Ollama HTTP API directly (`requests`, not
+the `ollama` Python package) so it rides transparently through `llm-jukebox`,
+the scheduler this user runs in front of Ollama on `:11434`.
+
+The harness layers, roughly top to bottom:
+
+- **Front ends** — `cli.py` starts either the inline REPL or the Textual TUI
+  (`tui.py`), both talking to the REPL through the `Ui` seam (`ui.py`).
+- **Agent loop** — `repl.py`'s `Repl` drives multi-round tool calls
+  (`_generate` → `_execute_tool_calls` → approval → follow-up round), plus the
+  message queue, cancellation and every slash command.
+- **Tool registry** — `tools.py` builds the tool set from `defs/tools/*.json`,
+  classifies each call (`approval_decision`), executes it and truncates what
+  goes back to the model; prompts live in `defs/prompts/`.
+- **Rendering** — `renderer.py` streams markdown/2D math through `rich.Live`,
+  with the collapsible thinking panel and `TpsEstimator`.
+- **State** — `session.py` persists conversations; `emit.py` backs the
+  non-interactive inspection flags.
+- **Inference** — `client.py` speaks the Ollama HTTP API; `interactive.py`
+  handles pickers/pull/GPU-layer specs; `ctxfit.py` sizes contexts.
 
 `--remote NAME` retargets every Ollama call at a tailnet machine: the known
 names are `pi`, `kiddo`, `g3`, `optiplex7070` (alias `optiplex`) and `guri`,
@@ -78,11 +99,12 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"1.35"`) and prepend a
-  new bullet list under `Summary of changes in this version:` in the
-  top-level `ollamarun` entry script's module docstring — read the existing
-  entries there before adding one; that block is the changelog, there is no
-  separate CHANGELOG file.
+  constant in `ollamarun_lib/constants.py`, currently `"1.39"` — keep this
+  line current when you bump it) and prepend a new bullet list under
+  `Summary of changes in this version:` in the top-level `ollamarun` entry
+  script's module docstring — read the existing entries there before adding
+  one; that block is the changelog, there is no separate CHANGELOG file.
+  Docs-only commits (README/CLAUDE.md/AGENTS.md) don't need a bump.
 - Config lives at `~/etc/config_files/ollamarun.json`, created from
   `DEFAULT_CONFIG` on first run. Session state is one atomic JSON file per
   conversation plus `index.json` under `~/etc/data/ollamarun/sessions/`.
@@ -97,6 +119,9 @@ docstring convention) — it is binding, not optional, for edits in this repo.
   system-prompt contract: unset session `system` = built-in default, `""` =
   no system prompt (`--no-system`, `/system off`), text = replaces it
   (`/system clear` returns to the default).
+- Docs move with behavior: `README.md` is the feature reference (tool table,
+  command table, config), `CLAUDE.md`/`AGENTS.md` are the working guidance —
+  update them in the same change, keeping the two guidance files identical.
 - Inspection-style flags (`--list`, `--show`, `--search`, `--export`) share
   one output convention: rich table by default, `--json`/`--csv`/`--markdown`
   plus `--out FILE` to redirect — implemented once in `emit()`
@@ -297,15 +322,17 @@ a module's own docstring for what lives there before editing:
    from (`approval_entries`/`_prompt_approval`, storing generalized
    `ToolRule`s in the session) now live in `ui.py`, re-exported here so
    `_prompt_approval` keeps resolving from this module. Each slash command
-   (`/model`/`/models` -- switch, `--list`, `--sort KEY`, `/set`, `/show`,
-   `/load`, `/save`, `/pull`, `/undo`, `/retry`, `/edit`,
-   `/branch`, `/context`, `/summarize`, `/image`, `/render`, `/math`,
-   `/pager`, `/tps`, `/ps`, `/num-ctx`, `/gpu-layers`, `/copy`, `/export`, `/stats`,
-   `/thinking`, `/tools`, `/tts`, `/queue`, ...) is a standalone
+   (`/model`/`/models`, `/set`, `/show`, `/load`, `/save`, `/pull`,
+   `/num-ctx`, `/gpu-layers`, `/params`, `/tools`, `/tts`, `/think`,
+   `/thinking`, `/system`, `/undo`, `/retry`, `/edit`, `/branch`,
+   `/context`, `/summarize`, `/image`, `/render`, `/math`, `/pager`,
+   `/tps`, `/copy`, `/export`, `/stats`, `/queue`, ...) is a standalone
    `cmd_NAME(repl, argument)` function dispatched by name through
-   `COMMAND_HANDLERS`; add a new slash command by adding one function here
-   and wiring it into `COMMAND_INFO`/`COMMAND_HANDLERS` (and the
-   `build_parser()` epilog in `cli.py` if it's worth advertising there).
+   `COMMAND_HANDLERS`; `COMMAND_INFO` is the authoritative description table
+   (the REPL `/help`, the README's command table and the `cli.py` epilog all
+   mirror it). Add a new slash command by adding one function here and
+   wiring it into `COMMAND_INFO`/`COMMAND_HANDLERS` (and the hand-maintained
+   `build_parser()` epilog in `cli.py`).
    `ps_table()`/`resolve_num_ctx()` also live here since `cmd_ps`/
    `cmd_num_ctx` are their only callers (`resolve_num_ctx` is reused by
    `main()` in `cli.py` for `--num-ctx`). `ApprovalPicker` and its runners are
@@ -344,6 +371,29 @@ keep new code on that side of the dependency graph rather than reaching
 "backwards" (e.g. don't import from `repl.py` inside `renderer.py`); use
 `typing.TYPE_CHECKING` for a backwards-pointing type hint only, the way
 `renderer.py` does for `Session` (defined later, in `session.py`).
+
+### Where to change what
+
+- **New tool**: add `defs/tools/NAME.json` (description, JSON schema, safety
+  flags, optional `requires`/`aliases`, `handler` name), the handler function
+  and its `HANDLERS` entry in `tools.py`, and a row in the README tool table.
+  Registration is data-driven — `default_registry()` picks the file up
+  automatically, and `read_only`/`always_safe` feed `approval_decision()`.
+- **New slash command**: one `cmd_NAME(repl, argument)` function in
+  `repl.py`, wired into `COMMAND_INFO`/`COMMAND_HANDLERS`; complete the
+  `build_parser()` epilog and the README command table when it is notable.
+- **New config key**: add it to `DEFAULT_CONFIG` in `constants.py` and to the
+  README's selected-keys list; user config merges over the defaults.
+- **New inspection output** (`--list`-style): build it into a `cli_*`
+  function and route through `emit()` (`emit.py`), never a hand-rolled table.
+- **New interactive prompt/hook**: extend the `Ui` protocol and `ConsoleUi`
+  in `ui.py`, then implement it in `TuiUi` (`tui.py`) — nothing below the
+  `repl.py` layer may know which front end is running.
+- **New model-facing text**: tool wording in `defs/tools/*.json`, prompt text
+  in `defs/prompts/`; never hardcode it in Python.
+- **Streaming/rendering UX**: `renderer.py` (the TUI consumes the same frames
+  through `StreamSink`), and `ui.py`'s `StatusSnapshot`/`format_status()` when
+  it shows up in the status bar.
 
 ## Testing notes
 
