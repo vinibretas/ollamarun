@@ -8545,9 +8545,9 @@ def test_turn_buffer_truncation() -> int:
 
 
 def test_turn_expired() -> int:
-    """A swept turn answers TurnExpired, not UnknownTurn."""
+    """A swept turn answers TurnExpired, not UnknownTurn; ttl 0 keeps it."""
     failures = 0
-    manager = orun.TurnManager(completed_ttl=0.0)
+    manager = orun.TurnManager(completed_ttl=30.0)
 
     def work(sink, cancel):
         sink(orun.RuntimeEvent(orun.TURN_COMPLETED, {}))
@@ -8557,6 +8557,8 @@ def test_turn_expired() -> int:
     # Join the worker directly: wait()/get() would sweep the record first,
     # hiding whether subscribe() enforces retention on its own.
     manager._records[handle.id].thread.join(5)
+    # Age the record past its retention so subscribe()'s own sweep expires it.
+    manager._records[handle.id].finished_at -= 60.0
     try:
         manager.subscribe(handle.id)
         raised = None
@@ -8565,6 +8567,21 @@ def test_turn_expired() -> int:
     failures = _check(failures, "a swept turn reports expired with its status",
                       raised is not None and raised.status == "completed"
                       and manager.get(handle.id) is None, repr(raised))
+
+    # `completed_ttl: 0` is the "keep forever" convention: even a sweep long
+    # after the turn finished leaves the record in place.
+    keeper = orun.TurnManager(completed_ttl=0.0)
+
+    def work2(sink, cancel):
+        sink(orun.RuntimeEvent(orun.TURN_COMPLETED, {}))
+        return orun.TurnResult(id="y", session_id="s", status="completed")
+
+    kept = keeper.submit(session_id="s", work=work2)
+    keeper.wait(kept.id, timeout=5)
+    keeper.sweep(now=time.monotonic() + 10_000_000)
+    failures = _check(failures, "a zero retention keeps completed turns",
+                      keeper.get(kept.id) is not None,
+                      repr(keeper.get(kept.id)))
     return failures
 
 
@@ -11177,6 +11194,957 @@ def test_serve_cache_concurrency() -> int:
     return failures
 
 
+def test_serve_config_matrix() -> int:
+    """The validated serve_* matrix: defaults, zeros, invalid values, wiring."""
+    failures = 0
+    base = orun.serve_settings({})
+    failures = _check(
+        failures, "the serve matrix defaults come from the constants",
+        base["serve_body_limit"] == orun.DEFAULT_SERVE_BODY_LIMIT
+        and base["serve_request_timeout"] == orun.DEFAULT_SERVE_REQUEST_TIMEOUT
+        and base["serve_sse_ping_interval"] == orun.DEFAULT_SERVE_PING_INTERVAL
+        and base["serve_shutdown_timeout"] == orun.DEFAULT_SERVE_SHUTDOWN_TIMEOUT
+        and base["serve_agent"] is True and base["serve_models"] == []
+        and base["serve_workspace"] is None
+        and base["serve_unload_on_exit"] is True
+        and base["serve_max_messages"] == 16384
+        and base["serve_max_content_parts"] == 4096
+        and base["serve_max_message_bytes"] == 8 * 1024 * 1024
+        and base["serve_max_text_bytes"] == 32 * 1024 * 1024
+        and base["serve_max_images"] == 64
+        and base["serve_max_image_bytes"] == 64 * 1024 * 1024
+        and base["serve_max_active_turns"] == 4
+        and base["serve_turn_event_buffer"] == 10000
+        and base["serve_max_active_fits"] == 2,
+        str({k: v for k, v in sorted(base.items())
+             if k.startswith("serve_")}))
+
+    zeros = orun.serve_settings({
+        "serve_approval_timeout": 0, "serve_turn_timeout": 0,
+        "serve_turn_event_ttl": 0, "serve_artifact_ttl": 0, "serve_fit_ttl": 0,
+        "serve_artifact_max_bytes": 0, "serve_artifact_quota_bytes": 0})
+    failures = _check(
+        failures, "an explicit zero keeps its documented meaning",
+        zeros["serve_approval_timeout"] == 0.0
+        and zeros["serve_turn_timeout"] == 0.0
+        and zeros["serve_turn_event_ttl"] == 0.0
+        and zeros["serve_artifact_ttl"] == 0.0
+        and zeros["serve_fit_ttl"] == 0.0
+        and zeros["serve_artifact_max_bytes"] == 0
+        and zeros["serve_artifact_quota_bytes"] == 0,
+        str({k: zeros[k] for k in sorted(zeros)
+             if "_ttl" in k or "timeout" in k or "artifact" in k}))
+
+    bad = [
+        ("serve_bind", ""), ("serve_port", "11440"), ("serve_port", 70000),
+        ("serve_agent", "yes"), ("serve_models", "qwen3"),
+        ("serve_models", ["qwen3", "  "]),
+        ("serve_workspace", "/no/such/dir/anywhere"),
+        ("serve_body_limit", 10), ("serve_body_limit", True),
+        ("serve_request_timeout", 0), ("serve_request_timeout", float("nan")),
+        ("serve_sse_ping_interval", 0), ("serve_shutdown_timeout", 0),
+        ("serve_unload_on_exit", 1), ("serve_max_messages", 0),
+        ("serve_max_content_parts", 0), ("serve_max_message_bytes", 0),
+        ("serve_max_text_bytes", 0), ("serve_max_images", 0),
+        ("serve_max_image_bytes", 0), ("serve_max_active_turns", 0),
+        ("serve_turn_event_buffer", 0), ("serve_turn_event_ttl", -1),
+        ("serve_approval_timeout", -1), ("serve_turn_timeout", -1),
+        ("serve_artifact_root", ""), ("serve_artifact_max_bytes", -1),
+        ("serve_artifact_quota_bytes", -1), ("serve_artifact_ttl", -1),
+        ("serve_fit", "auto"), ("serve_max_active_fits", 0),
+        ("serve_fit_ttl", -1),
+    ]
+    invalid = []
+    for key, value in bad:
+        try:
+            orun.serve_settings({key: value})
+            invalid.append(f"{key}={value!r}")
+        except ValueError:
+            pass
+    failures = _check(failures, "invalid values raise and name the key",
+                      not invalid, ", ".join(invalid))
+
+    overridden = orun.serve_settings({"serve_bind": "127.0.0.1",
+                                      "serve_port": 1},
+                                     bind="0.0.0.0", port=11441)
+    failures = _check(failures, "CLI --bind/--port win over the config",
+                      overridden["serve_bind"] == "0.0.0.0"
+                      and overridden["serve_port"] == 11441,
+                      f"{overridden['serve_bind']} {overridden['serve_port']}")
+
+    args = orun.build_serve_parser().parse_args(["--keep-loaded"])
+    failures = _check(failures, "the serve parser takes --keep-loaded",
+                      args.keep_loaded is True, str(args))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        shaped = orun.serve_settings({
+            "serve_workspace": tmp, "serve_models": [" qwen3 ", "m1:*"],
+            "serve_port": None})
+        failures = _check(
+            failures, "workspace resolves, models strip, null means default",
+            shaped["serve_workspace"] == str(Path(tmp).resolve())
+            and shaped["serve_models"] == ["qwen3", "m1:*"]
+            and shaped["serve_port"] == orun.DEFAULT_SERVE_PORT,
+            f"{shaped['serve_workspace']} {shaped['serve_models']}")
+
+        # The transport values actually reach HttpServer from serve_main().
+        import ollamarun_lib.cli as cli
+        captured = {}
+        real_server, real_forever = cli.HttpServer, cli.run_forever
+        real_store = cli.SessionStore
+
+        class _FakeServer:
+            def __init__(self, router, *, bind, port, body_limit,
+                         ping_interval, request_timeout):
+                captured.update(bind=bind, port=port, body_limit=body_limit,
+                                ping_interval=ping_interval,
+                                request_timeout=request_timeout)
+                self.address = (bind, port)
+
+            def drain(self, timeout):
+                return True
+
+            def close(self):
+                pass
+
+        try:
+            cli.HttpServer = _FakeServer
+            cli.run_forever = lambda server: None
+            cli.SessionStore = lambda *a, **k: real_store(
+                sessions_dir=Path(tmp) / "sessions",
+                index_path=Path(tmp) / "sessions-index.json")
+            cfg = Path(tmp) / "config.json"
+            cfg.write_text(json.dumps({
+                "serve_body_limit": 4 * 1024 * 1024,
+                "serve_request_timeout": 45,
+                "serve_sse_ping_interval": 7,
+                "serve_artifact_root": str(Path(tmp) / "artifacts"),
+            }), encoding="utf-8")
+            with orun.console.capture():
+                code = cli.serve_main(["--config", str(cfg), "--port", "0",
+                                       "--bind", "127.0.0.1", "--host",
+                                       "127.0.0.1:1"])
+            failures = _check(
+                failures, "serve_main builds the server from the matrix",
+                code == 0 and captured.get("body_limit") == 4 * 1024 * 1024
+                and captured.get("request_timeout") == 45.0
+                and captured.get("ping_interval") == 7.0
+                and captured.get("port") == 0
+                and captured.get("bind") == "127.0.0.1",
+                f"{code} {captured}")
+        finally:
+            cli.HttpServer = real_server
+            cli.run_forever = real_forever
+            cli.SessionStore = real_store
+    return failures
+
+
+def _raw_exchange(server, payload: bytes, *, shutdown_write: bool = False,
+                  timeout: float = 10.0):
+    """One raw HTTP/1.1 exchange; returns (status, body, full response)."""
+    sock = socket.create_connection(("127.0.0.1", server.address[1]),
+                                    timeout=timeout)
+    try:
+        sock.sendall(payload)
+        if shutdown_write:
+            sock.shutdown(socket.SHUT_WR)
+        collected = []
+        while True:
+            try:
+                piece = sock.recv(65536)
+            except socket.timeout:
+                break
+            if not piece:
+                break
+            collected.append(piece)
+    finally:
+        sock.close()
+    raw = b"".join(collected)
+    head, _, body = raw.partition(b"\r\n\r\n")
+    status_line = head.split(b"\r\n", 1)[0]
+    parts = status_line.split(b" ", 2)
+    status = int(parts[1]) if len(parts) > 1 else 0
+    return status, body, raw
+
+
+def _sized_chat_body(size: int) -> bytes:
+    """A `POST /v1/chat/completions` JSON body of exactly `size` bytes."""
+    separators = (",", ":")
+    payload = {"model": "m1", "stream": False,
+               "messages": [{"role": "user", "content": ""}]}
+    pad = size - len(json.dumps(payload, separators=separators).encode("utf-8"))
+    payload["messages"][0]["content"] = "a" * pad
+    raw = json.dumps(payload, separators=separators).encode("utf-8")
+    assert len(raw) == size, (len(raw), size)
+    return raw
+
+
+def test_chunked_bodies() -> int:
+    """Chunked decoding: same decoded cap, structured framing errors."""
+    failures = 0
+    body = json.dumps({
+        "model": "m1", "stream": False,
+        "messages": [{"role": "user", "content": "hi"}],
+    }).encode("utf-8")
+    client = _ServeClient(models=["m1"], capabilities=["completion"])
+    server, client, thread = _start_api(client)
+    base_headers = (b"Host: 127.0.0.1\r\nContent-Type: application/json\r\n"
+                    b"Connection: close\r\n")
+
+    def request(headers: bytes, body_bytes: bytes) -> bytes:
+        return (b"POST /v1/chat/completions HTTP/1.1\r\n" + base_headers
+                + headers + b"\r\n" + body_bytes)
+
+    def chunked(pieces, *, trailers: bytes = b"",
+                extensions: bytes = b";ext=1") -> bytes:
+        out = bytearray()
+        for piece in pieces:
+            out += f"{len(piece):x}".encode() + extensions + b"\r\n"
+            out += piece + b"\r\n"
+        out += b"0\r\n" + trailers + b"\r\n"
+        return bytes(out)
+
+    def error_code(body_bytes: bytes) -> str:
+        try:
+            return json.loads(body_bytes.decode("utf-8"))["error"]["code"]
+        except (ValueError, KeyError, UnicodeDecodeError):
+            return f"<{body_bytes[:80]!r}>"
+
+    try:
+        status, response, raw = _raw_exchange(server, request(
+            b"Transfer-Encoding: chunked\r\n",
+            chunked([body[:10], body[10:33], body[33:]],
+                    trailers=b"X-Trace: 1\r\n")))
+        failures = _check(
+            failures, "a chunked request decodes and completes",
+            status == 200 and len(client.chat_once_payloads) == 1
+            and client.chat_once_payloads[-1]["messages"][0]["content"] == "hi",
+            f"{status} {raw[:200]}")
+
+        client.chat_once_payloads.clear()
+        server2, client2, thread2 = _start_api(
+            _ServeClient(models=["m1"], capabilities=["completion"]),
+            server_kwargs={"body_limit": 256})
+        try:
+            exact = _sized_chat_body(256)
+            status, _body, raw = _raw_exchange(server2, request(
+                b"Transfer-Encoding: chunked\r\n",
+                chunked([exact[:20], exact[20:]])))
+            failures = _check(
+                failures, "a chunked body at the exact cap is accepted",
+                status == 200 and len(client2.chat_once_payloads) == 1,
+                f"{status} {raw[:200]}")
+
+            over = _sized_chat_body(257)
+            status, response, raw = _raw_exchange(server2, request(
+                b"Transfer-Encoding: chunked\r\n", chunked([over])))
+            failures = _check(
+                failures, "an over-cap chunked body is a 413",
+                status == 413 and error_code(response) == "body_too_large",
+                f"{status} {error_code(response)}")
+
+            status, response, raw = _raw_exchange(server2, request(
+                f"Content-Length: {len(over)}\r\n".encode(), over))
+            failures = _check(
+                failures, "the Content-Length path enforces the same cap",
+                status == 413 and error_code(response) == "body_too_large",
+                f"{status} {error_code(response)}")
+
+            huge = request(b"Transfer-Encoding: chunked\r\n",
+                           b"7fffffff\r\n")
+            status, response, _raw = _raw_exchange(server2, huge)
+            failures = _check(
+                failures, "an oversized chunk size is refused before reading",
+                status == 413 and error_code(response) == "body_too_large",
+                f"{status} {error_code(response)}")
+        finally:
+            _stop_api(server2, thread2)
+
+        status, response, _raw = _raw_exchange(server, request(
+            b"Transfer-Encoding: chunked\r\n",
+            chunked([body], extensions=b"")))
+        failures = _check(failures, "chunk extensions are ignored",
+                          status == 200, f"{status} {_raw[:120]}")
+
+        client.chat_once_payloads.clear()
+        cases = [
+            ("an invalid chunk size is a 400",
+             request(b"Transfer-Encoding: chunked\r\n", b"zz\r\n"),
+             "invalid_body"),
+            ("a missing chunk CRLF is a 400",
+             request(b"Transfer-Encoding: chunked\r\n",
+                     b"2\r\nhiXX0\r\n\r\n"),
+             "invalid_body"),
+            ("empty trailers with the terminal chunk succeed",
+             request(b"Transfer-Encoding: chunked\r\n",
+                     f"{len(body):x}\r\n".encode() + body + b"\r\n0\r\n\r\n"),
+             ""),
+            ("Transfer-Encoding plus Content-Length is ambiguous",
+             request(b"Transfer-Encoding: chunked\r\nContent-Length: 4\r\n",
+                     b"0\r\n\r\n"),
+             "invalid_header"),
+            ("a non-chunked coding is rejected",
+             request(b"Transfer-Encoding: gzip\r\n",
+                     chunked([body])),
+             "unsupported_value"),
+            ("a chunked+gzip coding list is rejected",
+             request(b"Transfer-Encoding: chunked, gzip\r\n",
+                     chunked([body])),
+             "unsupported_value"),
+        ]
+        for name, payload, expected in cases:
+            status, response, _raw = _raw_exchange(server, payload)
+            ok = (status == 200 if not expected
+                  else status == 400 and error_code(response) == expected)
+            failures = _check(failures, name, ok,
+                              f"{status} {error_code(response)}")
+
+        truncated = request(b"Transfer-Encoding: chunked\r\n", b"a\r\nabcd")
+        for name, payload in [
+            ("a missing terminal chunk is a 400",
+             request(b"Transfer-Encoding: chunked\r\n", b"5\r\nhello\r\n")),
+            ("a truncated chunk is a 400", truncated),
+        ]:
+            status, response, _raw = _raw_exchange(server, payload,
+                                                   shutdown_write=True)
+            failures = _check(failures, name,
+                              status == 400
+                              and error_code(response) == "invalid_body",
+                              f"{status} {error_code(response)}")
+    finally:
+        _stop_api(server, thread)
+    return failures
+
+
+def test_input_limits() -> int:
+    """The aggregate resolved-input budget: caps, both surfaces, fail-fast."""
+    failures = 0
+    limits = orun.InputLimits(max_messages=2, max_content_parts=3,
+                              max_message_bytes=100, max_text_bytes=200,
+                              max_images=2, max_image_bytes=1000)
+    text_part = {"type": "text", "text": "hi"}
+
+    def budget_error(limits_, content, *,
+                     where="messages[0].content"):
+        return _api_error(orun.resolve_content_parts, content, where=where,
+                          budget=orun.InputBudget(limits_))
+
+    exc = budget_error(limits, "a" * 101)
+    failures = _check(
+        failures, "a message past the byte cap is a 413",
+        exc is not None and exc.status == 413
+        and exc.code == "input_too_large"
+        and exc.extra.get("limit_name") == "serve_max_message_bytes",
+        repr(exc))
+
+    budget = orun.InputBudget(limits)
+    budget.note_messages(2)
+    exc = _api_error(budget.note_messages, 1)
+    failures = _check(failures, "message counts are charged cumulatively",
+                      exc is not None
+                      and exc.extra.get("limit_name") == "serve_max_messages",
+                      repr(exc))
+
+    exc = budget_error(limits, [text_part] * 4)
+    failures = _check(
+        failures, "a fourth content part is a 413 naming the part",
+        exc is not None and exc.code == "input_too_large"
+        and exc.param == "messages[0].content[3]"
+        and exc.extra.get("limit_name") == "serve_max_content_parts",
+        repr(exc))
+
+    image = base64.b64encode(b"x" * 480).decode("ascii")
+    image_part = {"type": "image_url",
+                  "image_url": {"url": f"data:image/png;base64,{image}"}}
+    exc = budget_error(limits, [image_part, image_part, image_part])
+    failures = _check(failures, "image counts are charged cumulatively",
+                      exc is not None
+                      and exc.extra.get("limit_name") == "serve_max_images",
+                      repr(exc))
+
+    byte_limits = orun.InputLimits(max_content_parts=10, max_images=5,
+                                   max_image_bytes=1000)
+    budget = orun.InputBudget(byte_limits)
+    exc = None
+    for _ in range(3):
+        exc = _api_error(orun.resolve_content_parts, [image_part],
+                         where="messages[0].content", budget=budget)
+    failures = _check(failures, "cumulative image bytes are capped",
+                      exc is not None
+                      and exc.extra.get("limit_name") == "serve_max_image_bytes",
+                      repr(exc))
+
+    text_limits = orun.InputLimits(max_message_bytes=1000,
+                                   max_text_bytes=200)
+    budget = orun.InputBudget(text_limits)
+    exc = None
+    for _ in range(3):
+        exc = _api_error(orun.resolve_content_parts, "t" * 80,
+                         where="messages[0].content", budget=budget)
+    failures = _check(failures, "total resolved text is capped across messages",
+                      exc is not None
+                      and exc.extra.get("limit_name") == "serve_max_text_bytes",
+                      repr(exc))
+
+    fetched = []
+
+    def fetch(url, *, max_bytes):
+        fetched.append(url)
+        return b"x" * 10, "image/png"
+
+    exc = _api_error(
+        orun.resolve_content_parts,
+        [text_part, {"type": "image_url",
+                     "image_url": {"url": "http://example.test/x.png"}}],
+        where="messages[0].content",
+        budget=orun.InputBudget(orun.InputLimits(max_content_parts=1)),
+        fetch=fetch)
+    failures = _check(
+        failures, "counts fail before any fetch happens",
+        exc is not None
+        and exc.extra.get("limit_name") == "serve_max_content_parts"
+        and not fetched, f"{exc!r} {fetched}")
+
+    # Both surfaces enforce the same budget from their config.
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _ServeClient(models=["m1"],
+                              capabilities=["completion", "tools"])
+        server, api, store, thread = _start_agent_api(
+            tmp, client, config={"serve_max_messages": 1,
+                                 "serve_max_text_bytes": 5})
+        try:
+            status, _headers, raw = _http(
+                server, "POST", "/v1/chat/completions",
+                body={"model": "m1",
+                      "messages": [{"role": "user", "content": "hi"},
+                                   {"role": "user", "content": "there"}]})
+            error = json.loads(raw)["error"]
+            failures = _check(
+                failures, "the OpenAI surface enforces the config budget",
+                status == 413 and error["code"] == "input_too_large"
+                and error["param"] == "messages",
+                f"{status} {raw[:160]}")
+
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body=_turn_request("too much text"))
+            error = json.loads(raw)["error"]
+            failures = _check(
+                failures, "the agent surface enforces the same budget",
+                status == 413 and error["code"] == "input_too_large"
+                and error["param"] == "messages[0].content",
+                f"{status} {raw[:160]}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
+def test_native_parameters() -> int:
+    """Native option validation: ranges, non-finite, bounds, pass-through."""
+    failures = 0
+    good = {
+        "temperature": 0.7, "top_p": 0.9, "top_k": 40, "seed": -1,
+        "num_predict": -1, "num_ctx": 32768, "stop": ["END"],
+        "use_mmap": True, "mirostat": 2, "repeat_penalty": 1.1,
+        "custom_flag": 5, "custom_list": ["a", 1, True],
+    }
+    try:
+        validated = orun.validate_settings_parameters(good)
+        ok = validated == good
+    except orun.ApiError as exc:
+        ok, validated = False, exc
+    failures = _check(failures, "valid known and unknown options pass",
+                      ok, repr(validated))
+
+    bad = [
+        ({"temperature": 3.0}, "parameters.temperature"),
+        ({"temperature": True}, "parameters.temperature"),
+        ({"temperature": "0.5"}, "parameters.temperature"),
+        ({"top_k": 1.5}, "parameters.top_k"),
+        ({"seed": "1"}, "parameters.seed"),
+        ({"num_ctx": 0}, "parameters.num_ctx"),
+        ({"num_predict": -2}, "parameters.num_predict"),
+        ({"mirostat": 3}, "parameters.mirostat"),
+        ({"mirostat": True}, "parameters.mirostat"),
+        ({"repeat_penalty": 0}, "parameters.repeat_penalty"),
+        ({"use_mmap": "yes"}, "parameters.use_mmap"),
+        ({"stop": [1]}, "parameters.stop"),
+        ({"custom": {"nested": 1}}, "parameters.custom"),
+        ({"custom": [[1]]}, "parameters.custom"),
+        ({"custom": float("nan")}, "parameters.custom"),
+        ({"custom": "x" * 5000}, "parameters.custom"),
+        ({"custom": list(range(65))}, "parameters.custom"),
+        ({" ": 1}, "parameters"),
+    ]
+    invalid = []
+    for parameters, where in bad:
+        exc = _api_error(orun.validate_settings_parameters, parameters,
+                         where="parameters")
+        if exc is None or exc.status != 400 \
+                or exc.code != "unsupported_value" or exc.param != where:
+            invalid.append(f"{parameters!r} -> {exc!r}")
+    failures = _check(failures, "bad option values 400 naming the path",
+                      not invalid, "; ".join(invalid))
+
+    exc = _api_error(orun.validate_settings_parameters,
+                     {"big": "x" * (70 * 1024)}, where="parameters")
+    failures = _check(failures, "an oversized option object is rejected",
+                      exc is not None and exc.status == 400, repr(exc))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _ServeClient(models=["m1"],
+                              capabilities=["completion", "tools"])
+        server, api, store, thread = _start_agent_api(tmp, client)
+        try:
+            status, _headers, raw = _http(
+                server, "POST", "/v1/sessions",
+                body={"model": "m1", "parameters": {"temperature": 3.0}})
+            error = json.loads(raw)["error"]
+            failures = _check(
+                failures, "session create validates parameters",
+                status == 400 and error["code"] == "unsupported_value"
+                and error["param"] == "parameters.temperature",
+                f"{status} {raw[:160]}")
+
+            status, _headers, raw = _http(
+                server, "POST", "/v1/sessions",
+                body={"model": "m1",
+                      "parameters": {"custom": 5, "top_k": 20}})
+            created = json.loads(raw)
+            failures = _check(
+                failures, "unknown options pass through on create",
+                status == 201, f"{status} {raw[:200]}")
+            session_id = created["id"]
+
+            status, _headers, raw = _http(
+                server, "PATCH", f"/v1/sessions/{session_id}",
+                body={"parameters": {"temperature": 0.5}})
+            failures = _check(failures, "PATCH merges validated parameters",
+                              status == 200, f"{status} {raw[:160]}")
+            status, _headers, raw = _http(
+                server, "GET", f"/v1/sessions/{session_id}")
+            stored = json.loads(raw).get("parameters", {})
+            failures = _check(
+                failures, "the merged parameters are persisted",
+                stored.get("temperature") == 0.5 and stored.get("custom") == 5
+                and stored.get("top_k") == 20, str(stored))
+
+            status, _headers, raw = _http(
+                server, "PATCH", f"/v1/sessions/{session_id}",
+                body={"parameters": {"temperature": 9}})
+            error = json.loads(raw)["error"]
+            failures = _check(
+                failures, "PATCH rejects out-of-range parameters",
+                status == 400 and error["param"] == "parameters.temperature",
+                f"{status} {raw[:160]}")
+            status, _headers, raw = _http(
+                server, "GET", f"/v1/sessions/{session_id}")
+            stored = json.loads(raw).get("parameters", {})
+            failures = _check(
+                failures, "a rejected PATCH leaves the session untouched",
+                stored.get("temperature") == 0.5, str(stored))
+
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body=_turn_request("hi",
+                                   settings={"parameters": {"top_k": -1}}))
+            error = json.loads(raw)["error"]
+            failures = _check(
+                failures, "turn settings validate parameters before starting",
+                status == 400
+                and error["param"] == "settings.parameters.top_k",
+                f"{status} {raw[:160]}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
+def test_workspace_jail() -> int:
+    """The API workspace: relative paths resolve under it, escapes refused."""
+    failures = 0
+    registry = orun.default_registry(tts=False)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "root"
+        outside = Path(tmp) / "outside"
+        root.mkdir()
+        outside.mkdir()
+        (root / "inside.txt").write_text("in\n")
+        (root / "sub").mkdir()
+        (outside / "secret.txt").write_text("out\n")
+        (root / "escape").symlink_to(outside)
+
+        api_ctx = orun.ToolContext(cwd=str(root), workspace=str(root),
+                                   timeout=30, max_output=4000)
+        cli_ctx = orun.ToolContext(cwd=str(root), timeout=30, max_output=4000)
+
+        def read(ctx, path):
+            return orun.execute_tool(registry["read_file"], {"path": path}, ctx)
+
+        outcome = read(api_ctx, "inside.txt")
+        failures = _check(failures, "a relative path resolves under the root",
+                          outcome.ok and "in" in outcome.text, outcome.text)
+        for name, probe in [
+            ("a parent-relative path", "../outside/secret.txt"),
+            ("an absolute path outside", str(outside / "secret.txt")),
+            ("a symlinked directory", "escape/secret.txt"),
+            ("a traversal-shaped absolute",
+             str(root / ".." / "outside" / "secret.txt")),
+        ]:
+            outcome = read(api_ctx, probe)
+            failures = _check(
+                failures, f"{name} is refused",
+                not outcome.ok and "outside the workspace" in outcome.text,
+                outcome.text)
+
+        outcome = read(cli_ctx, str(outside / "secret.txt"))
+        failures = _check(failures, "the CLI context keeps its behavior",
+                          outcome.ok, outcome.text)
+
+        write = orun.execute_tool(registry["write_file"],
+                                  {"path": "sub/new.txt", "content": "x"},
+                                  api_ctx)
+        failures = _check(failures, "a write under the root lands there",
+                          write.ok
+                          and (root / "sub" / "new.txt").read_text() == "x",
+                          write.text)
+        write = orun.execute_tool(registry["write_file"],
+                                  {"path": str(outside / "evil.txt"),
+                                   "content": "x"}, api_ctx)
+        failures = _check(failures, "an absolute write outside is refused",
+                          not write.ok and not (outside / "evil.txt").exists(),
+                          write.text)
+
+        move = orun.execute_tool(registry["move_file"],
+                                 {"source": "inside.txt",
+                                  "destination": str(outside / "moved.txt")},
+                                 api_ctx)
+        failures = _check(failures, "a move destination outside is refused",
+                          not move.ok
+                          and not (outside / "moved.txt").exists()
+                          and (root / "inside.txt").exists(), move.text)
+        copy = orun.execute_tool(registry["copy_file"],
+                                 {"source": str(outside / "secret.txt"),
+                                  "destination": "copied.txt"}, api_ctx)
+        failures = _check(failures, "a copy source outside is refused",
+                          not copy.ok and not (root / "copied.txt").exists(),
+                          copy.text)
+
+        mkdir = orun.execute_tool(registry["make_dir"], {"path": "made"},
+                                  api_ctx)
+        failures = _check(failures, "make_dir resolves under the root",
+                          mkdir.ok and (root / "made").is_dir(), mkdir.text)
+        mkdir = orun.execute_tool(registry["make_dir"],
+                                  {"path": str(outside / "made")}, api_ctx)
+        failures = _check(failures, "make_dir outside is refused",
+                          not mkdir.ok and not (outside / "made").exists(),
+                          mkdir.text)
+
+        delete = orun.execute_tool(registry["delete_file"],
+                                   {"path": str(outside / "secret.txt")},
+                                   api_ctx)
+        failures = _check(failures, "delete_file outside is refused",
+                          not delete.ok and (outside / "secret.txt").exists(),
+                          delete.text)
+
+        shell = orun.execute_tool(registry["run_shell"],
+                                  {"command": "pwd", "cwd": "sub"}, api_ctx)
+        failures = _check(failures, "run_shell resolves a relative cwd",
+                          shell.ok and str(root / "sub") in shell.text,
+                          shell.text)
+        shell = orun.execute_tool(registry["run_shell"],
+                                  {"command": "pwd", "cwd": str(outside)},
+                                  api_ctx)
+        failures = _check(failures, "run_shell refuses an outside cwd",
+                          not shell.ok and "outside the workspace" in shell.text,
+                          shell.text)
+    return failures
+
+
+def test_artifact_root_containment() -> int:
+    """A symlinked dir under the root never redirects a read or a sweep."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "artifacts"
+        outside = Path(tmp) / "outside"
+        (outside / "uploads").mkdir(parents=True)
+        store = orun.ArtifactStore(root, ttl=0.01)
+        ref = store.register(b"payload", filename="a.txt",
+                             media_type="text/plain")
+        stored = store.read(ref.id)
+        failures = _check(failures, "a normal artifact reads back",
+                          stored is not None and stored[1] == b"payload",
+                          repr(stored))
+
+        # Replace the storage directory with a symlink out of the root and
+        # move the stored bytes behind it: the resolved entry escapes.
+        uploads = root / "uploads"
+        target = outside / "uploads"
+        (uploads / ref.id).rename(target / ref.id)
+        uploads.rmdir()
+        uploads.symlink_to(target)
+
+        failures = _check(failures, "resolve refuses the escaping entry",
+                          store.resolve(ref.id) is None,
+                          "resolve returned a ref")
+        failures = _check(failures, "read refuses the escaping entry",
+                          store.read(ref.id) is None,
+                          "read returned bytes")
+        time.sleep(0.03)
+        store.sweep()
+        failures = _check(
+            failures, "the sweep drops the entry without chasing it outside",
+            store.resolve(ref.id) is None and (target / ref.id).exists(),
+            f"outside file present: {(target / ref.id).exists()}")
+    return failures
+
+
+def test_serve_model_gate() -> int:
+    """`serve_models` is one API-wide allowlist with tag-aware matching."""
+    failures = 0
+    patterns = ["m1", "qwen3*"]
+    for model, expected in [("m1", True), ("m1:latest", True),
+                            ("m1:8b", False), ("qwen3", True),
+                            ("qwen3:8b", True), ("other", False), ("", False)]:
+        got = orun.model_allowed(model, patterns)
+        failures = _check(failures, f"model_allowed({model!r}) is {expected}",
+                          got is expected, str(got))
+    failures = _check(failures, "an empty allowlist serves everything",
+                      orun.model_allowed("anything", [])
+                      and orun.model_allowed("anything", None), "")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _ServeClient(models=["m1", "other"],
+                              capabilities=["completion", "tools"])
+        server, api, store, thread = _start_agent_api(
+            tmp, client, config={"serve_models": ["m1"]})
+        try:
+            status, _headers, raw = _http(server, "GET", "/v1/models")
+            listed = [item["id"] for item in json.loads(raw)["data"]]
+            failures = _check(failures, "the list filters to the allowlist",
+                              status == 200 and listed == ["m1"], str(listed))
+
+            for name, method, path, body in [
+                ("lookup", "GET", "/v1/models/other", None),
+                ("chat", "POST", "/v1/chat/completions",
+                 {"model": "other",
+                  "messages": [{"role": "user", "content": "hi"}]}),
+                ("session create", "POST", "/v1/sessions",
+                 {"model": "other"}),
+                ("fit", "POST", "/v1/agent/fit",
+                 {"model": "other", "mode": "gpu"}),
+            ]:
+                status, _headers, raw = _http(server, method, path, body=body)
+                failures = _check(
+                    failures, f"a forbidden model is 404 on {name}",
+                    status == 404
+                    and json.loads(raw)["error"]["code"] == "model_not_found",
+                    f"{status} {raw[:140]}")
+
+            stored = orun.Session.create("other", "")
+            store.save(stored)
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body={"session_id": stored.id,
+                      "messages": [{"role": "user", "content": "hi"}]})
+            failures = _check(
+                failures, "a stored session with a forbidden model is a 404",
+                status == 404
+                and json.loads(raw)["error"]["code"] == "model_not_found",
+                f"{status} {raw[:140]}")
+
+            status, _headers, raw = _http(server, "POST", "/v1/sessions",
+                                          body={"model": "m1"})
+            session_id = json.loads(raw)["id"]
+            status, _headers, raw = _http(
+                server, "PATCH", f"/v1/sessions/{session_id}",
+                body={"model": "other"})
+            failures = _check(
+                failures, "a forbidden model is 404 on model PATCH",
+                status == 404, f"{status} {raw[:140]}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
+def test_serve_agent_switch() -> int:
+    """serve_agent=false keeps inference and artifacts, drops agent routes."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        artifact_store = orun.ArtifactStore(Path(tmp) / "artifacts")
+        client = _ServeClient(models=["m1"], capabilities=["completion"])
+        server, api, store, thread = _start_agent_api(
+            tmp, client, artifacts=artifact_store, agent_routes=False)
+        try:
+            status, _headers, raw = _http(server, "GET", "/v1/models")
+            ok_models = status == 200 \
+                and json.loads(raw)["data"][0]["id"] == "m1"
+            status, _headers, raw = _http(
+                server, "POST", "/v1/chat/completions",
+                body={"model": "m1",
+                      "messages": [{"role": "user", "content": "hi"}]})
+            ok_chat = status == 200
+            data = base64.b64encode(b"hello").decode()
+            status, _headers, raw = _http(
+                server, "POST", "/v1/files",
+                body={"filename": "a.txt", "media_type": "text/plain",
+                      "data_base64": data})
+            ref = json.loads(raw)
+            ok_upload = status == 201
+            status, _headers, raw = _http(server, "GET",
+                                          f"/v1/artifacts/{ref['id']}")
+            ok_download = status == 200 and raw == b"hello"
+            failures = _check(
+                failures, "inference and artifacts stay available",
+                ok_models and ok_chat and ok_upload and ok_download,
+                f"{ok_models} {ok_chat} {ok_upload} {ok_download}")
+
+            for method, path, body in [
+                ("GET", "/v1/sessions", None),
+                ("POST", "/v1/agent/turns",
+                 {"model": "m1",
+                  "messages": [{"role": "user", "content": "hi"}]}),
+                ("POST", "/v1/agent/fit", {"model": "m1", "mode": "gpu"}),
+            ]:
+                status, _headers, raw = _http(server, method, path, body=body)
+                failures = _check(failures, f"{method} {path} is a 404",
+                                  status == 404, f"{status} {raw[:140]}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
+def test_serve_shutdown() -> int:
+    """begin_shutdown refuses new work; drain is bounded; sessions persist."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        shell = f"touch {Path(tmp) / 'never.txt'}"
+        client = _ServeClient(models=["m1"], capabilities=["completion", "tools"],
+                              chat_script=[
+                                  [{"message": {"content": "", "tool_calls": [
+                                      {"function": {"name": "run_shell",
+                                                    "arguments": {
+                                                        "command": shell}}}]}},
+                                   {"done": True}],
+                                  [{"message": {"content": "ok"}, "done": True}],
+                              ])
+        server, api, store, thread = _start_agent_api(
+            tmp, client, manager=orun.TurnManager())
+        try:
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body=_turn_request("shut down",
+                                   settings={"approval": "interactive"}))
+            turn = json.loads(raw)
+            _poll_turn(server, turn["id"], until={"waiting_approval"})
+
+            api.begin_shutdown()
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns", body=_turn_request("later"))
+            failures = _check(
+                failures, "begin_shutdown refuses a new turn with 503",
+                status == 503
+                and json.loads(raw)["error"]["code"] == "server_shutting_down",
+                f"{status} {raw[:140]}")
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/fits",
+                body={"model": "m1", "mode": "gpu"})
+            failures = _check(
+                failures, "begin_shutdown refuses a new fit with 503",
+                status == 503, f"{status} {raw[:140]}")
+
+            started = time.monotonic()
+            api.shutdown(timeout=3)
+            elapsed = time.monotonic() - started
+            snapshot = api.manager.get(turn["id"])
+            failures = _check(failures, "shutdown cancels the parked turn",
+                              elapsed < 4.0 and snapshot is not None
+                              and snapshot.status == "cancelled",
+                              f"{elapsed:.2f}s {snapshot}")
+
+            events = _headless_events(api, turn["id"])
+            resolved = [event.data for event in events
+                        if event.type == "approval.resolved"]
+            failures = _check(
+                failures, "the parked approval resolved as cancelled",
+                resolved and resolved[0].get("note")
+                == "cancelled (server shutting down)", str(resolved[:1]))
+
+            session_id = snapshot.session_id if snapshot else ""
+            stored = store.resolve(session_id)
+            contents = [message.get("content") for message in
+                        (stored.messages if stored else [])]
+            failures = _check(
+                failures, "the cancelled turn's session is on disk",
+                stored is not None and "shut down" in contents
+                and "ok" not in contents, str(contents)[:200])
+            failures = _check(failures, "the drain sees no stray handlers",
+                              server.drain(2) is True,
+                              f"{server.active_handlers}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
+def test_serve_unload_on_exit() -> int:
+    """Only the models this server used are unloaded; embeddings stay."""
+    failures = 0
+
+    class _UnloadClient:
+        def __init__(self):
+            self.capabilities_map = {"m1": ["completion"],
+                                     "embed": ["embedding"]}
+            self.resident = {"m1", "embed", "untouched"}
+            self.unloaded = []
+
+        def capabilities(self, model):
+            return list(self.capabilities_map.get(model, []))
+
+        def is_resident(self, model):
+            return model in self.resident
+
+        def unload(self, model):
+            self.unloaded.append(model)
+
+    import ollamarun_lib.cli as cli
+    fake = _UnloadClient()
+    tracker = orun.ModelTracker()
+    tracker.note("m1")
+    tracker.note("m1")  # deduped
+    tracker.note("embed")
+    tracker.note("m2")  # not resident
+    tracker.note("")
+    failures = _check(failures, "the tracker dedupes and keeps order",
+                      tracker.models() == ["embed", "m1", "m2"],
+                      str(tracker.models()))
+    cli._unload_served_models(lambda: fake, tracker)
+    failures = _check(
+        failures, "unload-on-exit touches only used, resident, non-embedding",
+        fake.unloaded == ["m1"], str(fake.unloaded))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # Both surfaces note what they actually used.
+        tracker = orun.ModelTracker()
+        client = _ServeClient(models=["m1"], capabilities=["completion", "tools"])
+        server, api, store, thread = _start_agent_api(tmp, client,
+                                                      tracker=tracker)
+        try:
+            status, _headers, raw = _http(
+                server, "POST", "/v1/chat/completions",
+                body={"model": "m1",
+                      "messages": [{"role": "user", "content": "hi"}]})
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body=_turn_request("hi"))
+            turn = json.loads(raw)
+            _poll_turn(server, turn["id"])
+            failures = _check(failures, "chat and turns note their model",
+                              tracker.models() == ["m1"],
+                              str(tracker.models()))
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
 def test_serve_cli() -> int:
     """The `serve` subcommand: parser, config defaults and dispatch."""
     failures = 0
@@ -11434,7 +12402,8 @@ def test_serve_live() -> int:
 
 
 def _start_agent_api(tmp, client, *, config_extra=None, manager=None,
-                     store=None, args_extra=(), config=None, artifacts=None):
+                     store=None, args_extra=(), config=None, artifacts=None,
+                     agent_routes=True, tracker=None):
     """An API server with the native agent routes over a fake backend."""
     if store is None:
         store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
@@ -11445,10 +12414,16 @@ def _start_agent_api(tmp, client, *, config_extra=None, manager=None,
     settings.update(config_extra or {})
     args = orun.build_parser().parse_args(
         ["m1", "--render", "plain", "--no-save", *args_extra])
-    router = orun.build_router(lambda: client, config=settings)
-    api = orun.add_agent_routes(router, args=args, config=settings,
-                                store=store, client_factory=lambda: client,
-                                manager=manager, artifacts=artifacts)
+    router = orun.build_router(lambda: client, config=settings,
+                               tracker=tracker)
+    api = orun.build_agent_api(args=args, config=settings, store=store,
+                               client_factory=lambda: client,
+                               manager=manager,
+                               cwd=settings.get("serve_workspace"),
+                               artifacts=artifacts, tracker=tracker)
+    orun.add_artifact_routes(router, api)
+    if agent_routes:
+        orun.add_agent_routes(router, api)
     server = orun.HttpServer(router, bind="127.0.0.1", port=0, ping_interval=0.2)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -12421,6 +13396,16 @@ if __name__ == "__main__":
              + test_openai_mapping() + test_serve_http()
              + test_serve_disconnect() + test_serve_sockets()
              + test_serve_cache_concurrency()
+             + test_serve_config_matrix()
+             + test_chunked_bodies()
+             + test_input_limits()
+             + test_native_parameters()
+             + test_workspace_jail()
+             + test_artifact_root_containment()
+             + test_serve_model_gate()
+             + test_serve_agent_switch()
+             + test_serve_shutdown()
+             + test_serve_unload_on_exit()
              + test_serve_cli()
              + test_openai_sdk()
              + test_agent_turn_lifecycle() + test_agent_turn_controls()

@@ -4,8 +4,10 @@ the `CancelToken` the UI threads use to stop a running turn.
 from __future__ import annotations
 
 import difflib
+import fnmatch
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -21,10 +23,26 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .constants import (
+    ARTIFACTS_DIR,
     CONFIG_PATH,
+    DEFAULT_ARTIFACT_MAX_BYTES,
+    DEFAULT_ARTIFACT_QUOTA_BYTES,
+    DEFAULT_ARTIFACT_TTL,
     DEFAULT_CONFIG,
     DEFAULT_HOST,
     DEFAULT_PORT,
+    DEFAULT_SERVE_BIND,
+    DEFAULT_SERVE_BODY_LIMIT,
+    DEFAULT_SERVE_MAX_CONTENT_PARTS,
+    DEFAULT_SERVE_MAX_IMAGE_BYTES,
+    DEFAULT_SERVE_MAX_IMAGES,
+    DEFAULT_SERVE_MAX_MESSAGES,
+    DEFAULT_SERVE_MAX_MESSAGE_BYTES,
+    DEFAULT_SERVE_MAX_TEXT_BYTES,
+    DEFAULT_SERVE_PING_INTERVAL,
+    DEFAULT_SERVE_PORT,
+    DEFAULT_SERVE_REQUEST_TIMEOUT,
+    DEFAULT_SERVE_SHUTDOWN_TIMEOUT,
     LOG_PATH,
     REMOTE_NODES,
     VERSION,
@@ -96,6 +114,31 @@ class CancelToken:
 
 class CommandCancelled(RuntimeError):
     """The user cancelled the turn while this command was running."""
+
+
+class ModelTracker:
+    """The distinct models one `serve` process actually used.
+
+    Unload-on-exit reads this: only models this server touched are
+    unloaded, so a parallel CLI session's model is never evicted.
+    Embedding models are also skipped by the caller (they stay resident by
+    house rule). Thread-safe: both API surfaces note from their workers.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._models: set[str] = set()
+
+    def note(self, model: str) -> None:
+        name = str(model or "").strip()
+        if not name:
+            return
+        with self._lock:
+            self._models.add(name)
+
+    def models(self) -> list[str]:
+        with self._lock:
+            return sorted(self._models)
 
 
 def _kill_process_group(proc: subprocess.Popen) -> None:
@@ -648,6 +691,31 @@ def canonical_model_name(name: str) -> str:
     return name
 
 
+_GLOB_CHARS_RE = re.compile(r"[*?\[]")
+
+
+def model_allowed(model: str, patterns: Optional[list[str]]) -> bool:
+    """Whether `model` is served under an optional `serve_models` allowlist.
+
+    Empty/unset means every model. A literal pattern is tag-normalized so a
+    bare `qwen3` matches `qwen3:latest`; a glob pattern (`*`, `?`, `[...]`)
+    matches the canonical model name as written. Used everywhere a model is
+    selected, listed or used, so the list is one API-wide policy.
+    """
+    if not patterns:
+        return True
+    candidate = canonical_model_name(model)
+    for pattern in patterns:
+        text = str(pattern or "").strip()
+        if not text:
+            continue
+        if not _GLOB_CHARS_RE.search(text):
+            text = canonical_model_name(text)
+        if fnmatch.fnmatchcase(candidate, text):
+            return True
+    return False
+
+
 def human_bytes(num: Optional[float]) -> str:
     if not num:
         return "?"
@@ -762,6 +830,168 @@ def load_config(path: Optional[Path] = None) -> dict[str, Any]:
         except OSError:
             pass
     return config
+
+
+def _serve_int(config: dict[str, Any], key: str, default: Any, *,
+               minimum: Optional[int] = None,
+               maximum: Optional[int] = None) -> int:
+    """One `serve_*` integer setting: omitted means the default."""
+    value = config.get(key)
+    if value is None:
+        value = default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{key} must be an integer")
+    if minimum is not None and value < minimum:
+        raise ValueError(f"{key} must be >= {minimum}")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"{key} must be <= {maximum}")
+    return value
+
+
+def _serve_float(config: dict[str, Any], key: str, default: Any, *,
+                 minimum: Optional[float] = None,
+                 exclusive_minimum: bool = False) -> float:
+    """One `serve_*` numeric setting; NaN/inf are never valid."""
+    value = config.get(key)
+    if value is None:
+        value = default
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{key} must be a number")
+    value = float(value)
+    if not math.isfinite(value):
+        raise ValueError(f"{key} must be a finite number")
+    if minimum is not None:
+        if exclusive_minimum and value <= minimum:
+            raise ValueError(f"{key} must be > {minimum:g}")
+        if not exclusive_minimum and value < minimum:
+            raise ValueError(f"{key} must be >= {minimum:g}")
+    return value
+
+
+def _serve_bool(config: dict[str, Any], key: str, default: bool) -> bool:
+    """One `serve_*` boolean setting: a JSON boolean, never a truthy string."""
+    value = config.get(key)
+    if value is None:
+        value = default
+    if not isinstance(value, bool):
+        raise ValueError(f"{key} must be true or false")
+    return value
+
+
+def serve_settings(config: Optional[dict[str, Any]] = None, *,
+                   bind: Optional[str] = None,
+                   port: Optional[int] = None) -> dict[str, Any]:
+    """Validated `ollamarun serve` configuration.
+
+    Returns a copy of `config` with every `serve_*` key defaulted,
+    type-checked and range-checked; raises `ValueError` naming the
+    offending key so `serve_main()` can print it and exit 2. The CLI
+    `--bind`/`--port` overrides win over the config file.
+
+    The rule throughout: an omitted (`null`) key uses the default, a
+    provided value is validated — a zero is legal only where the setting
+    defines one (`*_timeout` disables, `*_ttl` keeps forever, the artifact
+    caps mean unlimited); capacity caps are rejected below their minimum.
+    """
+    out = dict(config or {})
+    if bind is not None:
+        out["serve_bind"] = bind
+    if port is not None:
+        out["serve_port"] = port
+
+    raw_bind = out.get("serve_bind")
+    if raw_bind is None:
+        raw_bind = DEFAULT_SERVE_BIND
+    if not isinstance(raw_bind, str) or not raw_bind.strip():
+        raise ValueError("serve_bind must be a non-empty string")
+    out["serve_bind"] = raw_bind.strip()
+    out["serve_port"] = _serve_int(out, "serve_port", DEFAULT_SERVE_PORT,
+                                   minimum=0, maximum=65535)
+    out["serve_agent"] = _serve_bool(out, "serve_agent", True)
+
+    models = out.get("serve_models")
+    if models is None:
+        models = []
+    if not isinstance(models, list) or any(
+            not isinstance(item, str) or not item.strip() for item in models):
+        raise ValueError("serve_models must be a list of non-empty strings")
+    out["serve_models"] = [item.strip() for item in models]
+
+    workspace = out.get("serve_workspace")
+    if workspace in (None, ""):
+        out["serve_workspace"] = None  # the startup cwd, resolved by the API
+    else:
+        if not isinstance(workspace, str):
+            raise ValueError("serve_workspace must be a directory path")
+        path = Path(workspace).expanduser()
+        if not path.is_dir():
+            raise ValueError(f"serve_workspace is not a directory: {workspace}")
+        out["serve_workspace"] = str(path.resolve())
+
+    out["serve_body_limit"] = _serve_int(out, "serve_body_limit",
+                                         DEFAULT_SERVE_BODY_LIMIT,
+                                         minimum=1024)
+    out["serve_request_timeout"] = _serve_float(
+        out, "serve_request_timeout", DEFAULT_SERVE_REQUEST_TIMEOUT,
+        minimum=0.0, exclusive_minimum=True)
+    out["serve_sse_ping_interval"] = _serve_float(
+        out, "serve_sse_ping_interval", DEFAULT_SERVE_PING_INTERVAL,
+        minimum=0.0, exclusive_minimum=True)
+    out["serve_shutdown_timeout"] = _serve_float(
+        out, "serve_shutdown_timeout", DEFAULT_SERVE_SHUTDOWN_TIMEOUT,
+        minimum=0.0, exclusive_minimum=True)
+    out["serve_unload_on_exit"] = _serve_bool(out, "serve_unload_on_exit", True)
+    out["serve_max_messages"] = _serve_int(
+        out, "serve_max_messages", DEFAULT_SERVE_MAX_MESSAGES, minimum=1)
+    out["serve_max_content_parts"] = _serve_int(
+        out, "serve_max_content_parts", DEFAULT_SERVE_MAX_CONTENT_PARTS,
+        minimum=1)
+    out["serve_max_message_bytes"] = _serve_int(
+        out, "serve_max_message_bytes", DEFAULT_SERVE_MAX_MESSAGE_BYTES,
+        minimum=1)
+    out["serve_max_text_bytes"] = _serve_int(
+        out, "serve_max_text_bytes", DEFAULT_SERVE_MAX_TEXT_BYTES, minimum=1)
+    out["serve_max_images"] = _serve_int(
+        out, "serve_max_images", DEFAULT_SERVE_MAX_IMAGES, minimum=1)
+    out["serve_max_image_bytes"] = _serve_int(
+        out, "serve_max_image_bytes", DEFAULT_SERVE_MAX_IMAGE_BYTES, minimum=1)
+
+    out["serve_max_active_turns"] = _serve_int(
+        out, "serve_max_active_turns", 4, minimum=1)
+    out["serve_turn_event_buffer"] = _serve_int(
+        out, "serve_turn_event_buffer", 10000, minimum=1)
+    out["serve_turn_event_ttl"] = _serve_float(
+        out, "serve_turn_event_ttl", 86400.0, minimum=0.0)
+    out["serve_approval_timeout"] = _serve_float(
+        out, "serve_approval_timeout", 300.0, minimum=0.0)
+    out["serve_turn_timeout"] = _serve_float(
+        out, "serve_turn_timeout", 0.0, minimum=0.0)
+
+    root = out.get("serve_artifact_root")
+    if root is None:
+        root = str(ARTIFACTS_DIR)
+    if not isinstance(root, str) or not root.strip():
+        raise ValueError("serve_artifact_root must be a directory path")
+    out["serve_artifact_root"] = root.strip()
+    out["serve_artifact_max_bytes"] = _serve_int(
+        out, "serve_artifact_max_bytes", DEFAULT_ARTIFACT_MAX_BYTES, minimum=0)
+    out["serve_artifact_quota_bytes"] = _serve_int(
+        out, "serve_artifact_quota_bytes", DEFAULT_ARTIFACT_QUOTA_BYTES,
+        minimum=0)
+    out["serve_artifact_ttl"] = _serve_float(
+        out, "serve_artifact_ttl", float(DEFAULT_ARTIFACT_TTL), minimum=0.0)
+
+    fit = out.get("serve_fit")
+    if fit is None:
+        fit = "probe"
+    if fit not in ("off", "estimate", "probe"):
+        raise ValueError('serve_fit must be "off", "estimate" or "probe"')
+    out["serve_fit"] = fit
+    out["serve_max_active_fits"] = _serve_int(
+        out, "serve_max_active_fits", 2, minimum=1)
+    out["serve_fit_ttl"] = _serve_float(
+        out, "serve_fit_ttl", 86400.0, minimum=0.0)
+    return out
 
 
 def resolve_show_stats(verbose: bool, config_value: Any, is_terminal: bool) -> bool:

@@ -189,6 +189,11 @@ class FitService:
         job.done.wait(timeout)
         return job
 
+    def begin_shutdown(self) -> None:
+        """Refuse new fit jobs; cancelling and joining come after."""
+        with self._lock:
+            self._closed = True
+
     def shutdown(self, *, cancel: bool = True, timeout: float = 5.0) -> None:
         """Stop accepting, cancel active jobs and join them briefly."""
         with self._lock:

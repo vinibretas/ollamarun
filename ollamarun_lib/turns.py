@@ -562,14 +562,17 @@ class TurnManager:
 
     def _sweep_locked(self, now: float) -> int:
         dropped = 0
-        for turn_id, record in list(self._records.items()):
-            if not record.worker_done or record.finished_at is None:
-                continue
-            if now - record.finished_at < self.completed_ttl:
-                continue
-            self._records.pop(turn_id, None)
-            self._expired[turn_id] = _Expired(status=record.status, at=now)
-            dropped += 1
+        # `completed_ttl: 0` keeps completed records forever (the same zero
+        # convention as the artifact and fit TTLs).
+        if self.completed_ttl > 0:
+            for turn_id, record in list(self._records.items()):
+                if not record.worker_done or record.finished_at is None:
+                    continue
+                if now - record.finished_at < self.completed_ttl:
+                    continue
+                self._records.pop(turn_id, None)
+                self._expired[turn_id] = _Expired(status=record.status, at=now)
+                dropped += 1
         horizon = now - self.expired_ttl
         for turn_id, expired in list(self._expired.items()):
             if expired.at < horizon:
@@ -590,6 +593,17 @@ class TurnManager:
 
     def cancel(self, turn_id: str) -> bool:
         return self._request_cancel(turn_id)
+
+    def begin_shutdown(self) -> None:
+        """Refuse new submissions; cancelling and joining come after.
+
+        Splitting the flag from the join lets a server stop new background
+        work *before* it resolves in-flight requests, so a handler racing
+        shutdown cannot start a turn that the join would already have
+        passed by.
+        """
+        with self._lock:
+            self._closed = True
 
     def shutdown(self, *, cancel: bool = True, timeout: float = 10.0) -> None:
         """Cancel active turns, wait for workers, refuse new submissions."""

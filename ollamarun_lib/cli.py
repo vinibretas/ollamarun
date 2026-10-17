@@ -12,18 +12,14 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from rich.markup import escape
 
 from .artifacts import ArtifactStore
 from .client import OllamaClient, OllamaError
 from .constants import (
-    ARTIFACTS_DIR,
     CONFIG_PATH,
-    DEFAULT_ARTIFACT_MAX_BYTES,
-    DEFAULT_ARTIFACT_QUOTA_BYTES,
-    DEFAULT_ARTIFACT_TTL,
     DEFAULT_HOST,
     DEFAULT_SERVE_BIND,
     DEFAULT_SERVE_PORT,
@@ -40,6 +36,7 @@ from .constants import (
 )
 from .emit import cli_delete, cli_export, cli_list, cli_search, cli_show
 from .helpers import (
+    ModelTracker,
     is_local_host,
     load_config,
     parse_bool,
@@ -48,12 +45,14 @@ from .helpers import (
     parse_think,
     remote_node,
     resolve_remote,
+    serve_settings,
     setup_logging,
     shortcut,
     tailscale_peer_state,
 )
 from .images import encode_image
-from .agent_api import add_agent_routes
+from .agent_api import (add_agent_routes, add_artifact_routes,
+                        build_agent_api)
 from .openai_api import build_router
 from .server import HttpServer, run_forever
 from .ctxfit import (
@@ -391,8 +390,10 @@ security:
   the port to the public internet. The listener (--bind/--port) is separate
   from the upstream Ollama address (--host/--remote).
 
-config: ~/etc/config_files/ollamarun.json (serve_bind, serve_port); the
-        startup banner prints the bound address, upstream and the warning.
+config: ~/etc/config_files/ollamarun.json — the validated serve_* matrix
+        (bind, port, body/input limits, timeouts, serve_agent, serve_models,
+        serve_workspace, artifact and fit keys; see the README). The startup
+        banner prints the bound address, upstream and the warning.
 """
     parser = argparse.ArgumentParser(
         prog="ollamarun serve",
@@ -417,6 +418,9 @@ config: ~/etc/config_files/ollamarun.json (serve_bind, serve_port); the
                         help=f"upstream request timeout (default: {DEFAULT_TIMEOUT})")
     parser.add_argument("--insecure", action="store_true",
                         help="skip TLS verification for the upstream")
+    parser.add_argument("--keep-loaded", action="store_true",
+                        help="do not unload the models this server used when "
+                             "it stops (overrides serve_unload_on_exit)")
     parser.add_argument("--config", metavar="FILE",
                         help=f"config file (default: {CONFIG_PATH})")
     parser.add_argument("--debug", action="store_true",
@@ -424,6 +428,36 @@ config: ~/etc/config_files/ollamarun.json (serve_bind, serve_port); the
     parser.add_argument("--version", action="version",
                         version=f"%(prog)s {VERSION}")
     return parser
+
+
+def _unload_served_models(client_factory: Callable[[], OllamaClient],
+                          tracker: ModelTracker) -> None:
+    """Unload the models this serve process used (best effort, never raises).
+
+    Embedding models stay resident (house rule) and only tracked models are
+    touched, so a parallel CLI session's model is never evicted.
+    """
+    models = tracker.models()
+    if not models:
+        return
+    try:
+        client = client_factory()
+    except (OllamaError, TypeError, ValueError):  # pragma: no cover - defensive
+        return
+    unloaded: list[str] = []
+    for model in models:
+        try:
+            if "embedding" in client.capabilities(model):
+                continue
+            if client.is_resident(model):
+                client.unload(model)
+                unloaded.append(model)
+        except (OllamaError, TypeError, ValueError):
+            continue
+    if unloaded:
+        console.print("[dim]unloaded " + ", ".join(escape(name)
+                                                   for name in unloaded)
+                      + " (--keep-loaded keeps them)[/dim]")
 
 
 def serve_main(argv: Optional[list[str]] = None) -> int:
@@ -454,33 +488,21 @@ def serve_main(argv: Optional[list[str]] = None) -> int:
                                             quiet=not console.is_terminal):
         return 1
 
-    bind = str(args.bind or config.get("serve_bind") or DEFAULT_SERVE_BIND)
     try:
-        port = args.port if args.port is not None else int(config.get("serve_port")
-                                                           or DEFAULT_SERVE_PORT)
-    except (TypeError, ValueError):
-        console.print("[err]serve_port in the config must be a number[/err]")
+        settings = serve_settings(config, bind=args.bind, port=args.port)
+    except ValueError as exc:
+        console.print(f"[err]{escape(str(exc))}[/err]")
         return 2
-    if not 0 <= port <= 65535:
-        console.print("[err]--port must be between 0 and 65535[/err]")
-        return 2
+    if args.keep_loaded:
+        settings["serve_unload_on_exit"] = False
+    bind = settings["serve_bind"]
+    port = settings["serve_port"]
 
-    def _artifact_number(key: str, default: Any, cast: Any) -> Any:
-        raw = config.get(key)
-        return cast(default if raw is None else raw)
-
-    try:
-        artifact_store = ArtifactStore(
-            Path(str(config.get("serve_artifact_root") or ARTIFACTS_DIR)),
-            max_bytes=_artifact_number("serve_artifact_max_bytes",
-                                       DEFAULT_ARTIFACT_MAX_BYTES, int),
-            quota_bytes=_artifact_number("serve_artifact_quota_bytes",
-                                         DEFAULT_ARTIFACT_QUOTA_BYTES, int),
-            ttl=_artifact_number("serve_artifact_ttl",
-                                 DEFAULT_ARTIFACT_TTL, float))
-    except (TypeError, ValueError):
-        console.print("[err]serve_artifact_* config values must be numbers[/err]")
-        return 2
+    artifact_store = ArtifactStore(
+        Path(settings["serve_artifact_root"]),
+        max_bytes=settings["serve_artifact_max_bytes"],
+        quota_bytes=settings["serve_artifact_quota_bytes"],
+        ttl=settings["serve_artifact_ttl"])
     try:
         artifact_store.sweep()
     except OSError:
@@ -489,15 +511,23 @@ def serve_main(argv: Optional[list[str]] = None) -> int:
     def client_factory() -> OllamaClient:
         return OllamaClient(host, insecure=args.insecure, timeout=timeout)
 
-    router = build_router(client_factory, config=config, timeout=timeout,
-                          keepalive=config.get("keepalive"),
-                          artifacts=artifact_store)
-    agent_api = add_agent_routes(
-        router, args=build_parser().parse_args([]), config=config,
+    tracker = ModelTracker()
+    router = build_router(client_factory, config=settings, timeout=timeout,
+                          keepalive=settings.get("keepalive"),
+                          artifacts=artifact_store, tracker=tracker)
+    agent_api = build_agent_api(
+        args=build_parser().parse_args([]), config=settings,
         store=SessionStore(), client_factory=client_factory,
-        artifacts=artifact_store)
+        cwd=settings["serve_workspace"], artifacts=artifact_store,
+        tracker=tracker)
+    add_artifact_routes(router, agent_api)
+    if settings["serve_agent"]:
+        add_agent_routes(router, agent_api)
     try:
-        server = HttpServer(router, bind=bind, port=port)
+        server = HttpServer(router, bind=bind, port=port,
+                            body_limit=settings["serve_body_limit"],
+                            request_timeout=settings["serve_request_timeout"],
+                            ping_interval=settings["serve_sse_ping_interval"])
     except OSError as exc:
         console.print(f"[err]cannot listen on {escape(bind)}:{port}: "
                       f"{escape(str(exc))}[/err]")
@@ -511,16 +541,39 @@ def serve_main(argv: Optional[list[str]] = None) -> int:
     console.print(f"  listening [ok]http://{escape(bound_host)}:{bound_port}[/ok]"
                   f"[dim]{scope}[/dim]")
     console.print(f"  upstream  [dim]{escape(client.base)}[/dim]")
-    console.print("[dim]  models /v1/models · chat /v1/chat/completions · "
-                  "agent turns /v1/agent/turns · sessions /v1/sessions[/dim]")
+    workspace = settings["serve_workspace"] or os.getcwd()
+    console.print(f"  workspace [dim]{escape(workspace)}[/dim]")
+    if settings["serve_agent"]:
+        console.print("[dim]  models /v1/models · chat /v1/chat/completions · "
+                      "agent turns /v1/agent/turns · sessions /v1/sessions"
+                      "[/dim]")
+    else:
+        console.print("[dim]  models /v1/models · chat /v1/chat/completions · "
+                      "files /v1/files (agent routes disabled)[/dim]")
     console.print("[warn]trusted-network-only: no authentication — never expose "
                   "this port to the internet[/warn]")
-    console.print("[dim]Ctrl-C stops the server (active turns are cancelled)[/dim]")
+    if settings["serve_unload_on_exit"]:
+        console.print("[dim]Ctrl-C stops the server (active turns are cancelled; "
+                      "the models this server used are unloaded)[/dim]")
+    else:
+        console.print("[dim]Ctrl-C stops the server (active turns are cancelled; "
+                      "loaded models are kept)[/dim]")
+    shutdown_timeout = settings["serve_shutdown_timeout"]
     try:
         run_forever(server)
     finally:
+        # Shutdown order: the listener stopped accepting inside run_forever;
+        # refuse new background work (racing handlers answer 503), resolve
+        # approvals and cancel/join turns and fits, drain in-flight HTTP
+        # handlers (bounded), optionally unload the tracked models, close.
+        agent_api.begin_shutdown()
+        agent_api.shutdown(timeout=shutdown_timeout)
+        if not server.drain(shutdown_timeout):
+            console.print("[dim]shutdown deadline reached; in-flight "
+                          "connections were dropped[/dim]")
+        if settings["serve_unload_on_exit"]:
+            _unload_served_models(client_factory, tracker)
         server.close()
-        agent_api.shutdown()
     console.print("[dim]stopped[/dim]")
     return 0
 

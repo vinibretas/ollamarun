@@ -195,6 +195,12 @@ ToolCancelled = CommandCancelled
 class ToolContext:
     """Runtime settings shared by every handler of one session."""
     cwd: str = "."
+    #: The API workspace root (`ollamarun serve`). When set, path arguments
+    #: resolve under it and escapes (symlinks followed) are refused; the
+    #: CLI leaves it None and keeps its previous behavior. This governs
+    #: path arguments and default working directories — it is never a
+    #: claim that a subprocess can only reach the root.
+    workspace: Optional[str] = None
     timeout: float = 120.0
     max_output: int = 4000
     tts_remote: Optional[str] = None
@@ -1460,11 +1466,40 @@ def _request_error(exc: requests.RequestException) -> str:
 # ── handlers ────────────────────────────────────────────────────────────────
 
 
+def _resolve_in_workspace(raw: str, ctx: ToolContext) -> Path:
+    """Resolve one tool path argument under the API workspace, if set.
+
+    With no workspace (the CLI) the path is left exactly as before. With
+    one (serve), a relative path resolves against the root and the resolved
+    path — symlinks followed — must stay inside it, else the call is
+    refused.
+    """
+    path = Path(raw).expanduser()
+    workspace = getattr(ctx, "workspace", None)
+    if not workspace:
+        return path
+    root = Path(workspace).resolve()
+    candidate = path if path.is_absolute() else root / path
+    resolved = candidate.resolve()
+    if resolved != root and root not in resolved.parents:
+        raise ToolError(f"refused: {raw or '.'} is outside the workspace "
+                        f"root ({root})")
+    return resolved
+
+
+def _workspace_base(ctx: ToolContext) -> Path:
+    """The base for default path/cwd arguments (the workspace when set)."""
+    workspace = getattr(ctx, "workspace", None)
+    return Path(workspace).resolve() if workspace else Path(ctx.cwd)
+
+
 def _handler_shell(args: dict[str, Any], ctx: ToolContext) -> str:
     command = str(args.get("command") or "").strip()
     if not command:
         raise ToolError("missing 'command'")
-    cwd = Path(str(args.get("cwd") or ctx.cwd)).expanduser()
+    cwd = _resolve_in_workspace(
+        str(args.get("cwd") or getattr(ctx, "workspace", None) or ctx.cwd),
+        ctx)
     if not cwd.is_dir():
         raise ToolError(f"working directory does not exist: {cwd}")
     timeout = _clamp_timeout(args.get("timeout"), ctx.timeout)
@@ -1485,9 +1520,10 @@ def _handler_python(args: dict[str, Any], ctx: ToolContext) -> str:
     if not isinstance(code, str) or not code.strip():
         raise ToolError("missing 'code'")
     timeout = _clamp_timeout(args.get("timeout"), ctx.timeout)
+    workdir = _workspace_base(ctx)
     try:
         proc = run_cancellable([sys.executable, "-I", "-"], input_text=code,
-                               cwd=ctx.cwd, timeout=timeout,
+                               cwd=str(workdir), timeout=timeout,
                                cancel=getattr(ctx, "cancel", None))
     except subprocess.TimeoutExpired:
         raise ToolError(f"python timed out after {timeout:.0f}s") from None
@@ -1507,7 +1543,7 @@ def _combine_exit(returncode: int, stdout: str, stderr: str) -> str:
 
 
 def _handler_read_file(args: dict[str, Any], ctx: ToolContext) -> str:
-    path = Path(str(args.get("path") or "")).expanduser()
+    path = _resolve_in_workspace(str(args.get("path") or ""), ctx)
     if not path.is_file():
         raise ToolError(f"not a file: {path}")
     try:
@@ -1532,7 +1568,7 @@ def _handler_read_file(args: dict[str, Any], ctx: ToolContext) -> str:
 
 
 def _handler_write_file(args: dict[str, Any], ctx: ToolContext) -> str:
-    path = Path(str(args.get("path") or "")).expanduser()
+    path = _resolve_in_workspace(str(args.get("path") or ""), ctx)
     if "content" not in args:
         raise ToolError("missing 'content'")
     content = str(args.get("content") or "")
@@ -1548,7 +1584,9 @@ def _handler_write_file(args: dict[str, Any], ctx: ToolContext) -> str:
 
 
 def _handler_list_dir(args: dict[str, Any], ctx: ToolContext) -> str:
-    path = Path(str(args.get("path") or ctx.cwd)).expanduser()
+    path = _resolve_in_workspace(
+        str(args.get("path") or getattr(ctx, "workspace", None) or ctx.cwd),
+        ctx)
     if not path.is_dir():
         raise ToolError(f"not a directory: {path}")
     try:
@@ -1573,7 +1611,7 @@ def _handler_list_dir(args: dict[str, Any], ctx: ToolContext) -> str:
 
 
 def _handler_edit_file(args: dict[str, Any], ctx: ToolContext) -> str:
-    path = Path(str(args.get("path") or "")).expanduser()
+    path = _resolve_in_workspace(str(args.get("path") or ""), ctx)
     old = args.get("old_string")
     new = args.get("new_string")
     if not str(path) or str(path) == ".":
@@ -1633,7 +1671,7 @@ def _handler_make_dir(args: dict[str, Any], ctx: ToolContext) -> str:
     raw = str(args.get("path") or "").strip()
     if not raw:
         raise ToolError("missing 'path'")
-    path = Path(raw).expanduser()
+    path = _resolve_in_workspace(raw, ctx)
     if path.is_dir():
         return f"directory already exists: {path}"
     if path.exists():
@@ -1645,19 +1683,21 @@ def _handler_make_dir(args: dict[str, Any], ctx: ToolContext) -> str:
     return f"created directory {path}"
 
 
-def _transfer_paths(args: dict[str, Any]) -> tuple[Path, Path, bool]:
+def _transfer_paths(args: dict[str, Any],
+                    ctx: ToolContext) -> tuple[Path, Path, bool]:
     source = str(args.get("source") or "").strip()
     destination = str(args.get("destination") or "").strip()
     if not source:
         raise ToolError("missing 'source'")
     if not destination:
         raise ToolError("missing 'destination'")
-    return Path(source).expanduser(), Path(destination).expanduser(), \
-        bool(args.get("overwrite"))
+    return (_resolve_in_workspace(source, ctx),
+            _resolve_in_workspace(destination, ctx),
+            bool(args.get("overwrite")))
 
 
 def _handler_move_file(args: dict[str, Any], ctx: ToolContext) -> str:
-    source, destination, overwrite = _transfer_paths(args)
+    source, destination, overwrite = _transfer_paths(args, ctx)
     if not source.exists() and not source.is_symlink():
         raise ToolError(f"source does not exist: {source}")
     if destination.exists() or destination.is_symlink():
@@ -1677,7 +1717,7 @@ def _handler_move_file(args: dict[str, Any], ctx: ToolContext) -> str:
 
 
 def _handler_copy_file(args: dict[str, Any], ctx: ToolContext) -> str:
-    source, destination, overwrite = _transfer_paths(args)
+    source, destination, overwrite = _transfer_paths(args, ctx)
     if not source.exists() and not source.is_symlink():
         raise ToolError(f"source does not exist: {source}")
     if destination.exists() or destination.is_symlink():
@@ -1704,7 +1744,8 @@ def _handler_publish_artifact(args: dict[str, Any], ctx: ToolContext) -> "str | 
 
     The explicit path for files created by `run_python`/`run_shell` (the
     file tools publish their own results automatically). Jailed to the
-    working directory and capped by the store's per-file limit.
+    workspace root (the API) or the working directory (the CLI), and capped
+    by the store's per-file limit.
     """
     raw = str(args.get("path") or "").strip()
     if not raw:
@@ -1712,7 +1753,7 @@ def _handler_publish_artifact(args: dict[str, Any], ctx: ToolContext) -> "str | 
     publisher = getattr(ctx, "artifacts", None)
     if publisher is None:
         raise ToolError("publishing artifacts needs the serve artifact store")
-    base = Path(ctx.cwd).resolve()
+    base = Path(getattr(ctx, "workspace", None) or ctx.cwd).resolve()
     candidate = Path(raw).expanduser()
     target = (candidate if candidate.is_absolute() else base / candidate).resolve()
     if target != base and base not in target.parents:
@@ -1730,7 +1771,7 @@ def _handler_delete_file(args: dict[str, Any], ctx: ToolContext) -> str:
     raw = str(args.get("path") or "").strip()
     if not raw:
         raise ToolError("missing 'path'")
-    path = Path(raw).expanduser()
+    path = _resolve_in_workspace(raw, ctx)
     if not path.exists() and not path.is_symlink():
         raise ToolError(f"no such file or directory: {path}")
     trash = shutil.which("trash-put")

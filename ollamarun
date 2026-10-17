@@ -2,6 +2,61 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.56
+
+Summary of changes in this version:
+  - Phase 6: operational hardening and configuration integration for
+    `ollamarun serve`. Every `serve_*` key is now validated at startup by
+    one matrix (`helpers.serve_settings`): types, ranges and zero
+    semantics are checked (a configured 0 keeps its documented meaning —
+    `*_timeout` disables, `*_ttl` keeps forever, the artifact caps mean
+    unlimited), and the transport values actually reach the server —
+    `serve_body_limit`, `serve_request_timeout` (per-operation) and
+    `serve_sse_ping_interval` are wired into `HttpServer` instead of the
+    hard-coded defaults.
+  - Chunked request bodies decode properly: the cumulative decoded size
+    is capped at `serve_body_limit` before each chunk is read, chunk
+    extensions are ignored, trailers are drained bounded, and malformed
+    framing (bad sizes, missing CRLF, truncation, a missing terminal
+    chunk, `Transfer-Encoding` together with `Content-Length`, a
+    non-chunked coding) answers a structured 400 instead of the old 411.
+  - Aggregate input limits bound what a request *resolves to*, not just
+    what it sends: `serve_max_messages`, `serve_max_content_parts`,
+    `serve_max_message_bytes`, `serve_max_text_bytes`, `serve_max_images`
+    and `serve_max_image_bytes` are charged across both API surfaces by
+    one budget (counts fail before any fetch; violations are 413
+    `input_too_large` naming the limit).
+  - Native `settings.parameters` go through one validator: known Ollama
+    options are type/range checked (matching the OpenAI mapper where they
+    overlap), unknown names pass through bounded (scalars/lists of
+    scalars, string/list/object size caps), non-finite numbers and nested
+    structures are refused. `PATCH /v1/sessions/{id}` gains a validated
+    `parameters` field (merged into the session).
+  - The API tool context is jailed to `serve_workspace` (default: the
+    startup cwd): path-argument tools resolve relative paths under it and
+    refuse resolved escapes, symlinks included; `run_shell`/`run_python`
+    working directories follow the rule. It is an argument/default-cwd
+    policy, never subprocess confinement, and the CLI is unchanged. The
+    artifact store asserts the same resolved-root containment on every
+    index/manifest path it reads back.
+  - `serve_models` is one API-wide tag-aware allowlist (literal or
+    fnmatch patterns; empty = every model) applied to the model list,
+    lookup, chat, sessions, turns (stored sessions included) and fits —
+    a forbidden model answers the same 404 `model_not_found` as an
+    unknown one. `serve_agent: false` serves models, chat and the shared
+    file/artifact endpoints while the native agent surface answers 404
+    (`add_agent_routes` split into `add_artifact_routes` +
+    `add_agent_routes` over one `build_agent_api`).
+  - Shutdown is an ordered, bounded lifecycle: stop accepting, refuse new
+    background work (`begin_shutdown`, racing handlers answer 503),
+    resolve parked approvals as cancelled, cancel/join turns and fits,
+    drain in-flight HTTP handlers within `serve_shutdown_timeout`, then
+    close. `serve_unload_on_exit` (default true) unloads only the models
+    this server actually used — embedding models stay resident and a
+    parallel CLI session's model is never evicted; `--keep-loaded` turns
+    it off. The banner prints the workspace root and the surface in
+    effect.
+
 Version: 1.55
 
 Summary of changes in this version:

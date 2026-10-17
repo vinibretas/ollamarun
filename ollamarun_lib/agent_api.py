@@ -30,6 +30,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -37,7 +38,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from .artifacts import ArtifactStore, require_vision, resolve_content_parts
+from .artifacts import (ArtifactStore, InputBudget, input_limits,
+                        require_vision, resolve_content_parts)
 from .client import OllamaError
 from .ctxfit import (CtxCalibrationStore, FitRequest, fit_context,
                      machine_state_for)
@@ -45,7 +47,7 @@ from .events import (SESSION_FIT, TERMINAL_EVENTS, TURN_WARNING, RuntimeEvent)
 from .fits import (FitBusy, FitService, FitsClosed, TERMINAL_FIT_STATUSES,
                    TooManyFits, fit_body)
 from .helpers import (CancelToken, canonical_model_name, is_local_host,
-                      now_iso, remote_node)
+                      model_allowed, now_iso, remote_node)
 from .interactive import (model_block_count, model_context_length,
                           parse_gpu_layers_spec, resolve_gpu_layers)
 from .openai_api import (classify_backend_error, model_listed,
@@ -83,7 +85,7 @@ _APPROVAL_ACTIONS = frozenset({"run", "remember", "rule", "auto", "deny"})
 
 #: Fields `PATCH /v1/sessions/{id}` accepts.
 _SESSION_PATCH_FIELDS = frozenset({"title", "model", "system", "tags",
-                                   "num_ctx", "gpu_layers"})
+                                   "num_ctx", "gpu_layers", "parameters"})
 
 
 @dataclass
@@ -142,12 +144,147 @@ def _optional_string(value: Any, name: str) -> str:
     return value
 
 
-def _valid_option(value: Any) -> bool:
-    if isinstance(value, (bool, int, float, str)):
-        return True
+#: Known Ollama options and their ranges: the OpenAI mapper enforces the
+#: same ones where they overlap. An unknown option name is still forwarded
+#: (forward compatibility with new Ollama options) but bounded to
+#: scalars/lists of scalars — never a way around the limits.
+_OPTION_FLOAT_RANGES: dict[str, Any] = {
+    "temperature": (0.0, 2.0),
+    "top_p": (0.0, 1.0),
+    "min_p": (0.0, 1.0),
+    "typical_p": (0.0, 1.0),
+    "tfs_z": (None, None),
+    "repeat_penalty": (None, None),
+    "presence_penalty": (-2.0, 2.0),
+    "frequency_penalty": (-2.0, 2.0),
+    "mirostat_eta": (None, None),
+    "mirostat_tau": (None, None),
+}
+_OPTION_POSITIVE = frozenset({"tfs_z", "repeat_penalty", "mirostat_eta",
+                              "mirostat_tau"})
+_OPTION_INT_MIN: dict[str, Optional[int]] = {
+    "top_k": 0,
+    "repeat_last_n": -1,
+    "seed": None,
+    "num_predict": -1,
+    "num_ctx": 1,
+    "num_gpu": 0,
+    "main_gpu": 0,
+    "num_thread": 1,
+    "num_batch": 1,
+    "num_keep": 0,
+}
+_OPTION_ENUMS: dict[str, frozenset] = {"mirostat": frozenset({0, 1, 2})}
+_OPTION_BOOLS = frozenset({"use_mmap", "use_mlock"})
+_OPTION_STRING_OR_LIST = frozenset({"stop"})
+#: Bounds for one option value (known and unknown alike).
+_OPTION_STRING_MAX = 4096
+_OPTION_LIST_MAX = 64
+_OPTION_DICT_MAX_BYTES = 64 * 1024
+
+
+def _validate_option_float(key: str, value: Any, at: str) -> None:
+    low, high = _OPTION_FLOAT_RANGES[key]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise _invalid(f"{at} must be a number", param=at,
+                       code="unsupported_value")
+    number = float(value)
+    if not math.isfinite(number):
+        raise _invalid(f"{at} must be a finite number", param=at,
+                       code="unsupported_value")
+    if key in _OPTION_POSITIVE and number <= 0:
+        raise _invalid(f"{at} must be > 0", param=at, code="unsupported_value")
+    if low is not None and number < low:
+        raise _invalid(f"{at} must be >= {low:g}", param=at,
+                       code="unsupported_value")
+    if high is not None and number > high:
+        raise _invalid(f"{at} must be <= {high:g}", param=at,
+                       code="unsupported_value")
+
+
+def _validate_option_int(key: str, value: Any, at: str) -> None:
+    minimum = _OPTION_INT_MIN[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise _invalid(f"{at} must be an integer", param=at,
+                       code="unsupported_value")
+    if minimum is not None and value < minimum:
+        raise _invalid(f"{at} must be >= {minimum}", param=at,
+                       code="unsupported_value")
+
+
+def _validate_option_unknown(value: Any, at: str) -> None:
+    if isinstance(value, bool) or isinstance(value, int):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise _invalid(f"{at} must be a finite number", param=at,
+                           code="unsupported_value")
+        return
+    if isinstance(value, str):
+        if len(value) > _OPTION_STRING_MAX:
+            raise _invalid(f"{at} is too long ({_OPTION_STRING_MAX} "
+                           "characters max)", param=at,
+                           code="unsupported_value")
+        return
     if isinstance(value, list):
-        return all(isinstance(item, (bool, int, float, str)) for item in value)
-    return False
+        if len(value) > _OPTION_LIST_MAX:
+            raise _invalid(f"{at} has too many items ({_OPTION_LIST_MAX} max)",
+                           param=at, code="unsupported_value")
+        for item in value:
+            if isinstance(item, (dict, list, tuple)):
+                raise _invalid(f"{at} items must be scalars", param=at,
+                               code="unsupported_value")
+            _validate_option_unknown(item, at)
+        return
+    raise _invalid(f"{at} must be a scalar or a list of scalars", param=at,
+                   code="unsupported_value")
+
+
+def validate_settings_parameters(parameters: dict[str, Any], *,
+                                 where: str = "settings.parameters"
+                                 ) -> dict[str, Any]:
+    """Validate native Ollama options with bounded pass-through.
+
+    Known options get their type and range checked (the same ranges the
+    OpenAI mapper enforces where they overlap); an unknown option name is
+    forwarded for forward compatibility, but bounded to scalars or lists of
+    scalars — strings max 4 KiB, lists max 64 items, the whole object max
+    64 KiB. Non-finite numbers are never valid.
+    """
+    serialized = len(json.dumps(parameters, default=str).encode("utf-8"))
+    if serialized > _OPTION_DICT_MAX_BYTES:
+        raise _invalid(f"{where} is too large "
+                       f"({_OPTION_DICT_MAX_BYTES // 1024} KiB max)",
+                       param=where, code="unsupported_value")
+    for key, value in parameters.items():
+        if not isinstance(key, str) or not key.strip():
+            raise _invalid(f"{where} keys must be non-empty strings",
+                           param=where, code="unsupported_value")
+        at = f"{where}.{key}"
+        if key in _OPTION_BOOLS:
+            if not isinstance(value, bool):
+                raise _invalid(f"{at} must be a boolean", param=at,
+                               code="unsupported_value")
+        elif key in _OPTION_ENUMS:
+            options = _OPTION_ENUMS[key]
+            if isinstance(value, bool) or not isinstance(value, int) \
+                    or value not in options:
+                allowed = "/".join(str(item) for item in sorted(options))
+                raise _invalid(f"{at} must be {allowed}", param=at,
+                               code="unsupported_value")
+        elif key in _OPTION_STRING_OR_LIST:
+            items = [value] if isinstance(value, str) else value
+            if not isinstance(items, list) \
+                    or not all(isinstance(item, str) for item in items):
+                raise _invalid(f"{at} must be a string or a list of strings",
+                               param=at, code="unsupported_value")
+        elif key in _OPTION_FLOAT_RANGES:
+            _validate_option_float(key, value, at)
+        elif key in _OPTION_INT_MIN:
+            _validate_option_int(key, value, at)
+        else:
+            _validate_option_unknown(value, at)
+    return dict(parameters)
 
 
 def _show_data(client: Any, model: str) -> Optional[dict[str, Any]]:
@@ -322,14 +459,8 @@ def parse_agent_turn(body: Any, *, default_max_rounds: int = 8
     if not isinstance(parameters, dict):
         raise _invalid("settings.parameters must be an object",
                        param="settings.parameters")
-    for key, value in parameters.items():
-        if not isinstance(key, str) or not key:
-            raise _invalid("settings.parameters keys must be non-empty strings",
-                           param="settings.parameters")
-        if not _valid_option(value):
-            raise _invalid(
-                f"settings.parameters.{key} must be a scalar or a list of scalars",
-                param=f"settings.parameters.{key}")
+    parameters = validate_settings_parameters(parameters,
+                                              where="settings.parameters")
     cancel_on_disconnect = settings.get("cancel_on_disconnect", False)
     _require_bool(cancel_on_disconnect, "settings.cancel_on_disconnect")
 
@@ -486,7 +617,8 @@ class AgentApi:
                  manager: Optional[TurnManager] = None,
                  cwd: Optional[str] = None,
                  artifacts: Optional[ArtifactStore] = None,
-                 fits: Optional[FitService] = None):
+                 fits: Optional[FitService] = None,
+                 tracker: Optional[Any] = None):
         self._args = args
         self._config = dict(config or {})
         self._store = store
@@ -494,17 +626,26 @@ class AgentApi:
         #: The serve artifact store: `file`/image parts resolve through it,
         #: turn tools publish into it, and the artifact routes read from it.
         self._artifacts = artifacts
+        #: The serve model tracker (`helpers.ModelTracker`): feeds the
+        #: unload-on-exit of the models this server used. None outside
+        #: `ollamarun serve`.
+        self._tracker = tracker
+        # Every turn-manager key is explicit-None defaulted: a configured 0
+        # must not be conflated with "unset" (`or 4` would).
+        raw_max_active = self._config.get("serve_max_active_turns")
+        raw_buffer = self._config.get("serve_turn_event_buffer")
+        raw_turn_ttl = self._config.get("serve_turn_event_ttl")
         self._manager = manager or TurnManager(
-            max_active=int(self._config.get("serve_max_active_turns") or 4),
-            buffer_events=int(self._config.get("serve_turn_event_buffer")
-                              or 10000),
-            completed_ttl=float(self._config.get("serve_turn_event_ttl")
-                                or 86400))
+            max_active=4 if raw_max_active is None else int(raw_max_active),
+            buffer_events=10000 if raw_buffer is None else int(raw_buffer),
+            completed_ttl=86400.0 if raw_turn_ttl is None
+            else float(raw_turn_ttl))
         #: Asynchronous context fits (`fits.py`); the TTL is explicit-None
         #: defaulted so 0 can mean "keep forever".
         raw_fit_ttl = self._config.get("serve_fit_ttl")
+        raw_fit_active = self._config.get("serve_max_active_fits")
         self._fits = fits or FitService(
-            max_active=int(self._config.get("serve_max_active_fits") or 2),
+            max_active=2 if raw_fit_active is None else int(raw_fit_active),
             ttl=86400.0 if raw_fit_ttl is None else float(raw_fit_ttl))
         #: How long a parked approval may wait for a decision, in seconds;
         #: an explicit 0 disables the timeout (the approval waits until it is
@@ -513,7 +654,9 @@ class AgentApi:
         raw_approval_timeout = self._config.get("serve_approval_timeout")
         self._approval_timeout = 300.0 if raw_approval_timeout is None \
             else float(raw_approval_timeout)
-        self._turn_timeout = float(self._config.get("serve_turn_timeout") or 0)
+        raw_turn_timeout = self._config.get("serve_turn_timeout")
+        self._turn_timeout = 0.0 if raw_turn_timeout is None \
+            else float(raw_turn_timeout)
         #: Serve never takes `auto` from the config: the client opts into
         #: broad execution per turn (`approval: "interactive"` + an `auto`
         #: decision), and `--yes` remains the only CLI auto path.
@@ -524,6 +667,15 @@ class AgentApi:
             str(item) for item in (self._config.get("tools_shell_allow") or [])
             if item}
         self._cwd = str(cwd or os.getcwd())
+        #: The API tool workspace (always set: the configured serve_workspace
+        #: or the startup cwd). Path-argument tools refuse escapes; it is an
+        #: argument/default-cwd policy, never subprocess confinement.
+        self._workspace = self._cwd
+        #: The optional `serve_models` allowlist ([] = every model).
+        self._models_allow = list(self._config.get("serve_models") or [])
+        #: Aggregate resolved-input caps (`serve_max_*`): shared with the
+        #: OpenAI surface through the same budget accounting.
+        self._limits = input_limits(self._config)
         self._lock = threading.Lock()
         self._turns: dict[str, AgentTurnState] = {}
         self._approvals: dict[str, PendingApproval] = {}
@@ -552,9 +704,17 @@ class AgentApi:
             entries = client.tags()
         except OllamaError as exc:
             raise translate_error(exc)
-        if not model_listed(model, entries):
+        # The serve_models allowlist answers exactly like an unknown model:
+        # never reveal installed-but-forbidden.
+        if not model_allowed(model, self._models_allow) \
+                or not model_listed(model, entries):
             raise ApiError(404, f"model {model!r} not found",
                            code="model_not_found", param="model")
+
+    def _note_model(self, model: str) -> None:
+        """Remember a model this server used (unload-on-exit; never raises)."""
+        if self._tracker is not None:
+            self._tracker.note(model)
 
     def _unload_resident(self, client: Any, model: str) -> None:
         """Unload a resident model after a placement change (never raises).
@@ -624,6 +784,7 @@ class AgentApi:
                 "model is required (none in the request, the session or the "
                 "serve config)", param="model")
         self._ensure_model(client, session.model)
+        self._note_model(session.model)
         if spec.system is not None:
             session.system = spec.system
         if spec.parameters:
@@ -654,10 +815,12 @@ class AgentApi:
         # all decided here, so the client gets a structured 4xx synchronously.
         resolved_messages: list[dict[str, Any]] = []
         has_images = False
+        budget = InputBudget(self._limits)
+        budget.note_messages(len(spec.messages))
         for index, message in enumerate(spec.messages):
             resolved = resolve_content_parts(
                 message.get("content"), where=f"messages[{index}].content",
-                store=self._artifacts)
+                store=self._artifacts, budget=budget)
             payload: dict[str, Any] = {"role": message["role"],
                                        "content": resolved.text}
             if resolved.images:
@@ -808,6 +971,11 @@ class AgentApi:
         # and the runtime's cancel check; Repl built its own for the CLI.
         repl.cancel_token = token
         repl.tool_ctx.cancel = token
+        # The API tool context is jailed to the workspace: path arguments
+        # resolve under it and escapes are refused (the CLI leaves
+        # `workspace` unset and is unchanged).
+        repl.tool_ctx.workspace = self._workspace
+        repl.tool_ctx.cwd = self._workspace
         return repl
 
     def _context_block(self, repl: Repl) -> dict[str, Any]:
@@ -1122,6 +1290,8 @@ class AgentApi:
             raise ApiError(403, 'probing is disabled (serve_fit is "estimate")',
                            code="probe_disabled")
         session, client, model = self._fit_subject(spec)
+        if spec["probe"]:
+            self._note_model(model)  # a probe loads the model; estimates don't
         if spec["apply"] and session is None:
             raise _invalid("apply needs session_id", param="session_id")
         if session is not None:
@@ -1450,6 +1620,8 @@ class AgentApi:
         parameters = body.get("parameters", {})
         if not isinstance(parameters, dict):
             raise _invalid("parameters must be an object", param="parameters")
+        parameters = validate_settings_parameters(parameters,
+                                                  where="parameters")
         client = self._client_factory()
         if model:
             self._ensure_model(client, model)
@@ -1527,6 +1699,14 @@ class AgentApi:
                     or not all(isinstance(tag, str) for tag in tags):
                 raise _invalid("tags must be an array of strings", param="tags")
             session.tags = list(tags)
+        if "parameters" in body:
+            incoming = body["parameters"]
+            if not isinstance(incoming, dict):
+                raise _invalid("parameters must be an object",
+                               param="parameters")
+            incoming = validate_settings_parameters(incoming,
+                                                    where="parameters")
+            session.parameters = {**(session.parameters or {}), **incoming}
         session.touch()
         self._store.save(session)
         return Response.json(session_body(
@@ -1547,8 +1727,20 @@ class AgentApi:
 
     # ── lifecycle ───────────────────────────────────────────────────────────
 
+    def begin_shutdown(self) -> None:
+        """Refuse new turns and fits; cancelling and joining come after.
+
+        Called before the pending work is cancelled so an in-flight HTTP
+        handler racing the shutdown cannot start a new turn or fit — its
+        submit answers 503 `server_shutting_down` through the typed errors
+        the registries already raise once closed.
+        """
+        self._manager.begin_shutdown()
+        self._fits.begin_shutdown()
+
     def shutdown(self, *, timeout: float = 10.0) -> None:
         """Resolve pending approvals as cancelled, then stop the registries."""
+        self.begin_shutdown()
         for pending in self._pending_approvals_all():
             self._first_decision(pending, ApprovalDecision(
                 run=False, note=_cancel_note("shutdown"), action="cancelled"))
@@ -1573,24 +1765,38 @@ def _session_fitting(session_id: str, active_fit_id: str) -> ApiError:
                     extra={"active_fit_id": active_fit_id})
 
 
-def add_agent_routes(router: Router, *, args: Any, config: dict[str, Any],
-                     store: SessionStore, client_factory: Callable[[], Any],
-                     manager: Optional[TurnManager] = None,
-                     cwd: Optional[str] = None,
-                     artifacts: Optional[ArtifactStore] = None,
-                     fits: Optional[FitService] = None) -> AgentApi:
-    """Register the native endpoints on `router`; returns the API object."""
-    api = AgentApi(args=args, config=config, store=store,
-                   client_factory=client_factory, manager=manager, cwd=cwd,
-                   artifacts=artifacts, fits=fits)
+def build_agent_api(*, args: Any, config: dict[str, Any],
+                    store: SessionStore, client_factory: Callable[[], Any],
+                    manager: Optional[TurnManager] = None,
+                    cwd: Optional[str] = None,
+                    artifacts: Optional[ArtifactStore] = None,
+                    fits: Optional[FitService] = None,
+                    tracker: Optional[Any] = None) -> "AgentApi":
+    """The one `AgentApi` the route-registration functions share."""
+    return AgentApi(args=args, config=config, store=store,
+                    client_factory=client_factory, manager=manager, cwd=cwd,
+                    artifacts=artifacts, fits=fits, tracker=tracker)
+
+
+def add_artifact_routes(router: Router, api: "AgentApi") -> None:
+    """Register the shared file/artifact endpoints.
+
+    These serve both API surfaces: the OpenAI `file` parts and every
+    artifact download stay available when the native agent routes are
+    switched off (`serve_agent: false`).
+    """
+    router.add("POST", "/v1/files", api.upload_file)
+    router.add("GET", "/v1/artifacts/{id}", api.artifact_download)
+    router.add("GET", "/v1/artifacts/{id}/meta", api.artifact_meta)
+
+
+def add_agent_routes(router: Router, api: "AgentApi") -> None:
+    """Register the native agent endpoints (turns, approvals, sessions, fits)."""
     router.add("POST", "/v1/agent/turns", api.start_turn)
     router.add("GET", "/v1/agent/turns/{id}", api.turn_status)
     router.add("GET", "/v1/agent/turns/{id}/events", api.turn_events)
     router.add("POST", "/v1/agent/turns/{id}/cancel", api.cancel_turn)
     router.add("POST", "/v1/agent/approvals/{id}", api.resolve_approval)
-    router.add("POST", "/v1/files", api.upload_file)
-    router.add("GET", "/v1/artifacts/{id}", api.artifact_download)
-    router.add("GET", "/v1/artifacts/{id}/meta", api.artifact_meta)
     router.add("POST", "/v1/agent/fit", api.estimate_fit)
     router.add("POST", "/v1/agent/fits", api.start_fit)
     router.add("GET", "/v1/agent/fits/{id}", api.fit_status)
@@ -1600,4 +1806,3 @@ def add_agent_routes(router: Router, *, args: Any, config: dict[str, Any],
     router.add("GET", "/v1/sessions/{id}", api.get_session)
     router.add("PATCH", "/v1/sessions/{id}", api.patch_session)
     router.add("DELETE", "/v1/sessions/{id}", api.delete_session)
-    return api
