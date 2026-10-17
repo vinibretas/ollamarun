@@ -2,6 +2,31 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.44
+
+Summary of changes in this version:
+  - The Phase 1 runtime grew its remaining rails. The tool-support
+    capability check belongs to `AgentRuntime` now: it runs after
+    `turn.started`, warns once per model (through the host's seen set),
+    and a headless front end receives it as a `turn.warning` event.
+    `quiet_tools` is read live, so `/render raw` during a turn silences
+    the tool panels from the next event on. Stopping a turn now reaches
+    every subprocess-backed tool — the ssh probes behind `system_status`,
+    the chemInventoryAPI runner, tts-remote say/voices and the `trash-put`
+    behind `delete_file` — and a call attempted after the stop refuses to
+    spawn its child at all (`run_cancellable()`/`CommandCancelled` now
+    live in `helpers.py` so the probes share them).
+  - `@file` mentions actually inline: both the REPL and the one-shot path
+    stored the raw prompt and threw the expanded text away, so the model
+    only ever saw the bare path; the stored (and sent) message now carries
+    the `<file>` blocks, while the bubble keeps what the user typed.
+  - The session index is safe across processes: `SessionStore` takes an
+    exclusive `flock` on `<index>.lock` around its read-modify-write (on
+    top of the shared in-process lock), and session/index temp files get a
+    per-writer name, so a CLI saving while serve runs cannot drop an
+    entry. A Python 3.10 syntax guard and `TurnRequest`/`TurnResult`
+    mapping tests close out the phase.
+
 Version: 1.43
 
 Summary of changes in this version:
