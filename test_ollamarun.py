@@ -3875,6 +3875,54 @@ def test_slash_completer() -> int:
     return failures
 
 
+def test_prompt_toolkit_fallback() -> int:
+    """Importing without prompt_toolkit must degrade, not crash.
+
+    `sys.modules['prompt_toolkit'] = None` makes any import of it raise, so
+    a subprocess pins the fallback path: `constants.py` must bind stand-in
+    classes (a `None` binding once crashed `repl.py`'s module-level
+    `SlashCompleter(Completer)` definition with `TypeError: NoneType takes
+    no arguments`, which killed every command, `--version` included).
+    """
+    import subprocess
+    failures = 0
+    repo = Path(__file__).parent
+
+    code = (
+        "import sys\n"
+        "sys.modules['prompt_toolkit'] = None\n"
+        f"sys.path.insert(0, {str(repo)!r})\n"
+        "import ollamarun_lib as orun\n"
+        "assert orun.HAS_PROMPT_TOOLKIT is False\n"
+        "assert isinstance(orun.SlashCompleter, type)\n"
+        "print(orun.VERSION)\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code],
+                            capture_output=True, text=True)
+    if result.returncode == 0 and result.stdout.strip() == orun.VERSION:
+        print("PASS  package imports with prompt_toolkit unavailable")
+    else:
+        print(f"FAIL  fallback import: rc={result.returncode} "
+              f"stderr={result.stderr.strip().splitlines()[-1:]}")
+        failures += 1
+
+    code = (
+        "import sys, runpy\n"
+        "sys.modules['prompt_toolkit'] = None\n"
+        "sys.argv = ['ollamarun', '--version']\n"
+        f"runpy.run_path({str(repo / 'ollamarun')!r}, run_name='__main__')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code],
+                            capture_output=True, text=True)
+    if result.returncode == 0 and orun.VERSION in result.stdout:
+        print("PASS  CLI starts without prompt_toolkit")
+    else:
+        print(f"FAIL  fallback --version: rc={result.returncode} "
+              f"stderr={result.stderr.strip().splitlines()[-1:]}")
+        failures += 1
+    return failures
+
+
 class _FakeResponse:
     def __init__(self, status=200, payload=None, text="", lines=None):
         self.status_code = status
@@ -6564,6 +6612,7 @@ if __name__ == "__main__":
              + test_model_sort() + test_model_picker_sort()
              + test_model_command_sort() + test_sort_flag()
              + test_gpu_layers() + test_slash_completer()
+             + test_prompt_toolkit_fallback()
              + test_tools_policy() + test_tool_execution() + test_web_tools()
              + test_file_tools() + test_session_model_tools()
              + test_system_status_tool() + test_chem_tools()
