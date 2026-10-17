@@ -35,7 +35,7 @@ never buffered. Subscribers have bounded queues: one that cannot keep up
 is sent a `slow_subscriber` gap and closed -- it can never stall the
 turn.
 
-Typed errors map onto HTTP in Phase 4: `SessionBusy` -> 409,
+The HTTP layer maps the typed errors: `SessionBusy` -> 409,
 `TooManyTurns` -> 429, `UnknownTurn` -> 404, `TurnExpired` -> 410.
 """
 from __future__ import annotations
@@ -81,7 +81,7 @@ _TERMINAL_OF_TYPE = {TURN_COMPLETED: COMPLETED,
 
 
 class TurnManagerError(RuntimeError):
-    """Base for the manager's typed errors (mapped to HTTP in Phase 4)."""
+    """Base for the manager's typed errors (the HTTP layer maps them)."""
 
 
 class SessionBusy(TurnManagerError):
@@ -173,7 +173,7 @@ class _Expired:
 
 
 class Subscription:
-    """One consumer's view of a turn (Phase 3 turns this into SSE).
+    """One consumer's view of a turn (the SSE layer consumes it).
 
     `get(timeout)` returns the next event, or None on timeout or after
     `close()`; consumers should loop while `not closed` with a finite

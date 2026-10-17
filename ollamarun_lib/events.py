@@ -1,8 +1,8 @@
 """Runtime events: the typed stream a turn emits for its front end.
 
 This is the shared vocabulary between the agent runtime (`runtime.py`) and
-whatever is consuming a turn: the CLI renderer, the Textual UI, or -- later --
-the HTTP API. Phase 1 defines the types and a thin envelope; the API layer
+whatever is consuming a turn: the CLI renderer, the Textual UI, or the
+HTTP API. This module defines the types and a thin envelope; the API layer
 adds turn ids, monotonic sequence numbers, replay and buffer semantics on top
 of the same event types (see the API plan).
 
