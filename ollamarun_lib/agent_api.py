@@ -89,6 +89,21 @@ def _invalid(message: str, *, param: Optional[str] = None,
     return ApiError(400, message, param=param, code=code)
 
 
+#: Cancellation notes for an approval resolved by cancelling a turn, keyed
+#: by the `CancelToken` reason that caused it.
+_CANCEL_NOTES = {
+    "user": "cancelled by user",
+    "timeout": "cancelled (turn timeout)",
+    "disconnect": "cancelled (client disconnected)",
+    "shutdown": "cancelled (server shutting down)",
+}
+
+
+def _cancel_note(reason: str) -> str:
+    reason = str(reason or "user")
+    return _CANCEL_NOTES.get(reason, f"cancelled ({reason})")
+
+
 def _require_bool(value: Any, name: str) -> bool:
     if not isinstance(value, bool):
         raise _invalid(f"{name} must be a boolean", param=name)
@@ -665,7 +680,7 @@ class AgentApi:
             pass
         for pending in self._pending_approvals(state.id):
             self._first_decision(pending, ApprovalDecision(
-                run=False, note="cancelled by user", action="cancelled"))
+                run=False, note=_cancel_note(reason), action="cancelled"))
 
     # ── approvals ───────────────────────────────────────────────────────────
 
@@ -743,7 +758,8 @@ class AgentApi:
         while not pending.event.wait(0.2):
             if token.cancelled:
                 self._first_decision(pending, ApprovalDecision(
-                    run=False, note="cancelled by user", action="cancelled"))
+                    run=False, note=_cancel_note(token.reason),
+                    action="cancelled"))
                 break
             if deadline is not None and time.monotonic() >= deadline:
                 self._first_decision(pending, ApprovalDecision(
@@ -933,7 +949,7 @@ class AgentApi:
         """Resolve pending approvals as cancelled, then stop the manager."""
         for pending in self._pending_approvals_all():
             self._first_decision(pending, ApprovalDecision(
-                run=False, note="cancelled by user", action="cancelled"))
+                run=False, note=_cancel_note("shutdown"), action="cancelled"))
         self._manager.shutdown(cancel=True, timeout=timeout)
 
     def _pending_approvals_all(self) -> list[PendingApproval]:
