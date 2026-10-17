@@ -2,9 +2,11 @@
 
 Adopt the provenance split and keep binary data out of message bodies.
 
-Status: tightened after the v1.53 review; the contracts below are the
-implementation target and supersede the first draft of this file. No code
-has landed yet. Items marked **locked** are decisions, not options.
+Status: implemented and landed at v1.54 (`artifacts.py`, the tools
+publisher, the runtime events and the HTTP endpoints). The contracts below
+are what shipped; the deviations and follow-ups are recorded under
+"Recorded implementation decisions". Items marked **locked** are decisions,
+not options.
 
 ## A. One canonical artifact model
 
@@ -63,7 +65,7 @@ Both surfaces resolve message content through one shared resolver in
 | Input | Behavior |
 |---|---|
 | Image: data URI, remote URL, or an uploaded `image/*` file part | Capability check against `/api/show`; absent `vision` → 400 `model_does_not_support_images`, before inference. Bytes pass to Ollama as `images`. |
-| Text-ish file: `text/*`, or the bounded head decodes as UTF-8 with no NUL | Bounded decode (constant, 32 KiB) inlined as a `<file name="…">` block — the same shape `@file` expansions use — with truncation noted. |
+| Text-ish file: `text/*` plus the explicit `TEXTUAL_MEDIA_TYPES` list (`application/json`, `…+json`, `…+xml`, yaml/toml/x-sh/… ) | Bounded decode (constant, 32 KiB) inlined as a `<file name="…">` block — the same shape `@file` expansions use — with truncation noted. |
 | Unsupported binary (pdf, docx, zip, …) | Contents are never invented. The model sees a short `[attached: <name> (<media_type>, N bytes) as artifact art_…, contents not extracted]` note; the artifact stays downloadable. PDF extraction is explicit later work. |
 | Missing / unknown / malformed / expired `file_id` | Structured 404 `artifact_not_found` naming the part's param path, before inference starts. |
 
@@ -211,6 +213,34 @@ Registered on the native surface (`agent_api.add_agent_routes()`):
   `serve_artifact_max_bytes` (16 MiB), `serve_artifact_quota_bytes`
   (2 GiB), `serve_artifact_ttl` (604800 s).
 
+## Recorded implementation decisions
+
+- **Text classification is a media-type allowlist, not head sniffing.**
+  The first draft would have decoded the head; a PDF's header decodes as
+  ASCII, which would have faked processing. `text/*` plus
+  `TEXTUAL_MEDIA_TYPES` (and `+json`/`+xml` suffixes) inlines;
+  everything else — including `application/octet-stream` — is the
+  described-but-not-extracted note.
+- **`fetch_remote_media` sniffs magic bytes** when the response carries
+  no `Content-Type`; with a header present the header wins.
+- **Upload status and strictness.** `POST /v1/files` answers 201 with the
+  ref, rejects unknown fields, and bounds the decode from the encoded
+  length before allocating.
+- **Downloads are single buffered responses.** No range requests and no
+  streaming (the 16 MiB per-file cap bounds memory); the body always
+  carries `Content-Disposition` and `nosniff`.
+- **Reservation-first quota.** The index holds a `pending` entry while
+  bytes are written; a manifest that made it to disk is always adopted
+  (so a crash window cannot lose a finished artifact), a pending entry
+  without a manifest is reaped after `STALE_AFTER` (1 h).
+- **`publish_artifact` fails as a tool error** for its own jail/size
+  checks (its whole purpose is publishing), while a *registration*
+  failure on a file tool that already succeeded is a note on an ok
+  outcome — the write itself is real.
+- **Traversal-shaped URLs never reach the store**: `/v1/artifacts/../../…`
+  is the router's structured 404 (`not_found`); ids that do reach the
+  store fail the `art_…` regex first.
+
 ## Tests
 
 Fold into `test_ollamarun.py`, one `test_*` per area, wired into the
@@ -257,6 +287,17 @@ total sum:
   session files keep loading; `persist: false` artifacts remain fetchable.
 - The CLI is unchanged: no store, no `publish_artifact`, no behavior
   change; the full suite stays green at every commit.
+
+## Closure
+
+Closed at v1.54 with the full suite green (`python3 test_ollamarun.py`),
+a live smoke through the real binary (upload → download/meta → structured
+404, with the store swept at startup) and these regression groups:
+`test_artifact_store`, `test_artifact_quota_and_ttl`,
+`test_tool_artifact_registration`, `test_artifact_events`,
+`test_artifact_session_persistence`, `test_artifact_content_parts`,
+`test_artifact_remote_fetch`, `test_artifact_upload_api`,
+`test_artifact_fetch_api`, `test_serve_approval_timeout_zero`.
 
 ## Handoffs
 

@@ -21,7 +21,6 @@ built-in default, any other text becomes the leading system message.
 """
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import re
@@ -32,6 +31,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Optional
 
+from .artifacts import (MAX_IMAGE_BYTES, require_vision,
+                        resolve_content_parts)
 from .client import OllamaError, build_chat_payload
 from .constants import DEFAULT_TIMEOUT
 from .helpers import CancelToken, canonical_model_name
@@ -40,9 +41,6 @@ from .renderer import GenerationResult, consume_chunk, stats_from_final
 from .server import ApiError, Request, Response, Router, SseWriter, StreamResponse
 
 logger = logging.getLogger("ollamarun.openai_api")
-
-#: Cap on one decoded image content part (the request body cap bounds the rest).
-MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 #: Fields a chat-completion request may carry. `user` and `metadata` are
 #: accepted and ignored (tracking hints with no backend meaning);
@@ -57,9 +55,6 @@ _CHAT_FIELDS = frozenset({
     "modalities", "reasoning_effort", "system",
     "user", "metadata", "parallel_tool_calls",
 })
-
-_DATA_URI_RE = re.compile(
-    r"^data:(?P<type>image/[\w.+-]+);base64,(?P<data>.+)$", re.S)
 
 
 @dataclass
@@ -80,7 +75,8 @@ class ChatRequest:
 # ── request validation and mapping ──────────────────────────────────────────
 
 
-def parse_chat_request(body: Any) -> ChatRequest:
+def parse_chat_request(body: Any, *,
+                       store: Optional[Any] = None) -> ChatRequest:
     """Validate one `/v1/chat/completions` body; raises `ApiError(400)`."""
     if not isinstance(body, dict):
         raise ApiError(400, "request body must be a JSON object")
@@ -102,7 +98,7 @@ def parse_chat_request(body: Any) -> ChatRequest:
         raise ApiError(400, "stream must be a boolean", param="stream")
     include_usage = _stream_options(body)
     system = _system_from(body)
-    converted, has_images = _messages_from(messages, system)
+    converted, has_images = _messages_from(messages, system, store=store)
     return ChatRequest(
         model=model.strip(),
         messages=converted,
@@ -360,7 +356,8 @@ def _tools_from(body: dict[str, Any]) -> Optional[list[dict[str, Any]]]:
                    param="tool_choice", code="unsupported_value")
 
 
-def _messages_from(messages: list[Any], system: Optional[str]
+def _messages_from(messages: list[Any], system: Optional[str], *,
+                   store: Optional[Any] = None
                    ) -> tuple[list[dict[str, Any]], bool]:
     """OpenAI messages -> Ollama payloads; resolves `tool_call_id` -> name."""
     # Validate every element before any role/field inspection so a malformed
@@ -411,7 +408,8 @@ def _messages_from(messages: list[Any], system: Optional[str]
                     param=f"messages[{index}].tool_call_id")
             out.append({"role": "tool", "content": content, "tool_name": name})
             continue
-        content, images = _content_parts(message.get("content"), index)
+        content, images = _content_parts(message.get("content"), index,
+                                         store=store)
         has_images = has_images or bool(images)
         payload: dict[str, Any] = {"role": role, "content": content}
         if images:
@@ -422,55 +420,19 @@ def _messages_from(messages: list[Any], system: Optional[str]
     return out, has_images
 
 
-def _content_parts(content: Any, index: int) -> tuple[str, list[str]]:
-    if content is None:
-        return "", []
-    if isinstance(content, str):
-        return content, []
-    if not isinstance(content, list):
-        raise ApiError(400, "content must be a string or an array of parts",
-                       param=f"messages[{index}].content")
-    text_parts: list[str] = []
-    images: list[str] = []
-    for part_index, part in enumerate(content):
-        where = f"messages[{index}].content[{part_index}]"
-        if not isinstance(part, dict):
-            raise ApiError(400, "content parts must be objects", param=where)
-        kind = part.get("type")
-        if kind == "text":
-            text = part.get("text")
-            if not isinstance(text, str):
-                raise ApiError(400, "text parts need a text string",
-                               param=f"{where}.text")
-            text_parts.append(text)
-        elif kind == "image_url":
-            image = part.get("image_url")
-            url = image.get("url") if isinstance(image, dict) else None
-            if not isinstance(url, str):
-                raise ApiError(400, "image_url parts need a url",
-                               param=f"{where}.url")
-            match = _DATA_URI_RE.match(url)
-            if match is None:
-                raise ApiError(
-                    400,
-                    "only data: image URLs are supported for now",
-                    param=f"{where}.url", code="unsupported_value")
-            data = re.sub(r"\s+", "", match.group("data"))
-            if (len(data) * 3) // 4 > MAX_IMAGE_BYTES:
-                raise ApiError(
-                    413,
-                    f"image exceeds the {MAX_IMAGE_BYTES} byte limit",
-                    param=f"{where}.url", code="image_too_large")
-            try:
-                base64.b64decode(data, validate=True)
-            except (ValueError, TypeError):
-                raise ApiError(400, "image data is not valid base64",
-                               param=f"{where}.url")
-            images.append(data)
-        else:
-            raise ApiError(400, f"unsupported content part type: {kind!r}",
-                           param=where, code="unsupported_value")
-    return "".join(text_parts), images
+def _content_parts(content: Any, index: int, *,
+                   store: Optional[Any] = None) -> tuple[str, list[str]]:
+    """One message's content mapped through the shared resolver.
+
+    The extension part `{"type": "file", "file_id": "art_…"}` resolves
+    through the artifact store; `image_url` accepts data: URIs and http(s)
+    URLs (bounded fetch). `image_max` is read here so tests can shrink the
+    cap on this module.
+    """
+    resolved = resolve_content_parts(
+        content, where=f"messages[{index}].content", store=store,
+        image_max=MAX_IMAGE_BYTES)
+    return resolved.text, [image.b64 for image in resolved.images]
 
 
 def _tool_calls_in(calls: Any, index: int) -> list[dict[str, Any]]:
@@ -699,9 +661,13 @@ class OpenAIApi:
     def __init__(self, client_factory: Callable[[], Any], *,
                  config: Optional[dict[str, Any]] = None,
                  timeout: Optional[float] = None,
-                 keepalive: Optional[str] = None):
+                 keepalive: Optional[str] = None,
+                 artifacts: Optional[Any] = None):
         self._client_factory = client_factory
         self.config = dict(config or {})
+        #: The artifact store (`artifacts.ArtifactStore`) when serve runs
+        #: one: `file` content parts resolve through it. None otherwise.
+        self._artifacts = artifacts
         self.timeout: float = (timeout if timeout is not None else
                                self.config.get("timeout") or DEFAULT_TIMEOUT)
         self.keepalive = (keepalive if keepalive is not None
@@ -792,15 +758,11 @@ class OpenAIApi:
 
     def chat_completions(self, request: Request,
                          params: dict[str, str]) -> Response | StreamResponse:
-        plan = parse_chat_request(request.json)
+        plan = parse_chat_request(request.json, store=self._artifacts)
         client = self._client_factory()
         self._ensure_model(plan.model)
         if plan.has_images:
-            capabilities = self._capabilities(client, plan.model)
-            if capabilities and "vision" not in capabilities:
-                raise ApiError(400, "this model does not support image input",
-                               code="model_does_not_support_images",
-                               param="messages")
+            require_vision(self._capabilities(client, plan.model))
         payload = ollama_payload(plan, keepalive=self.keepalive)
 
         if not plan.stream:
@@ -883,10 +845,11 @@ class OpenAIApi:
 def build_router(client_factory: Callable[[], Any], *,
                  config: Optional[dict[str, Any]] = None,
                  timeout: Optional[float] = None,
-                 keepalive: Optional[str] = None) -> Router:
+                 keepalive: Optional[str] = None,
+                 artifacts: Optional[Any] = None) -> Router:
     """The `/v1` router: models, one model, chat completions."""
     api = OpenAIApi(client_factory, config=config, timeout=timeout,
-                    keepalive=keepalive)
+                    keepalive=keepalive, artifacts=artifacts)
     router = Router()
     router.add("GET", "/v1/models", api.list_models)
     router.add("GET", "/v1/models/{model}", api.get_model)

@@ -43,7 +43,7 @@ from datetime import datetime
 from html.parser import HTMLParser
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union
 
 import requests
 
@@ -137,7 +137,7 @@ SHELL_INTERPRETERS = {"sh", "bash", "zsh", "dash", "ksh", "fish",
 
 #: Tools whose `path` argument can back a `path` approval rule.
 PATH_RULE_TOOLS = {"read_file", "write_file", "list_dir", "edit_file",
-                   "make_dir", "delete_file"}
+                   "make_dir", "delete_file", "publish_artifact"}
 
 #: `git` subcommands that only read the repository.
 GIT_READONLY = {
@@ -227,6 +227,11 @@ class ToolContext:
     #: to `run_cancellable()` so a stop kills the child's process group; the
     #: ToolRunner abandons network calls on it. None outside a turn.
     cancel: Optional[Any] = None
+    #: The turn-bound artifact publisher (`artifacts.TurnArtifacts`) when the
+    #: host runs a store (`ollamarun serve`); file-producing tools return
+    #: `ToolHandlerResult.artifact_paths` and `execute_tool()` registers them
+    #: here. Typed Any for the same one-way reason as `client`/`store`.
+    artifacts: Any = None
 
 
 @dataclass
@@ -240,6 +245,22 @@ class ToolOutcome:
     #: True when the turn was stopped while this call was queued or running;
     #: `text` says whether it was interrupted or abandoned.
     cancelled: bool = False
+    #: Refs (`ArtifactRef.to_dict()`) registered for this call, in order.
+    artifacts: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class ToolHandlerResult:
+    """A handler's structured result: text plus the files it produced.
+
+    Every existing handler may keep returning a plain string; handlers that
+    create files return this instead and `execute_tool()` registers the
+    paths through the turn's artifact publisher (regular files only --
+    directories are skipped, nothing is scanned recursively).
+    """
+
+    text: str
+    artifact_paths: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -1523,7 +1544,7 @@ def _handler_write_file(args: dict[str, Any], ctx: ToolContext) -> str:
     except OSError as exc:
         raise ToolError(f"could not write {path}: {exc}") from exc
     verb = "appended" if append else "wrote"
-    return f"{verb} {len(content)} chars to {path}"
+    return ToolHandlerResult(f"{verb} {len(content)} chars to {path}", [str(path)])
 
 
 def _handler_list_dir(args: dict[str, Any], ctx: ToolContext) -> str:
@@ -1604,7 +1625,8 @@ def _handler_edit_file(args: dict[str, Any], ctx: ToolContext) -> str:
         where = ""
     diff = diff_preview(old, new, limit=30)
     result = f"edited {path}: replaced {replaced} occurrence(s){where}"
-    return f"{result}\n{diff}" if diff else result
+    text = f"{result}\n{diff}" if diff else result
+    return ToolHandlerResult(text, [str(path)])
 
 
 def _handler_make_dir(args: dict[str, Any], ctx: ToolContext) -> str:
@@ -1648,7 +1670,10 @@ def _handler_move_file(args: dict[str, Any], ctx: ToolContext) -> str:
         shutil.move(str(source), str(destination))
     except (OSError, shutil.Error) as exc:
         raise ToolError(f"could not move {source} to {destination}: {exc}") from exc
-    return f"moved {source} → {destination}"
+    message = f"moved {source} → {destination}"
+    if destination.is_file():  # directories are never recursive bundles
+        return ToolHandlerResult(message, [str(destination)])
+    return message
 
 
 def _handler_copy_file(args: dict[str, Any], ctx: ToolContext) -> str:
@@ -1668,7 +1693,37 @@ def _handler_copy_file(args: dict[str, Any], ctx: ToolContext) -> str:
             shutil.copy2(str(source), str(destination))
     except (OSError, shutil.Error) as exc:
         raise ToolError(f"could not copy {source} to {destination}: {exc}") from exc
-    return f"copied {source} → {destination}"
+    message = f"copied {source} → {destination}"
+    if not source.is_dir() and destination.is_file():
+        return ToolHandlerResult(message, [str(destination)])
+    return message
+
+
+def _handler_publish_artifact(args: dict[str, Any], ctx: ToolContext) -> "str | ToolHandlerResult":
+    """Snapshot one workspace file as a downloadable artifact.
+
+    The explicit path for files created by `run_python`/`run_shell` (the
+    file tools publish their own results automatically). Jailed to the
+    working directory and capped by the store's per-file limit.
+    """
+    raw = str(args.get("path") or "").strip()
+    if not raw:
+        raise ToolError("missing 'path'")
+    publisher = getattr(ctx, "artifacts", None)
+    if publisher is None:
+        raise ToolError("publishing artifacts needs the serve artifact store")
+    base = Path(ctx.cwd).resolve()
+    candidate = Path(raw).expanduser()
+    target = (candidate if candidate.is_absolute() else base / candidate).resolve()
+    if target != base and base not in target.parents:
+        raise ToolError(f"refused: {raw} is outside the working directory")
+    if not target.is_file():
+        raise ToolError(f"no such file: {raw}")
+    limit = publisher.store.max_bytes
+    if 0 < limit < target.stat().st_size:
+        raise ToolError(f"refused: {raw} exceeds the {limit} byte artifact limit")
+    return ToolHandlerResult(f"published {raw} as a downloadable artifact",
+                             [str(target)])
 
 
 def _handler_delete_file(args: dict[str, Any], ctx: ToolContext) -> str:
@@ -2368,7 +2423,10 @@ class ToolDefinition:
 
 
 #: `handler` name in a tool JSON -> the function that executes it.
-HANDLERS: dict[str, Callable[[dict[str, Any], ToolContext], str]] = {
+#: Handlers return plain text, or a `ToolHandlerResult` when they produced
+#: files (`execute_tool()` registers them through `ctx.artifacts`).
+HANDLERS: dict[str, Callable[[dict[str, Any], ToolContext],
+                             Union[str, ToolHandlerResult]]] = {
     "shell": _handler_shell,
     "python": _handler_python,
     "read_file": _handler_read_file,
@@ -2379,6 +2437,7 @@ HANDLERS: dict[str, Callable[[dict[str, Any], ToolContext], str]] = {
     "copy_file": _handler_copy_file,
     "delete_file": _handler_delete_file,
     "list_dir": _handler_list_dir,
+    "publish_artifact": _handler_publish_artifact,
     "search_sessions": _handler_search_sessions,
     "list_models": _handler_list_models,
     "system_status": _handler_system_status,
@@ -2393,13 +2452,14 @@ HANDLERS: dict[str, Callable[[dict[str, Any], ToolContext], str]] = {
     "list_voices": _handler_list_voices,
 }
 
-REQUIREMENTS = {"search", "tts", "chem"}
+REQUIREMENTS = {"search", "tts", "chem", "artifacts"}
 
 #: `requires` value -> what `/tools NAME help` says a missing tool needs.
 REQUIREMENT_HINTS: dict[str, str] = {
     "search": "the ddgs package (pip install ddgs)",
     "tts": "the tts-remote command",
     "chem": "the chemInventoryAPI command (config: chem_inventory)",
+    "artifacts": "the serve artifact store (`ollamarun serve`)",
 }
 
 _NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -2437,7 +2497,7 @@ def _parse_definition(path: Path) -> ToolDefinition:
         raise ValueError(f"unknown handler {handler!r}")
     requires = data.get("requires")
     if requires is not None and requires not in REQUIREMENTS:
-        raise ValueError(f"unknown requirement {requires!r} (search/tts/chem)")
+        raise ValueError(f"unknown requirement {requires!r} (search/tts/chem/artifacts)")
     aliases = data.get("aliases") or []
     if not isinstance(aliases, list) or not all(
             isinstance(alias, str) for alias in aliases):
@@ -2509,13 +2569,16 @@ def tool_aliases() -> dict[str, str]:
 
 def default_registry(*, tts: Optional[bool] = None,
                      search: Optional[bool] = None,
-                     chem: Optional[bool] = None) -> dict[str, ToolSpec]:
+                     chem: Optional[bool] = None,
+                     artifacts: Optional[bool] = None) -> dict[str, ToolSpec]:
     """The tool set, built from the definition files (defs/tools/*.json).
 
     `tts` forces the speech tools on/off; None auto-detects a `tts-remote`
     binary (the tools are simply absent when there is none). `search` does
     the same for `web_search` against the `ddgs` package, and `chem` for
-    the chemInventoryAPI tools against the CLI.
+    the chemInventoryAPI tools against the CLI. `artifacts` says whether
+    the host runs an artifact store (the serve API does; the CLI does not),
+    gating `publish_artifact`.
     """
     if search is None:
         search = search_available()
@@ -2525,7 +2588,8 @@ def default_registry(*, tts: Optional[bool] = None,
             or fallback.is_file() or (fallback / "tts-remote").is_file()
     if chem is None:
         chem = chem_inventory_available()
-    available = {"search": bool(search), "tts": bool(tts), "chem": bool(chem)}
+    available = {"search": bool(search), "tts": bool(tts), "chem": bool(chem),
+                 "artifacts": bool(artifacts)}
     registry: dict[str, ToolSpec] = {}
     for definition in tool_definitions():
         if definition.requires and not available.get(definition.requires):
@@ -2551,6 +2615,31 @@ def tool_schemas(registry: dict[str, ToolSpec],
     return schemas
 
 
+def _publish_artifacts(paths: list[str],
+                       ctx: ToolContext) -> tuple[list[dict[str, Any]], list[str]]:
+    """Register a handler's produced files through the turn's publisher.
+
+    Regular files only (directories are skipped silently); a registration
+    failure becomes a note in the tool text, never a failed tool -- the
+    write itself succeeded and the refs that registered still attach.
+    """
+    publisher = getattr(ctx, "artifacts", None)
+    refs: list[dict[str, Any]] = []
+    notes: list[str] = []
+    if publisher is None:
+        return refs, notes
+    for path in paths:
+        try:
+            if not path or not os.path.isfile(path):
+                continue
+            ref = publisher.publish_path(path)
+        except Exception as exc:  # ApiError/OSError: a note, not a failure
+            notes.append(f"[artifact not published: {path} ({exc})]")
+            continue
+        refs.append(ref.to_dict())
+    return refs, notes
+
+
 def execute_tool(spec: ToolSpec, args: dict[str, Any],
                  ctx: ToolContext) -> ToolOutcome:
     """Run one handler, converting everything into a model-readable result."""
@@ -2564,7 +2653,14 @@ def execute_tool(spec: ToolSpec, args: dict[str, Any],
         outcome.cancelled = True
         return outcome
     try:
-        outcome.text = spec.handler(args, ctx)
+        result = spec.handler(args, ctx)
+        if isinstance(result, ToolHandlerResult):
+            outcome.text = result.text
+            outcome.artifacts, notes = _publish_artifacts(result.artifact_paths, ctx)
+            if notes:
+                outcome.text = f"{outcome.text}\n" + "\n".join(notes)
+        else:
+            outcome.text = str(result)
         outcome.ok = True
     except ToolCancelled as exc:
         outcome.text = str(exc)

@@ -381,12 +381,17 @@ class MessageQueue:
 
 class Repl:
     def __init__(self, args: argparse.Namespace, config: dict[str, Any],
-                 client: OllamaClient, store: SessionStore, session: Session):
+                 client: OllamaClient, store: SessionStore, session: Session,
+                 artifacts: Any = None):
         self.args = args
         self.config = config
         self.client = client
         self.store = store
         self.session = session
+        #: The turn-bound artifact publisher (`artifacts.TurnArtifacts`) when
+        #: the host runs a store; None for the CLI, so `publish_artifact` is
+        #: absent and file tools never register anything.
+        self.artifacts = artifacts
         self.model_names: list[str] = []
         try:
             self.model_sort = parse_model_sort(getattr(args, "sort", None) or "modified")
@@ -452,7 +457,8 @@ class Repl:
             ssh_user=config.get("remote_ssh_user"),
             chem_inventory=config.get("chem_inventory") or None,
             context_report=self.context_report,
-            session_report=self.session_report)
+            session_report=self.session_report,
+            artifacts=artifacts)
         tts_option: Optional[bool]
         if not config.get("tts_tools", True):
             tts_option = False
@@ -467,7 +473,8 @@ class Repl:
             chem_option = True  # explicit path: register, the handler reports if missing
         else:
             chem_option = None  # auto-detect the chemInventoryAPI CLI
-        self.tool_registry = default_registry(tts=tts_option, chem=chem_option)
+        self.tool_registry = default_registry(
+            tts=tts_option, chem=chem_option, artifacts=artifacts is not None)
         self._tool_support_seen: set[str] = set()
         self._format_tools_warned = False
         if getattr(args, "no_speak", False):

@@ -16,9 +16,14 @@ from typing import Any, Optional
 
 from rich.markup import escape
 
+from .artifacts import ArtifactStore
 from .client import OllamaClient, OllamaError
 from .constants import (
+    ARTIFACTS_DIR,
     CONFIG_PATH,
+    DEFAULT_ARTIFACT_MAX_BYTES,
+    DEFAULT_ARTIFACT_QUOTA_BYTES,
+    DEFAULT_ARTIFACT_TTL,
     DEFAULT_HOST,
     DEFAULT_SERVE_BIND,
     DEFAULT_SERVE_PORT,
@@ -460,14 +465,37 @@ def serve_main(argv: Optional[list[str]] = None) -> int:
         console.print("[err]--port must be between 0 and 65535[/err]")
         return 2
 
+    def _artifact_number(key: str, default: Any, cast: Any) -> Any:
+        raw = config.get(key)
+        return cast(default if raw is None else raw)
+
+    try:
+        artifact_store = ArtifactStore(
+            Path(str(config.get("serve_artifact_root") or ARTIFACTS_DIR)),
+            max_bytes=_artifact_number("serve_artifact_max_bytes",
+                                       DEFAULT_ARTIFACT_MAX_BYTES, int),
+            quota_bytes=_artifact_number("serve_artifact_quota_bytes",
+                                         DEFAULT_ARTIFACT_QUOTA_BYTES, int),
+            ttl=_artifact_number("serve_artifact_ttl",
+                                 DEFAULT_ARTIFACT_TTL, float))
+    except (TypeError, ValueError):
+        console.print("[err]serve_artifact_* config values must be numbers[/err]")
+        return 2
+    try:
+        artifact_store.sweep()
+    except OSError:
+        console.print("[warn]artifact store sweep failed — continuing[/warn]")
+
     def client_factory() -> OllamaClient:
         return OllamaClient(host, insecure=args.insecure, timeout=timeout)
 
     router = build_router(client_factory, config=config, timeout=timeout,
-                          keepalive=config.get("keepalive"))
+                          keepalive=config.get("keepalive"),
+                          artifacts=artifact_store)
     agent_api = add_agent_routes(
         router, args=build_parser().parse_args([]), config=config,
-        store=SessionStore(), client_factory=client_factory)
+        store=SessionStore(), client_factory=client_factory,
+        artifacts=artifact_store)
     try:
         server = HttpServer(router, bind=bind, port=port)
     except OSError as exc:

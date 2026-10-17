@@ -124,7 +124,7 @@ except ImportError:  # pragma: no cover - fallback path
     TEXTUAL_VERSION = ""
     TextualApp = None
 
-VERSION = "1.53"
+VERSION = "1.54"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -133,6 +133,7 @@ DATA_DIR = HOME / "etc/data/ollamarun"
 SESSIONS_DIR = DATA_DIR / "sessions"
 INDEX_PATH = DATA_DIR / "index.json"
 HISTORY_PATH = DATA_DIR / "history"
+ARTIFACTS_DIR = DATA_DIR / "artifacts"
 LOG_PATH = HOME / "etc/logs/ollamarun.log"
 
 # Model-facing definitions live outside the code: one JSON per tool and one
@@ -149,6 +150,12 @@ DEFAULT_TIMEOUT = 600
 #: authentication is the locked contract; `--bind` narrows it.
 DEFAULT_SERVE_BIND = "0.0.0.0"
 DEFAULT_SERVE_PORT = 11440
+#: Artifacts (`artifacts.py`): one snapshot cap, one store quota and one
+#: retention TTL. The per-file cap must fit base64-in-JSON under the
+#: request body cap (32 MiB), which leaves ~24 MiB of binary headroom.
+DEFAULT_ARTIFACT_MAX_BYTES = 16 * 1024 * 1024
+DEFAULT_ARTIFACT_QUOTA_BYTES = 2 * 1024 * 1024 * 1024
+DEFAULT_ARTIFACT_TTL = 7 * 86400
 
 # `--remote NAME` names for the tailnet machines: alias -> tailscale hostname
 # (resolved to its tailnet IP at run time; `remote_hosts` in the config file
@@ -322,6 +329,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # one turn (0 = no cap).
     "serve_approval_timeout": 300,
     "serve_turn_timeout": 0,
+    # Artifacts (`artifacts.py`): uploads and tool outputs share one store.
+    # `serve_artifact_root` overrides the directory; the per-file cap must
+    # stay under the base64-in-JSON body ceiling; the TTL is in seconds
+    # (0 = keep forever), the quota in bytes (0 = unlimited).
+    "serve_artifact_root": str(ARTIFACTS_DIR),
+    "serve_artifact_max_bytes": DEFAULT_ARTIFACT_MAX_BYTES,
+    "serve_artifact_quota_bytes": DEFAULT_ARTIFACT_QUOTA_BYTES,
+    "serve_artifact_ttl": DEFAULT_ARTIFACT_TTL,
 }
 
 THINKING_MODES = {"collapsed", "expanded", "hidden"}

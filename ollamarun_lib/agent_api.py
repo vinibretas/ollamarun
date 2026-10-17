@@ -27,6 +27,7 @@ record was swept.
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -36,6 +37,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from .artifacts import ArtifactStore, require_vision, resolve_content_parts
 from .client import OllamaError
 from .events import TERMINAL_EVENTS, TURN_WARNING, RuntimeEvent
 from .helpers import CancelToken, now_iso
@@ -56,6 +58,8 @@ logger = logging.getLogger("ollamarun.agent_api")
 
 #: A pending approval older than this (resolved) is dropped from the registry.
 _APPROVAL_RETENTION = 3600.0
+#: Fields `POST /v1/files` accepts (the JSON upload form; multipart is later).
+_UPLOAD_FIELDS = frozenset({"filename", "media_type", "data_base64"})
 
 _TURN_FIELDS = frozenset({"session_id", "model", "messages", "persist",
                           "settings"})
@@ -74,7 +78,7 @@ class AgentTurnRequest:
 
     session_id: Optional[str] = None
     model: str = ""
-    messages: list[dict[str, str]] = field(default_factory=list)
+    messages: list[dict[str, Any]] = field(default_factory=list)
     persist: bool = True
     tools: bool = True
     max_rounds: int = 8
@@ -147,7 +151,7 @@ def parse_agent_turn(body: Any, *, default_max_rounds: int = 8
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages:
         raise _invalid("messages must be a non-empty array", param="messages")
-    parsed_messages: list[dict[str, str]] = []
+    parsed_messages: list[dict[str, Any]] = []
     for index, message in enumerate(messages):
         if not isinstance(message, dict):
             raise _invalid(f"messages[{index}] must be an object",
@@ -162,8 +166,24 @@ def parse_agent_turn(body: Any, *, default_max_rounds: int = 8
                            "(the harness owns tool messages)",
                            param=f"messages[{index}].role")
         content = message.get("content")
-        if not isinstance(content, str) or not content.strip():
-            raise _invalid("message content must be a non-empty string",
+        if isinstance(content, str):
+            if not content.strip():
+                raise _invalid("message content must be a non-empty string "
+                               "or an array of content parts",
+                               param=f"messages[{index}].content")
+        elif isinstance(content, list):
+            if not content:
+                raise _invalid("message content must be a non-empty string "
+                               "or a non-empty array of content parts",
+                               param=f"messages[{index}].content")
+            for part_index, part in enumerate(content):
+                if not isinstance(part, dict):
+                    raise _invalid(
+                        "content parts must be objects",
+                        param=f"messages[{index}].content[{part_index}]")
+        else:
+            raise _invalid("message content must be a non-empty string or an "
+                           "array of content parts",
                            param=f"messages[{index}].content")
         parsed_messages.append({"role": str(role), "content": content})
 
@@ -270,7 +290,7 @@ class AgentTurnState:
     approval_mode: str = "policy"
     cancel_on_disconnect: bool = False
     auto_approve: bool = False
-    messages_pending: list[dict[str, str]] = field(default_factory=list)
+    messages_pending: list[dict[str, Any]] = field(default_factory=list)
     done: threading.Event = field(default_factory=threading.Event)
 
 
@@ -288,6 +308,7 @@ def turn_body(snapshot: Any) -> dict[str, Any]:
             "rounds": snapshot.result.rounds,
             "usage": usage_from(stats),
             "stats": stats or None,
+            "artifacts": list(snapshot.result.artifacts),
         }
     error = snapshot.error
     if snapshot.synthetic_terminal and error:
@@ -317,8 +338,16 @@ def session_body(session: Session, *, active_turn: Optional[str] = None
         "messages": len(session.messages),
         "turns": (session.stats or {}).get("turns", 0),
         "system": session.system,
+        "artifacts": list(session.artifacts),
         "active_turn_id": active_turn,
     }
+
+
+def _download_name(filename: str) -> str:
+    """An ASCII-safe Content-Disposition name (quotes and bars never leak)."""
+    cleaned = "".join(ch for ch in str(filename or "")
+                      if ch.isprintable() and ch not in '"\\')
+    return cleaned.encode("ascii", "replace").decode("ascii") or "artifact"
 
 
 def _after_seq(request: Request) -> Optional[int]:
@@ -347,19 +376,28 @@ class AgentApi:
     def __init__(self, *, args: Any, config: dict[str, Any],
                  store: SessionStore, client_factory: Callable[[], Any],
                  manager: Optional[TurnManager] = None,
-                 cwd: Optional[str] = None):
+                 cwd: Optional[str] = None,
+                 artifacts: Optional[ArtifactStore] = None):
         self._args = args
         self._config = dict(config or {})
         self._store = store
         self._client_factory = client_factory
+        #: The serve artifact store: `file`/image parts resolve through it,
+        #: turn tools publish into it, and the artifact routes read from it.
+        self._artifacts = artifacts
         self._manager = manager or TurnManager(
             max_active=int(self._config.get("serve_max_active_turns") or 4),
             buffer_events=int(self._config.get("serve_turn_event_buffer")
                               or 10000),
             completed_ttl=float(self._config.get("serve_turn_event_ttl")
                                 or 86400))
-        self._approval_timeout = float(
-            self._config.get("serve_approval_timeout") or 300)
+        #: How long a parked approval may wait for a decision, in seconds;
+        #: an explicit 0 disables the timeout (the approval waits until it is
+        #: resolved, cancelled or the server shuts down), so `0` must not be
+        #: conflated with "unset" the way `or 300` would.
+        raw_approval_timeout = self._config.get("serve_approval_timeout")
+        self._approval_timeout = 300.0 if raw_approval_timeout is None \
+            else float(raw_approval_timeout)
         self._turn_timeout = float(self._config.get("serve_turn_timeout") or 0)
         #: Serve never takes `auto` from the config: the client opts into
         #: broad execution per turn (`approval: "interactive"` + an `auto`
@@ -460,14 +498,38 @@ class AgentApi:
             session.parameters = {**(session.parameters or {}),
                                   **spec.parameters}
 
+        # Resolve every message's content parts before the turn is accepted:
+        # a missing artifact id, an oversize image and a text/file mapping are
+        # all decided here, so the client gets a structured 4xx synchronously.
+        resolved_messages: list[dict[str, Any]] = []
+        has_images = False
+        for index, message in enumerate(spec.messages):
+            resolved = resolve_content_parts(
+                message.get("content"), where=f"messages[{index}].content",
+                store=self._artifacts)
+            payload: dict[str, Any] = {"role": message["role"],
+                                       "content": resolved.text}
+            if resolved.images:
+                has_images = True
+                payload["images"] = [
+                    ({"b64": image.b64, "artifact_id": image.artifact_id}
+                     if image.artifact_id else {"b64": image.b64})
+                    for image in resolved.images]
+            if resolved.artifacts:
+                payload["artifacts"] = [ref.to_dict()
+                                        for ref in resolved.artifacts]
+            resolved_messages.append(payload)
+        if has_images:
+            require_vision(client.capabilities(session.model))
+
         turn_id = f"turn_{uuid.uuid4().hex[:12]}"
         token = CancelToken()
-        repl = self._make_repl(session, client, spec, token)
+        repl = self._make_repl(session, client, spec, token, turn_id)
         state = AgentTurnState(
             id=turn_id, session_id=session.id, session=session, repl=repl,
             client=client, token=token, approval_mode=spec.approval,
             cancel_on_disconnect=spec.cancel_on_disconnect,
-            messages_pending=[dict(message) for message in spec.messages])
+            messages_pending=resolved_messages)
         with self._lock:
             self._turns[turn_id] = state
 
@@ -506,9 +568,86 @@ class AgentApi:
         }
         return Response.json(body, status=202)
 
+    # ── files and artifacts ─────────────────────────────────────────────────
+
+    def _require_artifacts(self) -> ArtifactStore:
+        if self._artifacts is None:
+            raise ApiError(503, "the artifact store is not available",
+                           type_="api_error", code="artifacts_unavailable")
+        return self._artifacts
+
+    def upload_file(self, request: Request,
+                    params: dict[str, str]) -> Response:
+        """`POST /v1/files`: one JSON upload as an artifact (source user)."""
+        store = self._require_artifacts()
+        body = request.json
+        if not isinstance(body, dict):
+            raise _invalid("request body must be a JSON object")
+        unknown = set(body) - _UPLOAD_FIELDS
+        if unknown:
+            raise _invalid(f"unknown field: {sorted(unknown)[0]}",
+                           param=sorted(unknown)[0], code="unknown_field")
+        filename = body.get("filename")
+        if not isinstance(filename, str) or not filename.strip():
+            raise _invalid("filename must be a non-empty string",
+                           param="filename")
+        media_type = body.get("media_type")
+        if not isinstance(media_type, str) or not media_type.strip():
+            raise _invalid("media_type must be a non-empty string",
+                           param="media_type")
+        data_b64 = body.get("data_base64")
+        if not isinstance(data_b64, str) or not data_b64:
+            raise _invalid("data_base64 must be a base64 string",
+                           param="data_base64")
+        # Bound the decoded size before allocating (base64 is ~4/3 of it).
+        if 0 < store.max_bytes < (len(data_b64) * 3) // 4:
+            raise ApiError(
+                413, f"artifact exceeds the {store.max_bytes} byte limit",
+                param="data_base64", code="artifact_too_large")
+        try:
+            payload = base64.b64decode(data_b64, validate=True)
+        except (ValueError, TypeError):
+            raise _invalid("data_base64 is not valid base64",
+                           param="data_base64")
+        ref = store.register(payload, filename=filename.strip(),
+                             media_type=media_type.strip(), source="user")
+        return Response.json(ref.to_dict(), status=201)
+
+    def artifact_download(self, request: Request,
+                          params: dict[str, str]) -> Response:
+        """`GET /v1/artifacts/{id}`: the stored bytes, with its media type."""
+        store = self._require_artifacts()
+        artifact_id = params.get("id", "")
+        loaded = store.read(artifact_id)
+        if loaded is None:
+            raise ApiError(404, f"artifact {artifact_id!r} not found",
+                           code="artifact_not_found")
+        ref, payload = loaded
+        return Response(
+            status=200, body=payload, media_type=ref.media_type,
+            headers=[("Content-Disposition",
+                      f'attachment; filename="{_download_name(ref.filename)}"'),
+                     ("X-Content-Type-Options", "nosniff")])
+
+    def artifact_meta(self, request: Request,
+                      params: dict[str, str]) -> Response:
+        """`GET /v1/artifacts/{id}/meta`: the full ref."""
+        store = self._require_artifacts()
+        artifact_id = params.get("id", "")
+        ref = store.resolve(artifact_id)
+        if ref is None:
+            raise ApiError(404, f"artifact {artifact_id!r} not found",
+                           code="artifact_not_found")
+        return Response.json(ref.to_dict())
+
     def _make_repl(self, session: Session, client: Any,
-                   spec: AgentTurnRequest, token: CancelToken) -> Repl:
-        repl = Repl(self._args, self._config, client, self._store, session)
+                   spec: AgentTurnRequest, token: CancelToken,
+                   turn_id: str = "") -> Repl:
+        artifacts = (self._artifacts.for_turn(turn_id=turn_id,
+                                              session_id=session.id)
+                     if self._artifacts is not None else None)
+        repl = Repl(self._args, self._config, client, self._store, session,
+                    artifacts=artifacts)
         repl.headless = True
         repl.tools_enabled = bool(spec.tools) and bool(
             self._config.get("tools", True))
@@ -566,7 +705,11 @@ class AgentApi:
         repl = state.repl
         try:
             for message in state.messages_pending:
-                session.add_message(message["role"], message["content"])
+                session.add_message(message["role"], message["content"],
+                                    images=message.get("images") or None,
+                                    artifacts=message.get("artifacts") or None)
+                if message.get("artifacts"):
+                    session.add_artifacts(message["artifacts"])
             state.messages_pending = []
             if spec.persist:
                 self._store.save(session)
@@ -967,15 +1110,20 @@ def _session_busy(session_id: str, active_turn_id: str) -> ApiError:
 def add_agent_routes(router: Router, *, args: Any, config: dict[str, Any],
                      store: SessionStore, client_factory: Callable[[], Any],
                      manager: Optional[TurnManager] = None,
-                     cwd: Optional[str] = None) -> AgentApi:
+                     cwd: Optional[str] = None,
+                     artifacts: Optional[ArtifactStore] = None) -> AgentApi:
     """Register the native endpoints on `router`; returns the API object."""
     api = AgentApi(args=args, config=config, store=store,
-                   client_factory=client_factory, manager=manager, cwd=cwd)
+                   client_factory=client_factory, manager=manager, cwd=cwd,
+                   artifacts=artifacts)
     router.add("POST", "/v1/agent/turns", api.start_turn)
     router.add("GET", "/v1/agent/turns/{id}", api.turn_status)
     router.add("GET", "/v1/agent/turns/{id}/events", api.turn_events)
     router.add("POST", "/v1/agent/turns/{id}/cancel", api.cancel_turn)
     router.add("POST", "/v1/agent/approvals/{id}", api.resolve_approval)
+    router.add("POST", "/v1/files", api.upload_file)
+    router.add("GET", "/v1/artifacts/{id}", api.artifact_download)
+    router.add("GET", "/v1/artifacts/{id}/meta", api.artifact_meta)
     router.add("GET", "/v1/sessions", api.list_sessions)
     router.add("POST", "/v1/sessions", api.create_session)
     router.add("GET", "/v1/sessions/{id}", api.get_session)
