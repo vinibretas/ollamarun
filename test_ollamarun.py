@@ -11513,6 +11513,249 @@ def test_chunked_bodies() -> int:
     return failures
 
 
+def test_input_limits() -> int:
+    """The aggregate resolved-input budget: caps, both surfaces, fail-fast."""
+    failures = 0
+    limits = orun.InputLimits(max_messages=2, max_content_parts=3,
+                              max_message_bytes=100, max_text_bytes=200,
+                              max_images=2, max_image_bytes=1000)
+    text_part = {"type": "text", "text": "hi"}
+
+    def budget_error(limits_, content, *,
+                     where="messages[0].content"):
+        return _api_error(orun.resolve_content_parts, content, where=where,
+                          budget=orun.InputBudget(limits_))
+
+    exc = budget_error(limits, "a" * 101)
+    failures = _check(
+        failures, "a message past the byte cap is a 413",
+        exc is not None and exc.status == 413
+        and exc.code == "input_too_large"
+        and exc.extra.get("limit_name") == "serve_max_message_bytes",
+        repr(exc))
+
+    budget = orun.InputBudget(limits)
+    budget.note_messages(2)
+    exc = _api_error(budget.note_messages, 1)
+    failures = _check(failures, "message counts are charged cumulatively",
+                      exc is not None
+                      and exc.extra.get("limit_name") == "serve_max_messages",
+                      repr(exc))
+
+    exc = budget_error(limits, [text_part] * 4)
+    failures = _check(
+        failures, "a fourth content part is a 413 naming the part",
+        exc is not None and exc.code == "input_too_large"
+        and exc.param == "messages[0].content[3]"
+        and exc.extra.get("limit_name") == "serve_max_content_parts",
+        repr(exc))
+
+    image = base64.b64encode(b"x" * 480).decode("ascii")
+    image_part = {"type": "image_url",
+                  "image_url": {"url": f"data:image/png;base64,{image}"}}
+    exc = budget_error(limits, [image_part, image_part, image_part])
+    failures = _check(failures, "image counts are charged cumulatively",
+                      exc is not None
+                      and exc.extra.get("limit_name") == "serve_max_images",
+                      repr(exc))
+
+    byte_limits = orun.InputLimits(max_content_parts=10, max_images=5,
+                                   max_image_bytes=1000)
+    budget = orun.InputBudget(byte_limits)
+    exc = None
+    for _ in range(3):
+        exc = _api_error(orun.resolve_content_parts, [image_part],
+                         where="messages[0].content", budget=budget)
+    failures = _check(failures, "cumulative image bytes are capped",
+                      exc is not None
+                      and exc.extra.get("limit_name") == "serve_max_image_bytes",
+                      repr(exc))
+
+    text_limits = orun.InputLimits(max_message_bytes=1000,
+                                   max_text_bytes=200)
+    budget = orun.InputBudget(text_limits)
+    exc = None
+    for _ in range(3):
+        exc = _api_error(orun.resolve_content_parts, "t" * 80,
+                         where="messages[0].content", budget=budget)
+    failures = _check(failures, "total resolved text is capped across messages",
+                      exc is not None
+                      and exc.extra.get("limit_name") == "serve_max_text_bytes",
+                      repr(exc))
+
+    fetched = []
+
+    def fetch(url, *, max_bytes):
+        fetched.append(url)
+        return b"x" * 10, "image/png"
+
+    exc = _api_error(
+        orun.resolve_content_parts,
+        [text_part, {"type": "image_url",
+                     "image_url": {"url": "http://example.test/x.png"}}],
+        where="messages[0].content",
+        budget=orun.InputBudget(orun.InputLimits(max_content_parts=1)),
+        fetch=fetch)
+    failures = _check(
+        failures, "counts fail before any fetch happens",
+        exc is not None
+        and exc.extra.get("limit_name") == "serve_max_content_parts"
+        and not fetched, f"{exc!r} {fetched}")
+
+    # Both surfaces enforce the same budget from their config.
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _ServeClient(models=["m1"],
+                              capabilities=["completion", "tools"])
+        server, api, store, thread = _start_agent_api(
+            tmp, client, config={"serve_max_messages": 1,
+                                 "serve_max_text_bytes": 5})
+        try:
+            status, _headers, raw = _http(
+                server, "POST", "/v1/chat/completions",
+                body={"model": "m1",
+                      "messages": [{"role": "user", "content": "hi"},
+                                   {"role": "user", "content": "there"}]})
+            error = json.loads(raw)["error"]
+            failures = _check(
+                failures, "the OpenAI surface enforces the config budget",
+                status == 413 and error["code"] == "input_too_large"
+                and error["param"] == "messages",
+                f"{status} {raw[:160]}")
+
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body=_turn_request("too much text"))
+            error = json.loads(raw)["error"]
+            failures = _check(
+                failures, "the agent surface enforces the same budget",
+                status == 413 and error["code"] == "input_too_large"
+                and error["param"] == "messages[0].content",
+                f"{status} {raw[:160]}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
+def test_native_parameters() -> int:
+    """Native option validation: ranges, non-finite, bounds, pass-through."""
+    failures = 0
+    good = {
+        "temperature": 0.7, "top_p": 0.9, "top_k": 40, "seed": -1,
+        "num_predict": -1, "num_ctx": 32768, "stop": ["END"],
+        "use_mmap": True, "mirostat": 2, "repeat_penalty": 1.1,
+        "custom_flag": 5, "custom_list": ["a", 1, True],
+    }
+    try:
+        validated = orun.validate_settings_parameters(good)
+        ok = validated == good
+    except orun.ApiError as exc:
+        ok, validated = False, exc
+    failures = _check(failures, "valid known and unknown options pass",
+                      ok, repr(validated))
+
+    bad = [
+        ({"temperature": 3.0}, "parameters.temperature"),
+        ({"temperature": True}, "parameters.temperature"),
+        ({"temperature": "0.5"}, "parameters.temperature"),
+        ({"top_k": 1.5}, "parameters.top_k"),
+        ({"seed": "1"}, "parameters.seed"),
+        ({"num_ctx": 0}, "parameters.num_ctx"),
+        ({"num_predict": -2}, "parameters.num_predict"),
+        ({"mirostat": 3}, "parameters.mirostat"),
+        ({"mirostat": True}, "parameters.mirostat"),
+        ({"repeat_penalty": 0}, "parameters.repeat_penalty"),
+        ({"use_mmap": "yes"}, "parameters.use_mmap"),
+        ({"stop": [1]}, "parameters.stop"),
+        ({"custom": {"nested": 1}}, "parameters.custom"),
+        ({"custom": [[1]]}, "parameters.custom"),
+        ({"custom": float("nan")}, "parameters.custom"),
+        ({"custom": "x" * 5000}, "parameters.custom"),
+        ({"custom": list(range(65))}, "parameters.custom"),
+        ({" ": 1}, "parameters"),
+    ]
+    invalid = []
+    for parameters, where in bad:
+        exc = _api_error(orun.validate_settings_parameters, parameters,
+                         where="parameters")
+        if exc is None or exc.status != 400 \
+                or exc.code != "unsupported_value" or exc.param != where:
+            invalid.append(f"{parameters!r} -> {exc!r}")
+    failures = _check(failures, "bad option values 400 naming the path",
+                      not invalid, "; ".join(invalid))
+
+    exc = _api_error(orun.validate_settings_parameters,
+                     {"big": "x" * (70 * 1024)}, where="parameters")
+    failures = _check(failures, "an oversized option object is rejected",
+                      exc is not None and exc.status == 400, repr(exc))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _ServeClient(models=["m1"],
+                              capabilities=["completion", "tools"])
+        server, api, store, thread = _start_agent_api(tmp, client)
+        try:
+            status, _headers, raw = _http(
+                server, "POST", "/v1/sessions",
+                body={"model": "m1", "parameters": {"temperature": 3.0}})
+            error = json.loads(raw)["error"]
+            failures = _check(
+                failures, "session create validates parameters",
+                status == 400 and error["code"] == "unsupported_value"
+                and error["param"] == "parameters.temperature",
+                f"{status} {raw[:160]}")
+
+            status, _headers, raw = _http(
+                server, "POST", "/v1/sessions",
+                body={"model": "m1",
+                      "parameters": {"custom": 5, "top_k": 20}})
+            created = json.loads(raw)
+            failures = _check(
+                failures, "unknown options pass through on create",
+                status == 201, f"{status} {raw[:200]}")
+            session_id = created["id"]
+
+            status, _headers, raw = _http(
+                server, "PATCH", f"/v1/sessions/{session_id}",
+                body={"parameters": {"temperature": 0.5}})
+            failures = _check(failures, "PATCH merges validated parameters",
+                              status == 200, f"{status} {raw[:160]}")
+            status, _headers, raw = _http(
+                server, "GET", f"/v1/sessions/{session_id}")
+            stored = json.loads(raw).get("parameters", {})
+            failures = _check(
+                failures, "the merged parameters are persisted",
+                stored.get("temperature") == 0.5 and stored.get("custom") == 5
+                and stored.get("top_k") == 20, str(stored))
+
+            status, _headers, raw = _http(
+                server, "PATCH", f"/v1/sessions/{session_id}",
+                body={"parameters": {"temperature": 9}})
+            error = json.loads(raw)["error"]
+            failures = _check(
+                failures, "PATCH rejects out-of-range parameters",
+                status == 400 and error["param"] == "parameters.temperature",
+                f"{status} {raw[:160]}")
+            status, _headers, raw = _http(
+                server, "GET", f"/v1/sessions/{session_id}")
+            stored = json.loads(raw).get("parameters", {})
+            failures = _check(
+                failures, "a rejected PATCH leaves the session untouched",
+                stored.get("temperature") == 0.5, str(stored))
+
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body=_turn_request("hi",
+                                   settings={"parameters": {"top_k": -1}}))
+            error = json.loads(raw)["error"]
+            failures = _check(
+                failures, "turn settings validate parameters before starting",
+                status == 400
+                and error["param"] == "settings.parameters.top_k",
+                f"{status} {raw[:160]}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
 def test_serve_cli() -> int:
     """The `serve` subcommand: parser, config defaults and dispatch."""
     failures = 0
@@ -12759,6 +13002,8 @@ if __name__ == "__main__":
              + test_serve_cache_concurrency()
              + test_serve_config_matrix()
              + test_chunked_bodies()
+             + test_input_limits()
+             + test_native_parameters()
              + test_serve_cli()
              + test_openai_sdk()
              + test_agent_turn_lifecycle() + test_agent_turn_controls()

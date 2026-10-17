@@ -31,8 +31,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Optional
 
-from .artifacts import (MAX_IMAGE_BYTES, require_vision,
-                        resolve_content_parts)
+from .artifacts import (MAX_IMAGE_BYTES, InputBudget, InputLimits,
+                        input_limits, require_vision, resolve_content_parts)
 from .client import OllamaError, build_chat_payload
 from .constants import DEFAULT_TIMEOUT
 from .helpers import CancelToken, canonical_model_name
@@ -76,7 +76,8 @@ class ChatRequest:
 
 
 def parse_chat_request(body: Any, *,
-                       store: Optional[Any] = None) -> ChatRequest:
+                       store: Optional[Any] = None,
+                       limits: Optional[InputLimits] = None) -> ChatRequest:
     """Validate one `/v1/chat/completions` body; raises `ApiError(400)`."""
     if not isinstance(body, dict):
         raise ApiError(400, "request body must be a JSON object")
@@ -98,7 +99,8 @@ def parse_chat_request(body: Any, *,
         raise ApiError(400, "stream must be a boolean", param="stream")
     include_usage = _stream_options(body)
     system = _system_from(body)
-    converted, has_images = _messages_from(messages, system, store=store)
+    converted, has_images = _messages_from(messages, system, store=store,
+                                           budget=InputBudget(limits))
     return ChatRequest(
         model=model.strip(),
         messages=converted,
@@ -357,7 +359,8 @@ def _tools_from(body: dict[str, Any]) -> Optional[list[dict[str, Any]]]:
 
 
 def _messages_from(messages: list[Any], system: Optional[str], *,
-                   store: Optional[Any] = None
+                   store: Optional[Any] = None,
+                   budget: Optional[InputBudget] = None
                    ) -> tuple[list[dict[str, Any]], bool]:
     """OpenAI messages -> Ollama payloads; resolves `tool_call_id` -> name."""
     # Validate every element before any role/field inspection so a malformed
@@ -366,6 +369,8 @@ def _messages_from(messages: list[Any], system: Optional[str], *,
         if not isinstance(message, dict):
             raise ApiError(400, f"messages[{index}] must be an object",
                            param=f"messages[{index}]")
+    if budget is not None:
+        budget.note_messages(len(messages))
     name_by_id: dict[str, str] = {}
     for message in messages:
         for call in message.get("tool_calls") or []:
@@ -406,10 +411,13 @@ def _messages_from(messages: list[Any], system: Optional[str], *,
                     f"tool message references an unknown tool_call_id: "
                     f"{call_id!r}",
                     param=f"messages[{index}].tool_call_id")
+            if budget is not None:
+                budget.note_text(len(content.encode("utf-8")),
+                                 f"messages[{index}].content")
             out.append({"role": "tool", "content": content, "tool_name": name})
             continue
         content, images = _content_parts(message.get("content"), index,
-                                         store=store)
+                                         store=store, budget=budget)
         has_images = has_images or bool(images)
         payload: dict[str, Any] = {"role": role, "content": content}
         if images:
@@ -421,7 +429,9 @@ def _messages_from(messages: list[Any], system: Optional[str], *,
 
 
 def _content_parts(content: Any, index: int, *,
-                   store: Optional[Any] = None) -> tuple[str, list[str]]:
+                   store: Optional[Any] = None,
+                   budget: Optional[InputBudget] = None
+                   ) -> tuple[str, list[str]]:
     """One message's content mapped through the shared resolver.
 
     The extension part `{"type": "file", "file_id": "art_…"}` resolves
@@ -431,7 +441,7 @@ def _content_parts(content: Any, index: int, *,
     """
     resolved = resolve_content_parts(
         content, where=f"messages[{index}].content", store=store,
-        image_max=MAX_IMAGE_BYTES)
+        image_max=MAX_IMAGE_BYTES, budget=budget)
     return resolved.text, [image.b64 for image in resolved.images]
 
 
@@ -668,6 +678,9 @@ class OpenAIApi:
         #: The artifact store (`artifacts.ArtifactStore`) when serve runs
         #: one: `file` content parts resolve through it. None otherwise.
         self._artifacts = artifacts
+        #: Aggregate resolved-input caps (`serve_max_*`); the JSON body cap
+        #: bounds the request as sent, these bound what parts may assemble.
+        self._limits = input_limits(self.config)
         self.timeout: float = (timeout if timeout is not None else
                                self.config.get("timeout") or DEFAULT_TIMEOUT)
         self.keepalive = (keepalive if keepalive is not None
@@ -758,7 +771,8 @@ class OpenAIApi:
 
     def chat_completions(self, request: Request,
                          params: dict[str, str]) -> Response | StreamResponse:
-        plan = parse_chat_request(request.json, store=self._artifacts)
+        plan = parse_chat_request(request.json, store=self._artifacts,
+                                  limits=self._limits)
         client = self._client_factory()
         self._ensure_model(plan.model)
         if plan.has_images:

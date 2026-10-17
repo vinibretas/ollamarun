@@ -47,7 +47,13 @@ from urllib.parse import urljoin, urlsplit
 import requests
 
 from .constants import (ARTIFACTS_DIR, DEFAULT_ARTIFACT_MAX_BYTES,
-                        DEFAULT_ARTIFACT_QUOTA_BYTES, DEFAULT_ARTIFACT_TTL)
+                        DEFAULT_ARTIFACT_QUOTA_BYTES, DEFAULT_ARTIFACT_TTL,
+                        DEFAULT_SERVE_MAX_CONTENT_PARTS,
+                        DEFAULT_SERVE_MAX_IMAGE_BYTES,
+                        DEFAULT_SERVE_MAX_IMAGES,
+                        DEFAULT_SERVE_MAX_MESSAGES,
+                        DEFAULT_SERVE_MAX_MESSAGE_BYTES,
+                        DEFAULT_SERVE_MAX_TEXT_BYTES)
 from .helpers import now_iso
 from .server import ApiError
 
@@ -688,22 +694,120 @@ def _file_chunk(ref: ArtifactRef, store: ArtifactStore, *,
             f"as {ref.id}; contents were not extracted]", None)
 
 
+@dataclass(frozen=True)
+class InputLimits:
+    """Aggregate per-request input caps, from the validated `serve_max_*`."""
+
+    max_messages: int = DEFAULT_SERVE_MAX_MESSAGES
+    max_content_parts: int = DEFAULT_SERVE_MAX_CONTENT_PARTS
+    max_message_bytes: int = DEFAULT_SERVE_MAX_MESSAGE_BYTES
+    max_text_bytes: int = DEFAULT_SERVE_MAX_TEXT_BYTES
+    max_images: int = DEFAULT_SERVE_MAX_IMAGES
+    max_image_bytes: int = DEFAULT_SERVE_MAX_IMAGE_BYTES
+
+
+def input_limits(config: Optional[dict[str, Any]] = None) -> InputLimits:
+    """`InputLimits` from a serve config; an omitted key uses the default."""
+    config = config or {}
+
+    def _int(key: str, default: int) -> int:
+        value = config.get(key)
+        return default if value is None else int(value)
+
+    return InputLimits(
+        max_messages=_int("serve_max_messages", DEFAULT_SERVE_MAX_MESSAGES),
+        max_content_parts=_int("serve_max_content_parts",
+                               DEFAULT_SERVE_MAX_CONTENT_PARTS),
+        max_message_bytes=_int("serve_max_message_bytes",
+                               DEFAULT_SERVE_MAX_MESSAGE_BYTES),
+        max_text_bytes=_int("serve_max_text_bytes",
+                            DEFAULT_SERVE_MAX_TEXT_BYTES),
+        max_images=_int("serve_max_images", DEFAULT_SERVE_MAX_IMAGES),
+        max_image_bytes=_int("serve_max_image_bytes",
+                             DEFAULT_SERVE_MAX_IMAGE_BYTES))
+
+
+def _b64_decoded_bytes(payload: str) -> int:
+    """The decoded size of a base64 payload (conservative by the padding)."""
+    return (len(payload) * 3) // 4
+
+
+class InputBudget:
+    """One request's resolved-input accounting, shared across its messages.
+
+    The JSON body cap bounds the request as *sent*; this bounds what
+    resolving content parts (remote image fetches, artifact inlines) may
+    assemble on top of it — a small body can name many large inputs. Every
+    `note_*` raises the structured 413 as soon as a limit is crossed, before
+    the input reaches inference (counts are checked before any fetch).
+    """
+
+    def __init__(self, limits: Optional[InputLimits] = None):
+        self.limits = limits or InputLimits()
+        self.messages = 0
+        self.parts = 0
+        self.text_bytes = 0
+        self.images = 0
+        self.image_bytes = 0
+
+    @staticmethod
+    def _too_large(param: str, name: str, limit: int) -> ApiError:
+        return ApiError(413, f"resolved input exceeds {name} ({limit})",
+                        param=param, code="input_too_large",
+                        extra={"limit_name": name, "limit_value": limit})
+
+    def note_messages(self, count: int, param: str = "messages") -> None:
+        self.messages += count
+        if self.messages > self.limits.max_messages:
+            raise self._too_large(param, "serve_max_messages",
+                                  self.limits.max_messages)
+
+    def note_part(self, param: str) -> None:
+        self.parts += 1
+        if self.parts > self.limits.max_content_parts:
+            raise self._too_large(param, "serve_max_content_parts",
+                                  self.limits.max_content_parts)
+
+    def note_text(self, size: int, param: str) -> None:
+        if size > self.limits.max_message_bytes:
+            raise self._too_large(param, "serve_max_message_bytes",
+                                  self.limits.max_message_bytes)
+        self.text_bytes += size
+        if self.text_bytes > self.limits.max_text_bytes:
+            raise self._too_large(param, "serve_max_text_bytes",
+                                  self.limits.max_text_bytes)
+
+    def note_image(self, size: int, param: str) -> None:
+        self.images += 1
+        if self.images > self.limits.max_images:
+            raise self._too_large(param, "serve_max_images",
+                                  self.limits.max_images)
+        self.image_bytes += size
+        if self.image_bytes > self.limits.max_image_bytes:
+            raise self._too_large(param, "serve_max_image_bytes",
+                                  self.limits.max_image_bytes)
+
+
 def resolve_content_parts(content: Any, *, where: str,
                           store: Optional[ArtifactStore] = None,
                           inline_max: int = INLINE_TEXT_BYTES,
                           image_max: int = MAX_IMAGE_BYTES,
-                          fetch: Optional[Callable[..., tuple[bytes, str]]] = None
+                          fetch: Optional[Callable[..., tuple[bytes, str]]] = None,
+                          budget: Optional[InputBudget] = None
                           ) -> ResolvedContent:
     """Resolve one message's content parts into text, images and refs.
 
     `where` is the caller's parameter path (e.g. `messages[0].content`) so
     both surfaces name the offending part identically. Strings pass through;
     an array accepts `text`, `image_url` (data: or http(s)) and `file`
-    (`file_id`), raising `ApiError` for anything else.
+    (`file_id`), raising `ApiError` for anything else. When a `budget` is
+    given, every part, image and text byte is charged to it.
     """
     if content is None:
         return ResolvedContent()
     if isinstance(content, str):
+        if budget is not None:
+            budget.note_text(len(content.encode("utf-8")), where)
         return ResolvedContent(text=content)
     if not isinstance(content, list):
         raise ApiError(400, "content must be a string or an array of parts",
@@ -714,6 +818,8 @@ def resolve_content_parts(content: Any, *, where: str,
     refs: list[ArtifactRef] = []
     for part_index, part in enumerate(content):
         at = f"{where}[{part_index}]"
+        if budget is not None:
+            budget.note_part(at)
         if not isinstance(part, dict):
             raise ApiError(400, "content parts must be objects", param=at)
         kind = part.get("type")
@@ -729,9 +835,11 @@ def resolve_content_parts(content: Any, *, where: str,
             if not isinstance(url, str):
                 raise ApiError(400, "image_url parts need a url",
                                param=f"{at}.url")
-            images.append(ResolvedImage(
-                b64=_image_from_url(url, where=f"{at}.url",
-                                    image_max=image_max, fetch=fetch_fn)))
+            b64 = _image_from_url(url, where=f"{at}.url",
+                                  image_max=image_max, fetch=fetch_fn)
+            if budget is not None:
+                budget.note_image(_b64_decoded_bytes(b64), f"{at}.url")
+            images.append(ResolvedImage(b64=b64))
         elif kind == "file":
             file_id = part.get("file_id")
             if not isinstance(file_id, str) or not file_id.strip():
@@ -747,9 +855,14 @@ def resolve_content_parts(content: Any, *, where: str,
                                        image_max=image_max)
             chunks.append(chunk)
             if image is not None:
+                if budget is not None:
+                    budget.note_image(_b64_decoded_bytes(image.b64),
+                                      f"{at}.file_id")
                 images.append(image)
         else:
             raise ApiError(400, f"unsupported content part type: {kind!r}",
                            param=at, code="unsupported_value")
-    return ResolvedContent(text="\n\n".join(c for c in chunks if c),
-                           images=images, artifacts=refs)
+    text = "\n\n".join(c for c in chunks if c)
+    if budget is not None:
+        budget.note_text(len(text.encode("utf-8")), where)
+    return ResolvedContent(text=text, images=images, artifacts=refs)
