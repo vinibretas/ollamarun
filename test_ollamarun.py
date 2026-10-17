@@ -2865,7 +2865,7 @@ def test_cmd_num_ctx_max_gpu() -> int:
                 orun.cmd_num_ctx(repl, "--max-gpu")
             out = _plain(cap.get())
             failures += _fit_check("/num-ctx --max-gpu estimates and sets num_ctx",
-                               repl.session.parameters.get("num_ctx") == 26624
+                               repl.session.parameters.get("num_ctx") == 48128
                                and "estimate only" in out and client.load_ctxs == [],
                                f"params={repl.session.parameters} out={out[-160:]}")
 
