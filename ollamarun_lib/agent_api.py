@@ -288,6 +288,7 @@ def turn_body(snapshot: Any) -> dict[str, Any]:
             "rounds": snapshot.result.rounds,
             "usage": usage_from(stats),
             "stats": stats or None,
+            "artifacts": list(snapshot.result.artifacts),
         }
     error = snapshot.error
     if snapshot.synthetic_terminal and error:
@@ -317,6 +318,7 @@ def session_body(session: Session, *, active_turn: Optional[str] = None
         "messages": len(session.messages),
         "turns": (session.stats or {}).get("turns", 0),
         "system": session.system,
+        "artifacts": list(session.artifacts),
         "active_turn_id": active_turn,
     }
 

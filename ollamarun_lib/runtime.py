@@ -30,9 +30,10 @@ from typing import Any, Callable, Optional
 
 from .client import OllamaError, build_chat_payload
 from .constants import DEFAULT_TIMEOUT
-from .events import (APPROVAL_REQUIRED, APPROVAL_RESOLVED, MESSAGE_COMPLETED,
-                     TOOL_CALL, TOOL_RESULT, TURN_CANCELLED, TURN_COMPLETED,
-                     TURN_ERROR, TURN_STARTED, TURN_WARNING, RuntimeEvent)
+from .events import (APPROVAL_REQUIRED, APPROVAL_RESOLVED, ARTIFACT_CREATED,
+                     MESSAGE_COMPLETED, TOOL_CALL, TOOL_RESULT, TURN_CANCELLED,
+                     TURN_COMPLETED, TURN_ERROR, TURN_STARTED, TURN_WARNING,
+                     RuntimeEvent)
 from .helpers import CancelToken, canonical_model_name
 from .interactive import model_context_length
 from .renderer import GenerationResult
@@ -172,6 +173,8 @@ class AgentRuntime:
     def __init__(self, hooks: TurnHooks) -> None:
         self.hooks = hooks
         self.tool_round = 0
+        #: Every ref this turn's tools registered, in order (`TurnResult.artifacts`).
+        self.artifacts: list[dict[str, Any]] = []
         self.runner = ToolRunner()
 
     # ── plumbing ────────────────────────────────────────────────────────────
@@ -324,6 +327,7 @@ class AgentRuntime:
                                          "thinking": result.thinking or None,
                                          "tool_calls": result.tool_calls or None},
                           usage=dict(result.stats or {}),
+                          artifacts=list(self.artifacts),
                           rounds=self.tool_round, error=result.error)
 
     # ── tool execution ──────────────────────────────────────────────────────
@@ -407,11 +411,19 @@ class AgentRuntime:
             duration = outcome.duration if outcome.duration \
                 else time.monotonic() - started
             self._notify("tool_done", name=name, ok=outcome.ok, duration=duration)
+            artifacts = list(outcome.artifacts or [])
+            for ref in artifacts:
+                self.artifacts.append(ref)
+                self._emit(ARTIFACT_CREATED, **ref)
             session.add_message("tool", alias_note + outcome.text, tool_name=name,
-                                tool_note=outcome.title_note or None)
+                                tool_note=outcome.title_note or None,
+                                artifacts=artifacts or None)
+            if artifacts:
+                session.add_artifacts(artifacts)
             self._emit(TOOL_RESULT, name=name, ok=outcome.ok,
                        text=alias_note + outcome.text, duration=duration,
                        note=outcome.title_note or None, detail=detail,
+                       artifacts=[ref.get("id") for ref in artifacts] or None,
                        cancelled=True if outcome.cancelled else None)
         if not hooks.settings.no_save:
             hooks.store.save(session)

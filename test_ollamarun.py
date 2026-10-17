@@ -9026,6 +9026,133 @@ def test_tool_artifact_registration() -> int:
     return failures
 
 
+def test_artifact_events() -> int:
+    """artifact.created rides the turn stream and reaches the TurnResult."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        store = orun.SessionStore(sessions_dir=root / "s",
+                                  index_path=root / "i.json")
+        artifacts = orun.ArtifactStore(root / "artifacts")
+        args = orun.build_parser().parse_args(
+            ["m1", "--render", "plain", "--no-save", "-y"])
+        out = root / "report.txt"
+        client = _FakeClient(models=["m1"], capabilities=["completion", "tools"],
+                             chat_script=[
+                                 [{"message": {"content": "", "tool_calls": [
+                                     {"function": {"name": "write_file",
+                                                   "arguments": {"path": str(out),
+                                                                 "content": "payload"}}}]}},
+                                  {"done": True}],
+                                 [{"message": {"content": "done"}, "done": True}],
+                             ])
+        session = orun.Session.create("m1", client.base)
+        publisher = artifacts.for_turn(turn_id="turn_test",
+                                       session_id=session.id)
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store, session,
+                         artifacts=publisher)
+        repl._build_prompt_session = lambda: None
+        repl.headless = True
+        manager = orun.TurnManager()
+
+        def work(sink, cancel):
+            hooks = repl._turn_hooks()
+            hooks.on_event = sink
+            hooks.cancel = cancel
+            # The API seam: the runtime's own tool execution carries this
+            # sink, the approver and the tool context into every round.
+            hooks.execute_tools = None
+            renderer = orun.HeadlessRenderer(on_event=sink)
+
+            def present(payload, after_tools, cancel_token):
+                return renderer.stream(client.chat(payload, cancel=cancel_token),
+                                       cancel=cancel_token)
+
+            hooks.present_round = present
+            runtime = orun.AgentRuntime(hooks)
+            result = runtime.run()
+            return runtime.to_turn_result(result, session_id=session.id,
+                                          turn_id="turn_test")
+
+        handle = manager.submit(session_id=session.id, work=work)
+        snapshot = manager.wait(handle.id, timeout=5)
+        events = _collect(manager.subscribe(handle.id, after=0))
+        types = [event.type for event in events]
+        created = [event for event in events if event.type == orun.ARTIFACT_CREATED]
+        results = [event for event in events if event.type == orun.TOOL_RESULT]
+        failures = _check(failures, "artifact.created carries the full ref",
+                          len(created) == 1
+                          and created[0].data.get("source") == "tool"
+                          and created[0].data.get("filename") == "report.txt"
+                          and created[0].data.get("session_id") == session.id
+                          and created[0].data.get("turn_id") == "turn_test"
+                          and created[0].data.get("url", "").startswith("/v1/artifacts/"),
+                          str(created[:1]))
+        failures = _check(failures,
+                          "artifact.created sits between the decision and the result",
+                          orun.APPROVAL_RESOLVED in types
+                          and types.index(orun.APPROVAL_RESOLVED)
+                          < types.index(orun.ARTIFACT_CREATED)
+                          < types.index(orun.TOOL_RESULT),
+                          str(types))
+        failures = _check(failures, "tool.result references the artifact ids",
+                          bool(results)
+                          and results[0].data.get("artifacts")
+                          == [created[0].data["id"]],
+                          str(results[:1]))
+        failures = _check(failures, "the TurnResult carries the refs",
+                          snapshot is not None and snapshot.result is not None
+                          and [ref.get("id") for ref in snapshot.result.artifacts]
+                          == [created[0].data["id"]],
+                          str(snapshot.result.artifacts
+                              if snapshot and snapshot.result else None))
+        failures = _check(failures, "the session records the artifact",
+                          [ref.get("id") for ref in session.artifacts]
+                          == [created[0].data["id"]]
+                          and any(message.get("artifacts")
+                                  for message in session.messages
+                                  if message.get("role") == "tool"),
+                          str(session.artifacts))
+        stored = artifacts.read(created[0].data["id"])
+        failures = _check(failures, "the bytes are in the store",
+                          stored is not None and stored[1] == b"payload",
+                          repr(stored))
+    return failures
+
+
+def test_artifact_session_persistence() -> int:
+    """Sessions accumulate refs without leaking them to the model."""
+    failures = 0
+    old = {"id": "s1", "model": "m1", "host": "h",
+           "messages": [{"role": "user", "content": "hi", "ts": "t"}]}
+    loaded = orun.Session.from_dict(old)
+    failures = _check(failures, "old session files load without artifacts",
+                      loaded.artifacts == [] and loaded.id == "s1",
+                      repr(loaded.artifacts))
+    ref = {"id": "art_" + "1" * 32, "media_type": "text/plain",
+           "filename": "a.txt", "size": 1, "sha256": "x", "source": "tool",
+           "turn_id": "t1", "session_id": "s1", "created_at": "now",
+           "url": "/v1/artifacts/" + "art_" + "1" * 32}
+    loaded.add_artifacts([ref])
+    loaded.add_artifacts([dict(ref)])  # same id again: deduped
+    failures = _check(failures, "artifact refs are deduped by id",
+                      [item["id"] for item in loaded.artifacts] == [ref["id"]],
+                      str(loaded.artifacts))
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        store.save(loaded)
+        round_trip = store.load("s1")
+        failures = _check(failures, "artifact refs survive the session round trip",
+                          round_trip.artifacts == [ref],
+                          str(round_trip.artifacts))
+        payloads = round_trip.message_payloads(with_tools=True)
+        failures = _check(failures, "artifact refs never reach the model payload",
+                          all("artifacts" not in payload for payload in payloads),
+                          str(payloads))
+    return failures
+
+
 def test_cancellation_destructive_guard() -> int:
     """A stopped turn must not trash anything, even inside the handler."""
     failures = 0
@@ -11134,6 +11261,7 @@ if __name__ == "__main__":
              + test_session_store_without_fcntl()
              + test_artifact_store() + test_artifact_quota_and_ttl()
              + test_tool_artifact_registration()
+             + test_artifact_events() + test_artifact_session_persistence()
              + test_python310_syntax() + test_turn_result_mapping()
              + test_turn_event_envelope()
              + test_turn_manager_lifecycle()
