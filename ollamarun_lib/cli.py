@@ -19,11 +19,7 @@ from rich.markup import escape
 from .artifacts import ArtifactStore
 from .client import OllamaClient, OllamaError
 from .constants import (
-    ARTIFACTS_DIR,
     CONFIG_PATH,
-    DEFAULT_ARTIFACT_MAX_BYTES,
-    DEFAULT_ARTIFACT_QUOTA_BYTES,
-    DEFAULT_ARTIFACT_TTL,
     DEFAULT_HOST,
     DEFAULT_SERVE_BIND,
     DEFAULT_SERVE_PORT,
@@ -48,6 +44,7 @@ from .helpers import (
     parse_think,
     remote_node,
     resolve_remote,
+    serve_settings,
     setup_logging,
     shortcut,
     tailscale_peer_state,
@@ -391,8 +388,10 @@ security:
   the port to the public internet. The listener (--bind/--port) is separate
   from the upstream Ollama address (--host/--remote).
 
-config: ~/etc/config_files/ollamarun.json (serve_bind, serve_port); the
-        startup banner prints the bound address, upstream and the warning.
+config: ~/etc/config_files/ollamarun.json — the validated serve_* matrix
+        (bind, port, body/input limits, timeouts, serve_agent, serve_models,
+        serve_workspace, artifact and fit keys; see the README). The startup
+        banner prints the bound address, upstream and the warning.
 """
     parser = argparse.ArgumentParser(
         prog="ollamarun serve",
@@ -417,6 +416,9 @@ config: ~/etc/config_files/ollamarun.json (serve_bind, serve_port); the
                         help=f"upstream request timeout (default: {DEFAULT_TIMEOUT})")
     parser.add_argument("--insecure", action="store_true",
                         help="skip TLS verification for the upstream")
+    parser.add_argument("--keep-loaded", action="store_true",
+                        help="do not unload the models this server used when "
+                             "it stops (overrides serve_unload_on_exit)")
     parser.add_argument("--config", metavar="FILE",
                         help=f"config file (default: {CONFIG_PATH})")
     parser.add_argument("--debug", action="store_true",
@@ -454,33 +456,21 @@ def serve_main(argv: Optional[list[str]] = None) -> int:
                                             quiet=not console.is_terminal):
         return 1
 
-    bind = str(args.bind or config.get("serve_bind") or DEFAULT_SERVE_BIND)
     try:
-        port = args.port if args.port is not None else int(config.get("serve_port")
-                                                           or DEFAULT_SERVE_PORT)
-    except (TypeError, ValueError):
-        console.print("[err]serve_port in the config must be a number[/err]")
+        settings = serve_settings(config, bind=args.bind, port=args.port)
+    except ValueError as exc:
+        console.print(f"[err]{escape(str(exc))}[/err]")
         return 2
-    if not 0 <= port <= 65535:
-        console.print("[err]--port must be between 0 and 65535[/err]")
-        return 2
+    if args.keep_loaded:
+        settings["serve_unload_on_exit"] = False
+    bind = settings["serve_bind"]
+    port = settings["serve_port"]
 
-    def _artifact_number(key: str, default: Any, cast: Any) -> Any:
-        raw = config.get(key)
-        return cast(default if raw is None else raw)
-
-    try:
-        artifact_store = ArtifactStore(
-            Path(str(config.get("serve_artifact_root") or ARTIFACTS_DIR)),
-            max_bytes=_artifact_number("serve_artifact_max_bytes",
-                                       DEFAULT_ARTIFACT_MAX_BYTES, int),
-            quota_bytes=_artifact_number("serve_artifact_quota_bytes",
-                                         DEFAULT_ARTIFACT_QUOTA_BYTES, int),
-            ttl=_artifact_number("serve_artifact_ttl",
-                                 DEFAULT_ARTIFACT_TTL, float))
-    except (TypeError, ValueError):
-        console.print("[err]serve_artifact_* config values must be numbers[/err]")
-        return 2
+    artifact_store = ArtifactStore(
+        Path(settings["serve_artifact_root"]),
+        max_bytes=settings["serve_artifact_max_bytes"],
+        quota_bytes=settings["serve_artifact_quota_bytes"],
+        ttl=settings["serve_artifact_ttl"])
     try:
         artifact_store.sweep()
     except OSError:
@@ -489,15 +479,18 @@ def serve_main(argv: Optional[list[str]] = None) -> int:
     def client_factory() -> OllamaClient:
         return OllamaClient(host, insecure=args.insecure, timeout=timeout)
 
-    router = build_router(client_factory, config=config, timeout=timeout,
-                          keepalive=config.get("keepalive"),
+    router = build_router(client_factory, config=settings, timeout=timeout,
+                          keepalive=settings.get("keepalive"),
                           artifacts=artifact_store)
     agent_api = add_agent_routes(
-        router, args=build_parser().parse_args([]), config=config,
+        router, args=build_parser().parse_args([]), config=settings,
         store=SessionStore(), client_factory=client_factory,
-        artifacts=artifact_store)
+        cwd=settings["serve_workspace"], artifacts=artifact_store)
     try:
-        server = HttpServer(router, bind=bind, port=port)
+        server = HttpServer(router, bind=bind, port=port,
+                            body_limit=settings["serve_body_limit"],
+                            request_timeout=settings["serve_request_timeout"],
+                            ping_interval=settings["serve_sse_ping_interval"])
     except OSError as exc:
         console.print(f"[err]cannot listen on {escape(bind)}:{port}: "
                       f"{escape(str(exc))}[/err]")
@@ -511,6 +504,9 @@ def serve_main(argv: Optional[list[str]] = None) -> int:
     console.print(f"  listening [ok]http://{escape(bound_host)}:{bound_port}[/ok]"
                   f"[dim]{scope}[/dim]")
     console.print(f"  upstream  [dim]{escape(client.base)}[/dim]")
+    if settings["serve_workspace"]:
+        console.print("  workspace [dim]"
+                      f"{escape(settings['serve_workspace'])}[/dim]")
     console.print("[dim]  models /v1/models · chat /v1/chat/completions · "
                   "agent turns /v1/agent/turns · sessions /v1/sessions[/dim]")
     console.print("[warn]trusted-network-only: no authentication — never expose "

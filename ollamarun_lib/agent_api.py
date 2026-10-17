@@ -494,17 +494,22 @@ class AgentApi:
         #: The serve artifact store: `file`/image parts resolve through it,
         #: turn tools publish into it, and the artifact routes read from it.
         self._artifacts = artifacts
+        # Every turn-manager key is explicit-None defaulted: a configured 0
+        # must not be conflated with "unset" (`or 4` would).
+        raw_max_active = self._config.get("serve_max_active_turns")
+        raw_buffer = self._config.get("serve_turn_event_buffer")
+        raw_turn_ttl = self._config.get("serve_turn_event_ttl")
         self._manager = manager or TurnManager(
-            max_active=int(self._config.get("serve_max_active_turns") or 4),
-            buffer_events=int(self._config.get("serve_turn_event_buffer")
-                              or 10000),
-            completed_ttl=float(self._config.get("serve_turn_event_ttl")
-                                or 86400))
+            max_active=4 if raw_max_active is None else int(raw_max_active),
+            buffer_events=10000 if raw_buffer is None else int(raw_buffer),
+            completed_ttl=86400.0 if raw_turn_ttl is None
+            else float(raw_turn_ttl))
         #: Asynchronous context fits (`fits.py`); the TTL is explicit-None
         #: defaulted so 0 can mean "keep forever".
         raw_fit_ttl = self._config.get("serve_fit_ttl")
+        raw_fit_active = self._config.get("serve_max_active_fits")
         self._fits = fits or FitService(
-            max_active=int(self._config.get("serve_max_active_fits") or 2),
+            max_active=2 if raw_fit_active is None else int(raw_fit_active),
             ttl=86400.0 if raw_fit_ttl is None else float(raw_fit_ttl))
         #: How long a parked approval may wait for a decision, in seconds;
         #: an explicit 0 disables the timeout (the approval waits until it is
@@ -513,7 +518,9 @@ class AgentApi:
         raw_approval_timeout = self._config.get("serve_approval_timeout")
         self._approval_timeout = 300.0 if raw_approval_timeout is None \
             else float(raw_approval_timeout)
-        self._turn_timeout = float(self._config.get("serve_turn_timeout") or 0)
+        raw_turn_timeout = self._config.get("serve_turn_timeout")
+        self._turn_timeout = 0.0 if raw_turn_timeout is None \
+            else float(raw_turn_timeout)
         #: Serve never takes `auto` from the config: the client opts into
         #: broad execution per turn (`approval: "interactive"` + an `auto`
         #: decision), and `--yes` remains the only CLI auto path.

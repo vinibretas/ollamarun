@@ -562,14 +562,17 @@ class TurnManager:
 
     def _sweep_locked(self, now: float) -> int:
         dropped = 0
-        for turn_id, record in list(self._records.items()):
-            if not record.worker_done or record.finished_at is None:
-                continue
-            if now - record.finished_at < self.completed_ttl:
-                continue
-            self._records.pop(turn_id, None)
-            self._expired[turn_id] = _Expired(status=record.status, at=now)
-            dropped += 1
+        # `completed_ttl: 0` keeps completed records forever (the same zero
+        # convention as the artifact and fit TTLs).
+        if self.completed_ttl > 0:
+            for turn_id, record in list(self._records.items()):
+                if not record.worker_done or record.finished_at is None:
+                    continue
+                if now - record.finished_at < self.completed_ttl:
+                    continue
+                self._records.pop(turn_id, None)
+                self._expired[turn_id] = _Expired(status=record.status, at=now)
+                dropped += 1
         horizon = now - self.expired_ttl
         for turn_id, expired in list(self._expired.items()):
             if expired.at < horizon:

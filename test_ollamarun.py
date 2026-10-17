@@ -8545,9 +8545,9 @@ def test_turn_buffer_truncation() -> int:
 
 
 def test_turn_expired() -> int:
-    """A swept turn answers TurnExpired, not UnknownTurn."""
+    """A swept turn answers TurnExpired, not UnknownTurn; ttl 0 keeps it."""
     failures = 0
-    manager = orun.TurnManager(completed_ttl=0.0)
+    manager = orun.TurnManager(completed_ttl=30.0)
 
     def work(sink, cancel):
         sink(orun.RuntimeEvent(orun.TURN_COMPLETED, {}))
@@ -8557,6 +8557,8 @@ def test_turn_expired() -> int:
     # Join the worker directly: wait()/get() would sweep the record first,
     # hiding whether subscribe() enforces retention on its own.
     manager._records[handle.id].thread.join(5)
+    # Age the record past its retention so subscribe()'s own sweep expires it.
+    manager._records[handle.id].finished_at -= 60.0
     try:
         manager.subscribe(handle.id)
         raised = None
@@ -8565,6 +8567,21 @@ def test_turn_expired() -> int:
     failures = _check(failures, "a swept turn reports expired with its status",
                       raised is not None and raised.status == "completed"
                       and manager.get(handle.id) is None, repr(raised))
+
+    # `completed_ttl: 0` is the "keep forever" convention: even a sweep long
+    # after the turn finished leaves the record in place.
+    keeper = orun.TurnManager(completed_ttl=0.0)
+
+    def work2(sink, cancel):
+        sink(orun.RuntimeEvent(orun.TURN_COMPLETED, {}))
+        return orun.TurnResult(id="y", session_id="s", status="completed")
+
+    kept = keeper.submit(session_id="s", work=work2)
+    keeper.wait(kept.id, timeout=5)
+    keeper.sweep(now=time.monotonic() + 10_000_000)
+    failures = _check(failures, "a zero retention keeps completed turns",
+                      keeper.get(kept.id) is not None,
+                      repr(keeper.get(kept.id)))
     return failures
 
 
@@ -11177,6 +11194,148 @@ def test_serve_cache_concurrency() -> int:
     return failures
 
 
+def test_serve_config_matrix() -> int:
+    """The validated serve_* matrix: defaults, zeros, invalid values, wiring."""
+    failures = 0
+    base = orun.serve_settings({})
+    failures = _check(
+        failures, "the serve matrix defaults come from the constants",
+        base["serve_body_limit"] == orun.DEFAULT_SERVE_BODY_LIMIT
+        and base["serve_request_timeout"] == orun.DEFAULT_SERVE_REQUEST_TIMEOUT
+        and base["serve_sse_ping_interval"] == orun.DEFAULT_SERVE_PING_INTERVAL
+        and base["serve_shutdown_timeout"] == orun.DEFAULT_SERVE_SHUTDOWN_TIMEOUT
+        and base["serve_agent"] is True and base["serve_models"] == []
+        and base["serve_workspace"] is None
+        and base["serve_unload_on_exit"] is True
+        and base["serve_max_messages"] == 16384
+        and base["serve_max_content_parts"] == 4096
+        and base["serve_max_message_bytes"] == 8 * 1024 * 1024
+        and base["serve_max_text_bytes"] == 32 * 1024 * 1024
+        and base["serve_max_images"] == 64
+        and base["serve_max_image_bytes"] == 64 * 1024 * 1024
+        and base["serve_max_active_turns"] == 4
+        and base["serve_turn_event_buffer"] == 10000
+        and base["serve_max_active_fits"] == 2,
+        str({k: v for k, v in sorted(base.items())
+             if k.startswith("serve_")}))
+
+    zeros = orun.serve_settings({
+        "serve_approval_timeout": 0, "serve_turn_timeout": 0,
+        "serve_turn_event_ttl": 0, "serve_artifact_ttl": 0, "serve_fit_ttl": 0,
+        "serve_artifact_max_bytes": 0, "serve_artifact_quota_bytes": 0})
+    failures = _check(
+        failures, "an explicit zero keeps its documented meaning",
+        zeros["serve_approval_timeout"] == 0.0
+        and zeros["serve_turn_timeout"] == 0.0
+        and zeros["serve_turn_event_ttl"] == 0.0
+        and zeros["serve_artifact_ttl"] == 0.0
+        and zeros["serve_fit_ttl"] == 0.0
+        and zeros["serve_artifact_max_bytes"] == 0
+        and zeros["serve_artifact_quota_bytes"] == 0,
+        str({k: zeros[k] for k in sorted(zeros)
+             if "_ttl" in k or "timeout" in k or "artifact" in k}))
+
+    bad = [
+        ("serve_bind", ""), ("serve_port", "11440"), ("serve_port", 70000),
+        ("serve_agent", "yes"), ("serve_models", "qwen3"),
+        ("serve_models", ["qwen3", "  "]),
+        ("serve_workspace", "/no/such/dir/anywhere"),
+        ("serve_body_limit", 10), ("serve_body_limit", True),
+        ("serve_request_timeout", 0), ("serve_request_timeout", float("nan")),
+        ("serve_sse_ping_interval", 0), ("serve_shutdown_timeout", 0),
+        ("serve_unload_on_exit", 1), ("serve_max_messages", 0),
+        ("serve_max_content_parts", 0), ("serve_max_message_bytes", 0),
+        ("serve_max_text_bytes", 0), ("serve_max_images", 0),
+        ("serve_max_image_bytes", 0), ("serve_max_active_turns", 0),
+        ("serve_turn_event_buffer", 0), ("serve_turn_event_ttl", -1),
+        ("serve_approval_timeout", -1), ("serve_turn_timeout", -1),
+        ("serve_artifact_root", ""), ("serve_artifact_max_bytes", -1),
+        ("serve_artifact_quota_bytes", -1), ("serve_artifact_ttl", -1),
+        ("serve_fit", "auto"), ("serve_max_active_fits", 0),
+        ("serve_fit_ttl", -1),
+    ]
+    invalid = []
+    for key, value in bad:
+        try:
+            orun.serve_settings({key: value})
+            invalid.append(f"{key}={value!r}")
+        except ValueError:
+            pass
+    failures = _check(failures, "invalid values raise and name the key",
+                      not invalid, ", ".join(invalid))
+
+    overridden = orun.serve_settings({"serve_bind": "127.0.0.1",
+                                      "serve_port": 1},
+                                     bind="0.0.0.0", port=11441)
+    failures = _check(failures, "CLI --bind/--port win over the config",
+                      overridden["serve_bind"] == "0.0.0.0"
+                      and overridden["serve_port"] == 11441,
+                      f"{overridden['serve_bind']} {overridden['serve_port']}")
+
+    args = orun.build_serve_parser().parse_args(["--keep-loaded"])
+    failures = _check(failures, "the serve parser takes --keep-loaded",
+                      args.keep_loaded is True, str(args))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        shaped = orun.serve_settings({
+            "serve_workspace": tmp, "serve_models": [" qwen3 ", "m1:*"],
+            "serve_port": None})
+        failures = _check(
+            failures, "workspace resolves, models strip, null means default",
+            shaped["serve_workspace"] == str(Path(tmp).resolve())
+            and shaped["serve_models"] == ["qwen3", "m1:*"]
+            and shaped["serve_port"] == orun.DEFAULT_SERVE_PORT,
+            f"{shaped['serve_workspace']} {shaped['serve_models']}")
+
+        # The transport values actually reach HttpServer from serve_main().
+        import ollamarun_lib.cli as cli
+        captured = {}
+        real_server, real_forever = cli.HttpServer, cli.run_forever
+        real_store = cli.SessionStore
+
+        class _FakeServer:
+            def __init__(self, router, *, bind, port, body_limit,
+                         ping_interval, request_timeout):
+                captured.update(bind=bind, port=port, body_limit=body_limit,
+                                ping_interval=ping_interval,
+                                request_timeout=request_timeout)
+                self.address = (bind, port)
+
+            def close(self):
+                pass
+
+        try:
+            cli.HttpServer = _FakeServer
+            cli.run_forever = lambda server: None
+            cli.SessionStore = lambda *a, **k: real_store(
+                sessions_dir=Path(tmp) / "sessions",
+                index_path=Path(tmp) / "sessions-index.json")
+            cfg = Path(tmp) / "config.json"
+            cfg.write_text(json.dumps({
+                "serve_body_limit": 4 * 1024 * 1024,
+                "serve_request_timeout": 45,
+                "serve_sse_ping_interval": 7,
+                "serve_artifact_root": str(Path(tmp) / "artifacts"),
+            }), encoding="utf-8")
+            with orun.console.capture():
+                code = cli.serve_main(["--config", str(cfg), "--port", "0",
+                                       "--bind", "127.0.0.1", "--host",
+                                       "127.0.0.1:1"])
+            failures = _check(
+                failures, "serve_main builds the server from the matrix",
+                code == 0 and captured.get("body_limit") == 4 * 1024 * 1024
+                and captured.get("request_timeout") == 45.0
+                and captured.get("ping_interval") == 7.0
+                and captured.get("port") == 0
+                and captured.get("bind") == "127.0.0.1",
+                f"{code} {captured}")
+        finally:
+            cli.HttpServer = real_server
+            cli.run_forever = real_forever
+            cli.SessionStore = real_store
+    return failures
+
+
 def test_serve_cli() -> int:
     """The `serve` subcommand: parser, config defaults and dispatch."""
     failures = 0
@@ -12421,6 +12580,7 @@ if __name__ == "__main__":
              + test_openai_mapping() + test_serve_http()
              + test_serve_disconnect() + test_serve_sockets()
              + test_serve_cache_concurrency()
+             + test_serve_config_matrix()
              + test_serve_cli()
              + test_openai_sdk()
              + test_agent_turn_lifecycle() + test_agent_turn_controls()
