@@ -154,6 +154,11 @@ class TurnHooks:
     execute_tools: Optional[Callable[..., bool]] = None
     on_event: Optional[Callable[[RuntimeEvent], None]] = None
     on_warning: Optional[Callable[[str], None]] = None
+    #: Called once per turn, right after `turn.started` (and the tool-support
+    #: probe): a host's own turn-start work (the serve controller's context
+    #: warning/compaction) emits through `on_event` and stays inside the
+    #: turn's event window.
+    on_started: Optional[Callable[[], None]] = None
     drain_boundary: Optional[Callable[[], None]] = None
     has_queued: Optional[Callable[[], bool]] = None
     set_tool_round: Optional[Callable[[int], None]] = None
@@ -226,6 +231,8 @@ class AgentRuntime:
         self._set_tool_round(0)
         self._emit(TURN_STARTED, model=session.model, session_id=session.id)
         self.check_tool_support()
+        if hooks.on_started is not None:
+            hooks.on_started()
         result = GenerationResult()
         tool_rounds = 0
         while True:
@@ -298,7 +305,8 @@ class AgentRuntime:
         if result.error:
             self._emit(TURN_ERROR, message=result.error, rounds=rounds)
         elif result.cancelled:
-            self._emit(TURN_CANCELLED, reason="user", rounds=rounds)
+            reason = getattr(self.hooks.cancel, "reason", "user") or "user"
+            self._emit(TURN_CANCELLED, reason=reason, rounds=rounds)
         else:
             self._emit(TURN_COMPLETED, content=result.content,
                        thinking=result.thinking or None,
@@ -411,13 +419,15 @@ class AgentRuntime:
 
 
 def approval_notice(request: ApprovalRequest, *, reason: str = "",
-                    suggestions: Optional[list[Any]] = None) -> RuntimeEvent:
+                    suggestions: Optional[list[Any]] = None,
+                    approval_id: Optional[str] = None) -> RuntimeEvent:
     """The `approval.required` event for a call that is being asked about.
 
-    Kept here so the console prompt, the TUI modal and the future HTTP
-    approval all describe a pending call the same way.
+    Kept here so the console prompt, the TUI modal and the API approval all
+    describe a pending call the same way; the API passes its own
+    `approval_id` so a client can resolve the exact parked decision.
     """
-    return RuntimeEvent(APPROVAL_REQUIRED, {
+    data: dict[str, Any] = {
         "name": request.spec.name,
         "args": request.args,
         "detail": request.detail,
@@ -425,7 +435,10 @@ def approval_notice(request: ApprovalRequest, *, reason: str = "",
         "reason": reason,
         "suggestions": [item.to_dict() if hasattr(item, "to_dict") else item
                         for item in (suggestions or [])],
-    })
+    }
+    if approval_id:
+        data["approval_id"] = approval_id
+    return RuntimeEvent(APPROVAL_REQUIRED, data)
 
 
 # ── payload + reports the server also needs ─────────────────────────────────

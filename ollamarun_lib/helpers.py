@@ -71,8 +71,13 @@ class CancelToken:
 
     def __init__(self) -> None:
         self._event = threading.Event()
+        #: Why the token was cancelled ("user", "timeout", ...); the runtime
+        #: reports it as the `turn.cancelled` reason.
+        self.reason = "user"
 
-    def cancel(self) -> None:
+    def cancel(self, reason: Optional[str] = None) -> None:
+        if reason:
+            self.reason = str(reason)
         self._event.set()
 
     @property
@@ -86,6 +91,7 @@ class CancelToken:
 
     def reset(self) -> None:
         self._event.clear()
+        self.reason = "user"
 
 
 class CommandCancelled(RuntimeError):

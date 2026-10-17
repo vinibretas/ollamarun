@@ -903,6 +903,43 @@ def suggest_rules(name: str, args: dict[str, Any], *, cwd: str = ".",
     return rules[:limit]
 
 
+@dataclass
+class PolicyCheck:
+    """The non-interactive half of the approval gate.
+
+    Shared by the console/TUI prompt path (`Repl._approve_tool_call`) and the
+    headless serve approver, so both ask for exactly the calls the policy
+    does not already cover. `run` is True with `note` saying why; when it is
+    False, `reason` is the policy's explanation and the caller decides
+    between parking for a decision and denying outright.
+    """
+
+    run: bool
+    note: str = ""
+    reason: str = ""
+    rule: Optional[ToolRule] = None
+
+
+def policy_check(spec: ToolSpec, args: dict[str, Any], *,
+                 policy: str = "allowlist",
+                 shell_allow: Optional[set[str]] = None,
+                 fingerprints: Optional[list[str]] = None,
+                 rules: Optional[list[ToolRule]] = None,
+                 fingerprint: str = "", cwd: str = ".") -> PolicyCheck:
+    """Classify a call as covered by policy or needing a decision."""
+    decision = approval_decision(spec, args, policy=policy,
+                                 shell_allow=shell_allow)
+    if decision.allowed:
+        return PolicyCheck(True, "safe list")
+    if fingerprint and fingerprint in (fingerprints or []):
+        return PolicyCheck(True, "previously allowed")
+    rule = matching_rule(list(rules or []), spec.name, args, cwd=cwd,
+                         shell_allow=shell_allow)
+    if rule is not None:
+        return PolicyCheck(True, f"rule: {rule_label(rule)}", rule=rule)
+    return PolicyCheck(False, reason=decision.reason or "needs confirmation")
+
+
 # ── web: page reading and search ────────────────────────────────────────────
 
 

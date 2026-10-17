@@ -48,6 +48,7 @@ from .helpers import (
     tailscale_peer_state,
 )
 from .images import encode_image
+from .agent_api import add_agent_routes
 from .openai_api import build_router
 from .server import HttpServer, run_forever
 from .ctxfit import (
@@ -359,13 +360,25 @@ endpoints:
   GET  /v1/models/{id}      one model, 404 when unknown
   POST /v1/chat/completions OpenAI-compatible model turn, streaming or not
 
+  POST /v1/agent/turns            start a full agent turn (tool loop, 202)
+  GET  /v1/agent/turns/{id}       turn snapshot: status, seq, result, error
+  GET  /v1/agent/turns/{id}/events SSE turn events (replay: ?after= or
+                                  Last-Event-ID; a disconnect only unsubscribes)
+  POST /v1/agent/turns/{id}/cancel request cancellation
+  POST /v1/agent/approvals/{id}   resolve a pending approval (run/remember/
+                                  rule/auto/deny; first decision wins)
+  GET/POST /v1/sessions           list/create sessions
+  GET/PATCH/DELETE /v1/sessions/{id}
+                                  inspect, edit or trash a session
+
   Model turns go through one inference call: client `tools` are passed to
   the backend and returned as standard `tool_calls` (`finish_reason:
-  "tool_calls"`) but never executed here — full agent turns arrive with the
-  native /v1/agent endpoints in a later phase. A top-level "system" field
-  is accepted: "auto" uses the built-in default prompt, text replaces it,
-  absent means none. Unsupported features (n>1, logprobs, logit_bias,
-  audio, non-text modalities, unknown fields) fail with a structured 400.
+  "tool_calls"`) but never executed here — the agent endpoints run the full
+  tool loop with the serve policy and API-parked approvals. A top-level
+  "system" field is accepted: "auto" uses the built-in default prompt, text
+  replaces it, absent means none. Unsupported features (n>1, logprobs,
+  logit_bias, audio, non-text modalities, unknown fields) fail with a
+  structured 400.
 
 security:
   the API is trusted-network-only. It has no authentication and its bind
@@ -379,8 +392,8 @@ config: ~/etc/config_files/ollamarun.json (serve_bind, serve_port); the
     parser = argparse.ArgumentParser(
         prog="ollamarun serve",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="Serve the OpenAI-compatible HTTP API in front of Ollama "
-                    "(model turns only; LAN access, no authentication)",
+        description="Serve the OpenAI-compatible and native agent HTTP API in "
+                    "front of Ollama (LAN access, no authentication)",
         epilog=epilog)
     host_group = parser.add_mutually_exclusive_group()
     host_group.add_argument("--host", metavar="HOST",
@@ -452,6 +465,9 @@ def serve_main(argv: Optional[list[str]] = None) -> int:
 
     router = build_router(client_factory, config=config, timeout=timeout,
                           keepalive=config.get("keepalive"))
+    agent_api = add_agent_routes(
+        router, args=build_parser().parse_args([]), config=config,
+        store=SessionStore(), client_factory=client_factory)
     try:
         server = HttpServer(router, bind=bind, port=port)
     except OSError as exc:
@@ -463,17 +479,20 @@ def serve_main(argv: Optional[list[str]] = None) -> int:
     scope = " (all interfaces)" if bound_host == "0.0.0.0" else ""
     console.print()
     console.print(f"[key]ollamarun serve[/key] [dim]· {VERSION} · "
-                  f"OpenAI-compatible API[/dim]")
+                  f"OpenAI-compatible + agent API[/dim]")
     console.print(f"  listening [ok]http://{escape(bound_host)}:{bound_port}[/ok]"
                   f"[dim]{scope}[/dim]")
     console.print(f"  upstream  [dim]{escape(client.base)}[/dim]")
+    console.print("[dim]  models /v1/models · chat /v1/chat/completions · "
+                  "agent turns /v1/agent/turns · sessions /v1/sessions[/dim]")
     console.print("[warn]trusted-network-only: no authentication — never expose "
                   "this port to the internet[/warn]")
-    console.print("[dim]Ctrl-C stops the server[/dim]")
+    console.print("[dim]Ctrl-C stops the server (active turns are cancelled)[/dim]")
     try:
         run_forever(server)
     finally:
         server.close()
+        agent_api.shutdown()
     console.print("[dim]stopped[/dim]")
     return 0
 

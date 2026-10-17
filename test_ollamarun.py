@@ -9354,6 +9354,817 @@ def test_serve_live() -> int:
     return failures
 
 
+def _start_agent_api(tmp, client, *, config_extra=None, manager=None,
+                     store=None, args_extra=(), config=None):
+    """An API server with the native agent routes over a fake backend."""
+    if store is None:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+    settings = dict(orun.DEFAULT_CONFIG)
+    settings["tools"] = True
+    settings.update(config or {})
+    settings.update(config_extra or {})
+    args = orun.build_parser().parse_args(
+        ["m1", "--render", "plain", "--no-save", *args_extra])
+    router = orun.build_router(lambda: client, config=settings)
+    api = orun.add_agent_routes(router, args=args, config=settings,
+                                store=store, client_factory=lambda: client,
+                                manager=manager)
+    server = orun.HttpServer(router, bind="127.0.0.1", port=0, ping_interval=0.2)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, api, store, thread
+
+
+def _poll_turn(server, turn_id, *, until=(), timeout=20.0):
+    """Poll the turn status endpoint until terminal, `until`, or the timeout."""
+    deadline = time.monotonic() + timeout
+    status, body = 0, {}
+    while time.monotonic() < deadline:
+        status, _headers, raw = _http(server, "GET", f"/v1/agent/turns/{turn_id}")
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            body = {"raw": raw[:200]}
+        current = body.get("status")
+        if status != 200 or current in until \
+                or current in orun.TERMINAL_STATUSES:
+            return status, body
+        time.sleep(0.05)
+    return status, body
+
+
+def _turn_request(messages, *, session_id=None, model="m1", settings=None,
+                  persist=True):
+    body = {"model": model, "persist": persist,
+            "messages": [{"role": "user", "content": messages}]
+            if isinstance(messages, str) else messages}
+    if session_id:
+        body["session_id"] = session_id
+    if settings is not None:
+        body["settings"] = settings
+    return body
+
+
+def _headless_events(api, turn_id, after=0):
+    """The buffered turn events, read straight from the manager."""
+    return _collect(api.manager.subscribe(turn_id, after=after))
+
+
+def test_agent_turn_lifecycle() -> int:
+    """POST a turn, watch it finish, replay its events and read the session."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        script = [[{"message": {"content": "hello"}, "done": True,
+                    "prompt_eval_count": 5, "eval_count": 2,
+                    "done_reason": "stop"}]]
+        client = _ServeClient(models=["m1"],
+                              capabilities=["completion", "tools"],
+                              show_data={"model_info": {
+                                  "llama.context_length": 8192}},
+                              chat_script=script)
+        server, api, store, thread = _start_agent_api(tmp, client)
+        try:
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body=_turn_request("hi"))
+            started = json.loads(raw)
+            failures = _check(failures, "a turn starts with 202 and its urls",
+                              status == 202 and started["id"].startswith("turn_")
+                              and started["session_id"]
+                              and started["status_url"].endswith(started["id"])
+                              and started["events_url"].endswith("/events")
+                              and started["cancel_url"].endswith("/cancel"),
+                              f"{status} {raw[:160]!r}")
+            turn_id = started["id"]
+
+            status, body = _poll_turn(server, turn_id)
+            result = body.get("result") or {}
+            failures = _check(failures, "the turn completes with the answer",
+                              status == 200 and body["status"] == "completed"
+                              and result.get("content") == "hello"
+                              and result.get("rounds") == 0
+                              and result.get("usage", {}).get("total_tokens") == 7
+                              and body.get("error") is None,
+                              str(body)[:240])
+            failures = _check(failures, "the snapshot carries seq and context",
+                              body.get("seq", 0) >= 2
+                              and isinstance(body.get("context"), dict)
+                              and body["context"].get("total") == 8192
+                              and isinstance(body["context"].get("source"), str),
+                              str(body.get("context")))
+
+            events = _headless_events(api, turn_id)
+            types = [event.type for event in events]
+            failures = _check(failures, "the event stream is enveloped and ordered",
+                              types[0] == "turn.started"
+                              and "message.delta" in types
+                              and types[-1] == "turn.completed"
+                              and events[0].data.get("context") is not None
+                              and [event.seq for event in events]
+                              == list(range(1, len(events) + 1)),
+                              str(types))
+
+            status, headers, raw = _http(
+                server, "GET", f"/v1/agent/turns/{turn_id}/events?after=0")
+            sse = _sse_events(raw)
+            payloads = [json.loads(item) for item in sse]
+            id_lines = [line for line in raw.decode().splitlines()
+                        if line.startswith("id: ")]
+            failures = _check(failures, "the SSE endpoint replays the typed stream",
+                              status == 200 and payloads
+                              and payloads[0]["type"] == "turn.started"
+                              and payloads[-1]["type"] == "turn.completed"
+                              and len(id_lines) == len(payloads)
+                              and id_lines[0].endswith(":1"),
+                              f"{status} {sse[:2]}")
+
+            status, _headers, raw = _http(server, "GET", "/v1/sessions")
+            listed = json.loads(raw)["data"]
+            failures = _check(failures, "the turn created a persisted session",
+                              status == 200
+                              and any(entry["id"] == started["session_id"]
+                                      for entry in listed),
+                              raw[:200])
+            status, _headers, raw = _http(
+                server, "GET", f"/v1/sessions/{started['session_id']}")
+            session = json.loads(raw)
+            roles = [message.get("role") for message in session.get("history", [])]
+            failures = _check(failures, "the session history keeps the exchange",
+                              status == 200 and roles == ["user", "assistant"]
+                              and session["history"][1]["content"] == "hello"
+                              and session["turns"] == 1,
+                              str(session.get("history"))[:200])
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
+def test_agent_turn_controls() -> int:
+    """409 busy, 429 cap, cancel and disconnect policies."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _ServeClient(models=["m1"], capabilities=["completion", "tools"],
+                              chunk_count=400, chunk_delay=0.01)
+        manager = orun.TurnManager(max_active=1)
+        server, api, store, thread = _start_agent_api(tmp, client,
+                                                      manager=manager)
+        try:
+            status, _headers, raw = _http(server, "POST", "/v1/agent/turns",
+                                          body=_turn_request("slow one"))
+            first = json.loads(raw)
+            session_id = first["session_id"]
+            time.sleep(0.2)
+
+            status, _headers, raw = _http(server, "POST", "/v1/agent/turns",
+                                          body=_turn_request("busy",
+                                                             session_id=session_id))
+            busy = json.loads(raw)["error"]
+            failures = _check(failures, "a busy session is a 409 with the active id",
+                              status == 409 and busy["code"] == "session_busy"
+                              and busy["active_turn_id"] == first["id"]
+                              and busy["type"] == "conflict_error",
+                              f"{status} {raw[:200]}")
+            status, _headers, raw = _http(server, "POST", "/v1/agent/turns",
+                                          body=_turn_request("too many"))
+            failures = _check(failures, "the global cap is a 429",
+                              status == 429
+                              and json.loads(raw)["error"]["code"] == "rate_limit_error",
+                              f"{status} {raw[:160]}")
+            status, _headers, raw = _http(
+                server, "DELETE", f"/v1/sessions/{session_id}")
+            failures = _check(failures, "a session with an active turn is protected",
+                              status == 409, f"{status} {raw[:160]}")
+
+            status, _headers, raw = _http(
+                server, "POST", f"/v1/agent/turns/{first['id']}/cancel")
+            failures = _check(failures, "cancel is accepted with 202",
+                              status == 202
+                              and json.loads(raw)["cancel_requested"] is True,
+                              f"{status} {raw[:160]}")
+            status, body = _poll_turn(server, first["id"])
+            failures = _check(failures, "a cancelled turn is terminal-cancelled",
+                              status == 200 and body["status"] == "cancelled"
+                              and (body.get("result") or {}).get("status") == "cancelled",
+                              str(body)[:200])
+            events = _headless_events(api, first["id"])
+            cancelled = [event for event in events
+                         if event.type == "turn.cancelled"]
+            failures = _check(failures, "the cancellation reason is user",
+                              cancelled and cancelled[0].data.get("reason") == "user",
+                              str([event.data for event in cancelled]))
+            status, _headers, raw = _http(
+                server, "POST", f"/v1/agent/turns/{first['id']}/cancel")
+            failures = _check(failures, "cancelling a finished turn is a 409",
+                              status == 409
+                              and json.loads(raw)["error"]["code"] == "turn_finished",
+                              f"{status} {raw[:160]}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
+def test_agent_approvals() -> int:
+    """Interactive approvals: run, remember, deny and duplicate decisions."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "approved.txt"
+        shell = f"touch {marker}"
+        script = [
+            [{"message": {"content": "", "tool_calls": [
+                {"function": {"name": "run_shell",
+                              "arguments": {"command": shell}}}]}},
+             {"done": True, "prompt_eval_count": 5, "eval_count": 2}],
+            [{"message": {"content": "done"}, "done": True,
+              "prompt_eval_count": 7, "eval_count": 1}],
+        ]
+        client = _ServeClient(models=["m1"], capabilities=["completion", "tools"],
+                              chat_script=script)
+        server, api, store, thread = _start_agent_api(tmp, client)
+        try:
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body=_turn_request("run it", settings={"approval": "interactive"}))
+            turn = json.loads(raw)
+            status, body = _poll_turn(server, turn["id"],
+                                      until={"waiting_approval"})
+            failures = _check(failures, "the turn parks in waiting_approval",
+                              status == 200 and body["status"] == "waiting_approval",
+                              str(body)[:200])
+            events = _headless_events(api, turn["id"])
+            required = [event for event in events
+                        if event.type == "approval.required"]
+            notice = required[0].data if required else {}
+            failures = _check(failures, "approval.required carries the choices",
+                              bool(required)
+                              and notice.get("approval_id", "").startswith("apr_")
+                              and notice.get("name") == "run_shell"
+                              and notice.get("detail")
+                              and notice.get("reason")
+                              and isinstance(notice.get("suggestions"), list),
+                              str(notice)[:200])
+            approval_id = notice.get("approval_id", "")
+
+            status, _headers, raw = _http(
+                server, "POST", f"/v1/agent/approvals/{approval_id}",
+                body={"action": "run"})
+            decided = json.loads(raw)
+            failures = _check(failures, "an approval resolves with run",
+                              status == 200 and decided["run"] is True
+                              and decided["action"] == "run",
+                              f"{status} {raw[:160]}")
+            status, _headers, raw = _http(
+                server, "POST", f"/v1/agent/approvals/{approval_id}",
+                body={"action": "deny"})
+            failures = _check(failures, "a duplicate decision is rejected",
+                              status == 409
+                              and json.loads(raw)["error"]["code"] == "already_resolved",
+                              f"{status} {raw[:160]}")
+            status, body = _poll_turn(server, turn["id"])
+            failures = _check(failures, "the approved tool ran and the turn finished",
+                              status == 200 and body["status"] == "completed"
+                              and marker.exists()
+                              and (body.get("result") or {}).get("content") == "done",
+                              f"{body.get('status')} marker={marker.exists()}")
+
+            # Remember the exact call, then a second identical turn must not
+            # park at all.
+            marker2 = Path(tmp) / "remembered.txt"
+            shell2 = f"touch {marker2}"
+            client.chat_script = [
+                [{"message": {"content": "", "tool_calls": [
+                    {"function": {"name": "run_shell",
+                                  "arguments": {"command": shell2}}}]}},
+                 {"done": True}],
+                [{"message": {"content": "ok"}, "done": True}],
+            ]
+            client.chat_calls = 0
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body=_turn_request("again", settings={"approval": "interactive"}))
+            turn2 = json.loads(raw)
+            _poll_turn(server, turn2["id"], until={"waiting_approval"})
+            events = _headless_events(api, turn2["id"])
+            notice2 = [event.data for event in events
+                       if event.type == "approval.required"][0]
+            status, _headers, raw = _http(
+                server, "POST",
+                f"/v1/agent/approvals/{notice2['approval_id']}",
+                body={"action": "remember"})
+            status, body = _poll_turn(server, turn2["id"])
+            failures = _check(failures, "remember executes this time",
+                              body.get("status") == "completed" and marker2.exists(),
+                              f"{body.get('status')} marker={marker2.exists()}")
+
+            client.chat_script = [
+                [{"message": {"content": "", "tool_calls": [
+                    {"function": {"name": "run_shell",
+                                  "arguments": {"command": shell2}}}]}},
+                 {"done": True}],
+                [{"message": {"content": "ok"}, "done": True}],
+            ]
+            client.chat_calls = 0
+            session_id = turn2["session_id"]
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body=_turn_request("third", session_id=session_id,
+                                   settings={"approval": "interactive"}))
+            turn3 = json.loads(raw)
+            status, body = _poll_turn(server, turn3["id"],
+                                      until={"waiting_approval"})
+            failures = _check(failures, "a remembered call never parks again",
+                              body.get("status") == "completed"
+                              and marker2.exists(),
+                              str(body)[:200])
+
+            # Deny path in a separate session.
+            marker4 = Path(tmp) / "denied.txt"
+            client.chat_script = [
+                [{"message": {"content": "", "tool_calls": [
+                    {"function": {"name": "run_shell",
+                                  "arguments": {"command": f"touch {marker4}"}}}]}},
+                 {"done": True}],
+                [{"message": {"content": "ok"}, "done": True}],
+            ]
+            client.chat_calls = 0
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body=_turn_request("deny it",
+                                   settings={"approval": "interactive"}))
+            turn4 = json.loads(raw)
+            _poll_turn(server, turn4["id"], until={"waiting_approval"})
+            events = _headless_events(api, turn4["id"])
+            notice4 = [event.data for event in events
+                       if event.type == "approval.required"][0]
+            status, _headers, raw = _http(
+                server, "POST", f"/v1/agent/approvals/{notice4['approval_id']}",
+                body={"action": "deny"})
+            status, body = _poll_turn(server, turn4["id"])
+            results = [event.data for event in _headless_events(api, turn4["id"])
+                       if event.type == "tool.result"]
+            failures = _check(failures, "deny reports a not-run tool result",
+                              body.get("status") == "completed"
+                              and not marker4.exists() and bool(results)
+                              and results[0].get("ok") is False
+                              and "tool not run" in str(results[0].get("text")),
+                              f"{body.get('status')} {results[:1]}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
+def test_agent_approval_edge() -> int:
+    """Approval timeout, cancellation while waiting and shutdown while waiting."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        shell = f"touch {Path(tmp) / 'never.txt'}"
+        client = _ServeClient(models=["m1"], capabilities=["completion", "tools"],
+                              chat_script=[
+                                  [{"message": {"content": "", "tool_calls": [
+                                      {"function": {"name": "run_shell",
+                                                    "arguments": {"command": shell}}}]}},
+                                   {"done": True}],
+                                  [{"message": {"content": "ok"}, "done": True}],
+                              ])
+        server, api, store, thread = _start_agent_api(
+            tmp, client, config_extra={"serve_approval_timeout": 0.4},
+            manager=orun.TurnManager())
+        try:
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body=_turn_request("timeout me",
+                                   settings={"approval": "interactive"}))
+            turn = json.loads(raw)
+            status, body = _poll_turn(server, turn["id"], timeout=10)
+            events = _headless_events(api, turn["id"])
+            resolved = [event.data for event in events
+                        if event.type == "approval.resolved"]
+            results = [event.data for event in events
+                       if event.type == "tool.result"]
+            failures = _check(failures, "an unanswered approval times out as denied",
+                              body.get("status") == "completed"
+                              and resolved and resolved[0].get("action") == "timeout"
+                              and results and results[0].get("ok") is False
+                              and "approval timed out" in str(results[0].get("text")),
+                              f"{body.get('status')} {resolved[:1]} {results[:1]}")
+
+            client.chat_script = [
+                [{"message": {"content": "", "tool_calls": [
+                    {"function": {"name": "run_shell",
+                                  "arguments": {"command": shell}}}]}},
+                 {"done": True}],
+                [{"message": {"content": "ok"}, "done": True}],
+            ]
+            client.chat_calls = 0
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body=_turn_request("cancel me",
+                                   settings={"approval": "interactive"}))
+            turn2 = json.loads(raw)
+            _poll_turn(server, turn2["id"], until={"waiting_approval"})
+            status, _headers, raw = _http(
+                server, "POST", f"/v1/agent/turns/{turn2['id']}/cancel")
+            status, body = _poll_turn(server, turn2["id"])
+            events = _headless_events(api, turn2["id"])
+            resolved = [event.data for event in events
+                        if event.type == "approval.resolved"]
+            failures = _check(failures, "cancelling while waiting resolves the approval",
+                              body.get("status") == "cancelled"
+                              and resolved
+                              and resolved[0].get("action") == "cancelled",
+                              f"{body.get('status')} {resolved[:1]}")
+
+            client.chat_script = [
+                [{"message": {"content": "", "tool_calls": [
+                    {"function": {"name": "run_shell",
+                                  "arguments": {"command": shell}}}]}},
+                 {"done": True}],
+                [{"message": {"content": "ok"}, "done": True}],
+            ]
+            client.chat_calls = 0
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body=_turn_request("shut down",
+                                   settings={"approval": "interactive"}))
+            turn3 = json.loads(raw)
+            _poll_turn(server, turn3["id"], until={"waiting_approval"})
+            started = time.monotonic()
+            api.shutdown(timeout=3)
+            elapsed = time.monotonic() - started
+            snapshot = api.manager.get(turn3["id"])
+            failures = _check(failures, "shutdown while waiting stops the turn",
+                              elapsed < 4.0 and snapshot is not None
+                              and snapshot.status == "cancelled",
+                              f"{elapsed:.2f}s {snapshot}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
+def test_agent_policy_mode() -> int:
+    """The default mode runs allowlisted calls and denies the rest with a note."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "policy.txt"
+        client = _ServeClient(models=["m1"], capabilities=["completion", "tools"],
+                              chat_script=[
+                                  [{"message": {"content": "", "tool_calls": [
+                                      {"function": {"name": "run_shell",
+                                                    "arguments": {"command": "echo safe"}}}]}},
+                                   {"done": True}],
+                                  [{"message": {"content": "safe"}, "done": True}],
+                              ])
+        server, api, store, thread = _start_agent_api(tmp, client)
+        try:
+            status, _headers, raw = _http(server, "POST", "/v1/agent/turns",
+                                          body=_turn_request("safe"))
+            turn = json.loads(raw)
+            status, body = _poll_turn(server, turn["id"])
+            results = [event.data for event in _headless_events(api, turn["id"])
+                       if event.type == "tool.result"]
+            failures = _check(failures, "an allowlisted call runs without parking",
+                              body.get("status") == "completed"
+                              and bool(results) and results[0].get("ok") is True,
+                              f"{body.get('status')} {results[:1]}")
+
+            client.chat_script = [
+                [{"message": {"content": "", "tool_calls": [
+                    {"function": {"name": "run_shell",
+                                  "arguments": {"command": f"touch {marker}"}}}]}},
+                 {"done": True}],
+                [{"message": {"content": "denied"}, "done": True}],
+            ]
+            client.chat_calls = 0
+            status, _headers, raw = _http(server, "POST", "/v1/agent/turns",
+                                          body=_turn_request("risky"))
+            turn2 = json.loads(raw)
+            status, body = _poll_turn(server, turn2["id"])
+            events = _headless_events(api, turn2["id"])
+            types = [event.type for event in events]
+            resolved = [event.data for event in events
+                        if event.type == "approval.resolved"]
+            results = [event.data for event in events
+                       if event.type == "tool.result"]
+            failures = _check(failures, "a risky call is denied by policy, never parked",
+                              body.get("status") == "completed"
+                              and "approval.required" not in types
+                              and not marker.exists()
+                              and resolved and resolved[0].get("action") == "deny"
+                              and "not allowed by policy" in str(results[0].get("text")),
+                              f"{types} {results[:1]} marker={marker.exists()}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
+def test_agent_disconnect_policy() -> int:
+    """A dropped event stream is an unsubscribe unless cancel_on_disconnect."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _ServeClient(models=["m1"], capabilities=["completion", "tools"],
+                              chunk_count=200, chunk_delay=0.01)
+        server, api, store, thread = _start_agent_api(tmp, client)
+        try:
+            status, _headers, raw = _http(server, "POST", "/v1/agent/turns",
+                                          body=_turn_request("keep going"))
+            turn = json.loads(raw)
+            sock = socket.create_connection(("127.0.0.1", server.address[1]),
+                                            timeout=8)
+            sock.sendall((f"GET /v1/agent/turns/{turn['id']}/events HTTP/1.1\r\n"
+                          "Host: 127.0.0.1\r\n\r\n").encode())
+            deadline = time.monotonic() + 5
+            data = b""
+            while b"data: " not in data and time.monotonic() < deadline:
+                piece = sock.recv(4096)
+                if not piece:
+                    break
+                data += piece
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
+                            struct.pack("ii", 1, 0))
+            sock.close()
+            status, body = _poll_turn(server, turn["id"])
+            failures = _check(failures, "a disconnect leaves the turn running",
+                              body.get("status") == "completed",
+                              f"{body.get('status')}")
+
+            client.chat_script = None
+            client.chunk_count = 200
+            client.chunk_delay = 0.01
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body=_turn_request("cancel me on drop",
+                                   settings={"cancel_on_disconnect": True}))
+            turn2 = json.loads(raw)
+            sock = socket.create_connection(("127.0.0.1", server.address[1]),
+                                            timeout=8)
+            sock.sendall((f"GET /v1/agent/turns/{turn2['id']}/events HTTP/1.1\r\n"
+                          "Host: 127.0.0.1\r\n\r\n").encode())
+            data = b""
+            deadline = time.monotonic() + 5
+            while b"data: " not in data and time.monotonic() < deadline:
+                piece = sock.recv(4096)
+                if not piece:
+                    break
+                data += piece
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
+                            struct.pack("ii", 1, 0))
+            sock.close()
+            status, body = _poll_turn(server, turn2["id"])
+            failures = _check(failures, "cancel_on_disconnect cancels the turn",
+                              body.get("status") == "cancelled",
+                              f"{body.get('status')}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
+def test_agent_turn_timeout() -> int:
+    """serve_turn_timeout cancels a turn that runs too long."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _ServeClient(models=["m1"], capabilities=["completion", "tools"],
+                              chunk_count=300, chunk_delay=0.01)
+        server, api, store, thread = _start_agent_api(
+            tmp, client, config_extra={"serve_turn_timeout": 0.4},
+            manager=orun.TurnManager())
+        try:
+            status, _headers, raw = _http(server, "POST", "/v1/agent/turns",
+                                          body=_turn_request("too slow"))
+            turn = json.loads(raw)
+            status, body = _poll_turn(server, turn["id"], timeout=15)
+            events = _headless_events(api, turn["id"])
+            cancelled = [event.data for event in events
+                         if event.type == "turn.cancelled"]
+            failures = _check(failures, "the wall-clock timeout cancels the turn",
+                              body.get("status") == "cancelled"
+                              and cancelled
+                              and cancelled[0].get("reason") == "timeout",
+                              f"{body.get('status')} {cancelled}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
+def test_agent_sessions_api() -> int:
+    """Session create/list/get/patch/delete over HTTP."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _ServeClient(models=["m1"], capabilities=["completion", "tools"])
+        server, api, store, thread = _start_agent_api(tmp, client)
+        try:
+            status, _headers, raw = _http(
+                server, "POST", "/v1/sessions",
+                body={"title": "work", "model": "m1", "tags": ["a"],
+                      "system": "be terse"})
+            created = json.loads(raw)
+            failures = _check(failures, "POST /v1/sessions creates a session",
+                              status == 201 and created["id"]
+                              and created["title"] == "work"
+                              and created["model"] == "m1"
+                              and created["system"] == "be terse",
+                              f"{status} {raw[:200]}")
+            session_id = created["id"]
+
+            status, _headers, raw = _http(
+                server, "PATCH", f"/v1/sessions/{session_id}",
+                body={"title": "renamed", "system": None, "tags": ["b"]})
+            patched = json.loads(raw)
+            failures = _check(failures, "PATCH updates the mutable fields",
+                              status == 200 and patched["title"] == "renamed"
+                              and patched["system"] is None
+                              and patched["tags"] == ["b"],
+                              f"{status} {raw[:200]}")
+            status, _headers, raw = _http(
+                server, "GET", f"/v1/sessions/{session_id}")
+            fetched = json.loads(raw)
+            failures = _check(failures, "GET returns metadata and empty history",
+                              status == 200 and fetched["history"] == []
+                              and fetched["model"] == "m1",
+                              raw[:200])
+
+            status, _headers, raw = _http(
+                server, "POST", "/v1/sessions", body={"model": "missing"})
+            failures = _check(failures, "an unknown create model is a 404",
+                              status == 404
+                              and json.loads(raw)["error"]["code"] == "model_not_found",
+                              f"{status} {raw[:160]}")
+            status, _headers, raw = _http(
+                server, "PATCH", f"/v1/sessions/{session_id}", body={"bogus": 1})
+            failures = _check(failures, "PATCH rejects unknown fields",
+                              status == 400
+                              and json.loads(raw)["error"]["code"] == "unknown_field",
+                              f"{status} {raw[:160]}")
+            status, _headers, raw = _http(server, "GET", "/v1/sessions/nope-none")
+            failures = _check(failures, "an unknown session is a 404",
+                              status == 404, f"{status} {raw[:160]}")
+
+            status, _headers, raw = _http(
+                server, "DELETE", f"/v1/sessions/{session_id}")
+            failures = _check(failures, "DELETE removes the session",
+                              status == 200
+                              and json.loads(raw).get("deleted") is True,
+                              f"{status} {raw[:160]}")
+            status, _headers, raw = _http(server, "GET", f"/v1/sessions/{session_id}")
+            failures = _check(failures, "the deleted session is gone",
+                              status == 404, f"{status}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
+def test_agent_turn_validation() -> int:
+    """The turn request schema rejects malformed bodies with exact envelopes."""
+    failures = 0
+    base = {"model": "m1", "messages": [{"role": "user", "content": "hi"}]}
+    cases = (
+        ("an unknown field", {**base, "foo": 1}),
+        ("an unknown settings field", {**base, "settings": {"foo": 1}}),
+        ("empty messages", {**base, "messages": []}),
+        ("a tool role", {**base, "messages": [{"role": "tool", "content": "x"}]}),
+        ("empty content", {**base, "messages": [{"role": "user", "content": " "}]}),
+        ("a non-string content", {**base, "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "x"}]}]}),
+        ("a boolean max_rounds", {**base, "settings": {"max_rounds": True}}),
+        ("max_rounds 0", {**base, "settings": {"max_rounds": 0}}),
+        ("a bad approval mode", {**base, "settings": {"approval": "auto"}}),
+        ("a bad system", {**base, "settings": {"system": 7}}),
+        ("bad parameters", {**base, "settings": {"parameters": {"nested": {}}}}),
+        ("a non-bool persist", {**base, "persist": "yes"}),
+        ("a non-bool cancel_on_disconnect", {**base, "settings": {
+            "cancel_on_disconnect": "yes"}}),
+    )
+    parsed = None
+    for name, body in cases:
+        try:
+            parsed = orun.parse_agent_turn(body)
+            error = None
+        except orun.ApiError as exc:
+            error = exc
+        failures = _check(failures, f"turn schema rejects {name}",
+                          error is not None and error.status == 400, repr(parsed))
+    spec = orun.parse_agent_turn(base)
+    failures = _check(failures, "the turn defaults are the safe contract",
+                      spec.approval == "policy" and spec.persist is True
+                      and spec.tools is True and spec.cancel_on_disconnect is False,
+                      str(spec))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _ServeClient(models=["m1"], capabilities=["completion", "tools"])
+        config = {"model": None}
+        server, api, store, thread = _start_agent_api(tmp, client, config=config)
+        try:
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body={"messages": [{"role": "user", "content": "hi"}]})
+            failures = _check(failures, "a missing model is a 400",
+                              status == 400, f"{status} {raw[:160]}")
+            status, _headers, raw = _http(server, "GET", "/v1/agent/turns/nope")
+            failures = _check(failures, "an unknown turn is a 404",
+                              status == 404
+                              and json.loads(raw)["error"]["code"] == "turn_not_found",
+                              f"{status} {raw[:160]}")
+            status, _headers, raw = _http(server, "POST",
+                                          "/v1/agent/approvals/nope",
+                                          body={"action": "run"})
+            failures = _check(failures, "an unknown approval is a 404",
+                              status == 404, f"{status} {raw[:160]}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
+def test_agent_turn_expiry() -> int:
+    """Swept turn records answer 410; never-seen turns answer 404."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _ServeClient(models=["m1"], capabilities=["completion", "tools"],
+                              chat_script=[[{"message": {"content": "ok"},
+                                             "done": True}]])
+        manager = orun.TurnManager(completed_ttl=0.3, expired_ttl=30.0,
+                                   clock=time.monotonic)
+        server, api, store, thread = _start_agent_api(tmp, client,
+                                                      manager=manager)
+        try:
+            status, _headers, raw = _http(server, "POST", "/v1/agent/turns",
+                                          body=_turn_request("expire"))
+            turn = json.loads(raw)
+            status, body = _poll_turn(server, turn["id"])
+            failures = _check(failures, "the turn completes before expiry",
+                              body.get("status") == "completed",
+                              str(body)[:160])
+            time.sleep(0.5)
+            status, _headers, raw = _http(
+                server, "GET", f"/v1/agent/turns/{turn['id']}")
+            failures = _check(failures, "an expired turn is a 410",
+                              status == 410
+                              and json.loads(raw)["error"]["code"] == "turn_expired",
+                              f"{status} {raw[:160]}")
+            status, _headers, raw = _http(
+                server, "GET", f"/v1/agent/turns/{turn['id']}/events")
+            failures = _check(failures, "an expired turn's events are a 410",
+                              status == 410, f"{status} {raw[:160]}")
+            status, _headers, raw = _http(server, "GET",
+                                          "/v1/agent/turns/turn_never")
+            failures = _check(failures, "an unknown turn stays a 404",
+                              status == 404, f"{status}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
+def test_agent_context_warning() -> int:
+    """The headless warning/compaction step (Phase 1b item 13)."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        session = orun.Session.create("m1", "http://fake:11434")
+        for index in range(6):
+            session.add_message("user" if index % 2 == 0 else "assistant",
+                                f"message {index}")
+        session.stats["last_prompt_tokens"] = 90
+        session.stats["last_completion_tokens"] = 5
+        store.save(session)
+        client = _ServeClient(models=["m1"], capabilities=["completion", "tools"],
+                              show_data={"model_info": {
+                                  "llama.context_length": 100}},
+                              chat_once_reply="Summary of the earlier talk",
+                              chat_script=[[{"message": {"content": "ok"},
+                                             "done": True}]])
+        server, api, store, thread = _start_agent_api(
+            tmp, client, store=store, config_extra={"auto_compact": "auto"})
+        try:
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body=_turn_request("continue", session_id=session.id))
+            turn = json.loads(raw)
+            status, body = _poll_turn(server, turn["id"])
+            events = _headless_events(api, turn["id"])
+            warnings = [event.data.get("message") for event in events
+                        if event.type == "turn.warning"]
+            failures = _check(failures, "the context warning rides the event stream",
+                              body.get("status") == "completed"
+                              and any("context" in str(message)
+                                      for message in warnings),
+                              str(warnings))
+            failures = _check(failures, "auto_compact compacts before the turn",
+                              any("compacted" in str(message)
+                                  for message in warnings)
+                              and client.chat_once_payloads,
+                              str(warnings))
+            status, _headers, raw = _http(
+                server, "GET", f"/v1/sessions/{session.id}")
+            history = json.loads(raw)["history"]
+            failures = _check(failures, "the compacted history keeps the summary",
+                              any("Summary of earlier conversation" in str(
+                                  message.get("content")) for message in history)
+                              and len(history) < 7,
+                              str(history)[:200])
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
 if __name__ == "__main__":
     live = "--live" in sys.argv[1:]
     if live:
@@ -9431,6 +10242,12 @@ if __name__ == "__main__":
              + test_serve_cache_concurrency()
              + test_serve_cli()
              + test_openai_sdk()
+             + test_agent_turn_lifecycle() + test_agent_turn_controls()
+             + test_agent_approvals() + test_agent_approval_edge()
+             + test_agent_policy_mode() + test_agent_disconnect_policy()
+             + test_agent_turn_timeout() + test_agent_sessions_api()
+             + test_agent_turn_validation() + test_agent_turn_expiry()
+             + test_agent_context_warning()
              + (test_serve_live() if live else 0))
     if total:
         print(f"\n{total} failure(s)")
