@@ -126,7 +126,8 @@ from .tools import (
     tool_schemas as build_tool_schemas,
 )
 from .ui import (ConsoleUi, StatusSnapshot, Ui,
-                 _prompt_approval)  # noqa: F401  (compatibility re-export)
+                 _prompt_approval)  # deliberate compatibility re-export
+# (the pyflakes gate exempts exactly this finding; see test_pyflakes_clean)
 
 
 COMMAND_INFO: dict[str, tuple[str, str]] = {
@@ -967,7 +968,7 @@ class Repl:
         for text in texts:
             if console.is_terminal:
                 console.print(user_message_box(text, console))
-            console.print(f"[dim]delivered from queue[/dim]")
+            console.print("[dim]delivered from queue[/dim]")
             self.session.add_message("user", text)
         if texts and not self.no_save:
             self.store.save(self.session)
@@ -2110,7 +2111,7 @@ def cmd_num_ctx(repl: Repl, argument: str) -> None:
         bits = [f"num_ctx = {current if current is not None else '(model default)'}"]
         if max_ctx:
             bits.append(f"model max {max_ctx}")
-        console.print(f"[key]context size[/key] " + " · ".join(bits))
+        console.print("[key]context size[/key] " + " · ".join(bits))
         console.print("[dim]--max-gpu picks the largest context that still fits 100% "
                       "on the GPU; --max-cpu N fills N% of the DRAM available to the "
                       "model (--probe verifies by loading)[/dim]")

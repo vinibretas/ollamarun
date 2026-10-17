@@ -362,6 +362,57 @@ def test_python310_syntax() -> int:
     return failures
 
 
+def test_pyflakes_clean() -> int:
+    """The pyflakes gate: the package, the entry script and both test files.
+
+    The only tolerated findings are the deliberate re-export sites — the
+    `constants.py` hub's imported-but-unused names, everything in
+    `__init__.py` (a pure star-import re-export hub), and
+    `repl._prompt_approval`'s compatibility re-export — so any other unused
+    import, undefined name or dead local fails the suite.  pyflakes is a
+    required test dependency (like `openai`).
+    """
+    failures = 0
+    try:
+        from pyflakes import api as flakes_api
+        from pyflakes import reporter as flakes_reporter
+    except ImportError:
+        print("FAIL  pyflakes is not installed "
+              "(install the test dependency: pip install --user pyflakes)")
+        return 1
+    output = io.StringIO()
+    reporter = flakes_reporter.Reporter(output, output)
+    repo = Path(__file__).resolve().parent
+    targets = sorted((repo / "ollamarun_lib").glob("*.py"))
+    targets += [repo / "ollamarun", repo / "test_ollamarun.py",
+                repo / "test_ollamarun_serve.py"]
+    for path in targets:
+        flakes_api.checkPath(str(path), reporter)
+
+    def tolerated(finding: str) -> bool:
+        head, _, message = finding.partition(": ")
+        try:
+            rel = Path(head.rsplit(":", 2)[0]).relative_to(repo).as_posix()
+        except ValueError:
+            return False
+        if rel == "ollamarun_lib/constants.py":
+            return "imported but unused" in message
+        if rel == "ollamarun_lib/__init__.py":
+            # Pure star-import re-export hub: every name is deliberate (and
+            # the star lines themselves always flag as re-exports).
+            return True
+        if rel == "ollamarun_lib/repl.py":
+            return ("_prompt_approval" in message
+                    and "imported but unused" in message)
+        return False
+
+    findings = [line for line in output.getvalue().splitlines() if line.strip()]
+    real = [line for line in findings if not tolerated(line)]
+    failures = _check(failures, "pyflakes: clean outside the deliberate "
+                      "re-exports", not real, "\n".join(real[:6]))
+    return failures
+
+
 def test_turn_result_mapping() -> int:
     """`to_turn_result` maps a GenerationResult onto the API-ready summary."""
     failures = 0
@@ -983,7 +1034,7 @@ def test_runtime_event_contract() -> int:
         events = []
         repl.event_sink = events.append
         with orun.console.capture():
-            result = repl.send("check")
+            repl.send("check")
         types = [event.type for event in events]
 
         try:
@@ -2152,7 +2203,6 @@ def test_artifact_remote_fetch() -> int:
         failures = _check(failures, "a missing content type is sniffed",
                           media == "image/gif", media)
 
-        loop = orun.ApiError
         for name, call, code in (
             ("a redirect loop fails", lambda: orun.fetch_remote_media(
                 f"{base}/loop", max_bytes=1024), "remote_fetch_failed"),
@@ -5868,7 +5918,8 @@ def run_all(*, live: bool = False) -> int:
         + test_artifact_events() + test_artifact_session_persistence()
         + test_artifact_content_parts() + test_artifact_remote_fetch()
         + test_artifact_upload_api() + test_artifact_fetch_api()
-        + test_python310_syntax() + test_turn_result_mapping()
+        + test_python310_syntax() + test_pyflakes_clean()
+        + test_turn_result_mapping()
         + test_turn_event_envelope()
         + test_turn_manager_lifecycle()
         + test_turn_manager_synthesized_terminal()
