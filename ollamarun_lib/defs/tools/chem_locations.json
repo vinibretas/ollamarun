@@ -1,0 +1,15 @@
+{
+  "name": "chem_locations",
+  "description": "List the inventory location tree (id, name, container count); pass a location (id or name) to list the containers stored there.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "location": {"type": "string", "description": "location id or name (optional)"}
+    },
+    "required": []
+  },
+  "handler": "chem_locations",
+  "read_only": true,
+  "requires": "chem",
+  "aliases": ["chem_location", "inventory_locations", "list_locations"]
+}

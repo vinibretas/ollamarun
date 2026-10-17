@@ -197,6 +197,8 @@ class ToolContext:
     #: target/user, or None on the local machine.
     ssh_target: Optional[str] = None
     ssh_user: Optional[str] = None
+    #: Path/command of the chemInventoryAPI CLI (config `chem_inventory`).
+    chem_inventory: Optional[str] = None
     #: URL -> formatted result, so a repeated fetch is answered from the cache
     #: (the model is told instead of silently re-downloading the same page).
     fetched: dict[str, str] = field(default_factory=dict)
@@ -474,6 +476,12 @@ def call_detail(name: str, args: dict[str, Any]) -> str:
         text = "loaded only" if args.get("loaded_only") else "installed"
     elif name == "system_status":
         text = str(args.get("target") or "ollama")
+    elif name == "chem_search":
+        text = str(args.get("query") or "")
+    elif name == "chem_container":
+        text = f"container {args.get('id')}"
+    elif name == "chem_locations":
+        text = str(args.get("location") or "all locations")
     elif name == "fetch_url":
         text = str(args.get("url") or "")
     elif name == "web_search":
@@ -1722,6 +1730,185 @@ def _handler_system_status(args: dict[str, Any], ctx: ToolContext) -> str:
     return "\n".join(lines)
 
 
+# ── chem inventory (chemInventoryAPI) ───────────────────────────────────────
+
+
+def run_chem_inventory(binary: str, argv: list[str], timeout: float) -> Any:
+    """Run `chemInventoryAPI … --json` and parse the JSON it prints."""
+    try:
+        proc = subprocess.run([binary, *argv, "--json"], capture_output=True,
+                              text=True, timeout=timeout, errors="replace")
+    except subprocess.TimeoutExpired:
+        raise ToolError(f"chemInventoryAPI timed out after {timeout:.0f}s") from None
+    except OSError as exc:
+        raise ToolError(f"could not run chemInventoryAPI: {exc}") from exc
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip()
+        if len(detail) > 400:
+            detail = detail[:399] + "…"
+        raise ToolError(f"chemInventoryAPI failed: {detail or 'unknown error'}")
+    try:
+        return json.loads(proc.stdout)
+    except ValueError as exc:
+        raise ToolError(f"chemInventoryAPI returned invalid JSON: {exc}") from exc
+
+
+def _chem_run(ctx: ToolContext, argv: list[str]) -> Any:
+    binary = find_chem_inventory(ctx)
+    if not binary:
+        raise ToolError("chemInventoryAPI not found (PATH or config chem_inventory)")
+    return run_chem_inventory(binary, argv, min(ctx.timeout, 90))
+
+
+def _flatten(value: Any) -> str:
+    if isinstance(value, (list, tuple)):
+        value = ", ".join(str(item) for item in value)
+    return " ".join(str(value).split())
+
+
+def _chem_row(row: dict[str, Any]) -> str:
+    """One compact `#id · name · CAS · amount · location` line from a record."""
+    bits = []
+    if row.get("id") is not None:
+        bits.append(f"#{row['id']}")
+    name = row.get("name") or row.get("containername")
+    if name:
+        bits.append(_flatten(name))
+    if row.get("cas"):
+        bits.append(f"CAS {_flatten(row['cas'])}")
+    amount = " ".join(str(part) for part in (row.get("size"), row.get("unit")) if part)
+    if amount.strip():
+        bits.append(amount.strip())
+    location = row.get("locationtext") or row.get("locationString")
+    if location:
+        bits.append(f"at {_flatten(location)}")
+    if row.get("barcode"):
+        bits.append(f"barcode {_flatten(row['barcode'])}")
+    if row.get("supplier"):
+        bits.append(f"from {_flatten(row['supplier'])}")
+    return " · ".join(bits) or "(empty record)"
+
+
+def _handler_chem_search(args: dict[str, Any], ctx: ToolContext) -> str:
+    query = str(args.get("query") or "").strip()
+    if not query:
+        raise ToolError("missing 'query'")
+    argv = ["search", query]
+    kind = str(args.get("type") or "").strip()
+    if kind:
+        argv += ["--type", kind]
+    payload = _chem_run(ctx, argv)
+    if not isinstance(payload, dict):
+        payload = {}
+    containers = payload.get("containers") or []
+    orders = payload.get("orders") or []
+    if not containers and not orders:
+        return f"no containers match {query!r}"
+    try:
+        limit = int(args.get("limit") or 10)
+    except (TypeError, ValueError):
+        limit = 10
+    limit = max(1, min(limit, 50))
+    lines = [f"{len(containers)} container(s) matching {query!r}:"]
+    for row in containers[:limit]:
+        lines.append("- " + _chem_row(row))
+    if len(containers) > limit:
+        lines.append(f"… {len(containers) - limit} more container(s) (raise limit)")
+    if orders:
+        lines.append(f"{len(orders)} matching order request(s)")
+    return "\n".join(lines)
+
+
+def _handler_chem_container(args: dict[str, Any], ctx: ToolContext) -> str:
+    raw = args.get("id")
+    if raw is None or not str(raw).strip():
+        raise ToolError("missing 'id'")
+    data = _chem_run(ctx, ["container", "info", str(raw)])
+    if not isinstance(data, dict) or not data:
+        return f"container {raw}: nothing found"
+    lines = [f"container #{data.get('id', raw)}"]
+    pairs = [
+        ("name", data.get("containername") or data.get("name")),
+        ("CAS", data.get("cas")),
+        ("location", data.get("locationString") or data.get("locationtext")),
+        ("amount", " ".join(str(part) for part in (data.get("size"), data.get("unit"))
+                            if part).strip()),
+        ("supplier", data.get("supplier")),
+        ("acquired", data.get("dateacquired")),
+        ("barcode", data.get("barcode")),
+        ("formula", data.get("molecularformula")),
+        ("MW", data.get("molecularweight")),
+        ("exact mass", data.get("exactmass")),
+        ("IUPAC", data.get("iupacname")),
+        ("SMILES", data.get("isomericsmiles")),
+        ("comments", data.get("comments")),
+    ]
+    for label, value in pairs:
+        if value not in (None, "", "N/A"):
+            lines.append(f"{label}: {_flatten(value)}")
+    for prefix, header in (("cf-", "custom fields"), ("sf-", "substance fields")):
+        fields = [(key[len(prefix):], value) for key, value in data.items()
+                  if key.startswith(prefix) and not key.endswith("-value")
+                  and value not in (None, "")]
+        if fields:
+            lines.append(header + ": " + "; ".join(
+                f"{key}={_flatten(value)}" for key, value in fields[:20]))
+    codes = []
+    for entry in data.get("ghs") or []:
+        codes += [code for code in str(entry.get("hazardstatements") or "").split("|")
+                  if code]
+    if codes:
+        lines.append("GHS: " + ", ".join(codes))
+    if data.get("needsretrieval"):
+        lines.append("(substance info not retrieved yet)")
+    return "\n".join(lines)
+
+
+def _handler_chem_locations(args: dict[str, Any], ctx: ToolContext) -> str:
+    location = str(args.get("location") or "").strip()
+    if location:
+        payload = _chem_run(ctx, ["location", "containers", location])
+        containers = payload.get("containers") or [] if isinstance(payload, dict) else []
+        if not containers:
+            return f"no containers in {location!r}"
+        lines = [f"{len(containers)} container(s) in {location!r}:"]
+        for row in containers[:40]:
+            lines.append("- " + _chem_row(row))
+        if len(containers) > 40:
+            lines.append(f"… {len(containers) - 40} more container(s)")
+        return "\n".join(lines)
+    payload = _chem_run(ctx, ["location", "list"])
+    entries = payload if isinstance(payload, list) else []
+    if not entries:
+        return "no locations"
+    children: dict[Any, list] = {}
+    for loc in entries:
+        children.setdefault(loc.get("parent") or 0, []).append(loc)
+    for bucket in children.values():
+        bucket.sort(key=lambda item: _flatten(item.get("name") or "").lower())
+    ordered: list[tuple[int, dict[str, Any]]] = []
+    seen: set[Any] = set()
+
+    def walk(parent: Any, depth: int) -> None:
+        for loc in children.get(parent, []):
+            if loc.get("id") in seen:
+                continue
+            seen.add(loc.get("id"))
+            ordered.append((depth, loc))
+            walk(loc.get("id"), depth + 1)
+
+    walk(0, 0)
+    for loc in entries:  # orphans (parent id not present) still get listed
+        if loc.get("id") not in seen:
+            ordered.append((0, loc))
+    lines = [f"{len(entries)} location(s) (id · containers):"]
+    for depth, loc in ordered:
+        name = _flatten(loc.get("name") or "?")
+        count = loc.get("numbercontainers", 0)
+        lines.append(f"- {'  ' * depth}{name} (#{loc.get('id')}, {count})")
+    return "\n".join(lines)
+
+
 def _handler_fetch_url(args: dict[str, Any], ctx: ToolContext) -> str:
     url = str(args.get("url") or "").strip()
     parsed = urllib.parse.urlsplit(url)
@@ -1820,6 +2007,26 @@ def find_tts_remote(ctx: ToolContext) -> Optional[str]:
         return str(fallback)
     entry = fallback / "tts-remote"
     return str(entry) if entry.is_file() else None
+
+
+def find_chem_inventory(ctx: ToolContext) -> Optional[str]:
+    """The chemInventoryAPI CLI: config override, PATH, then the submodule."""
+    candidate = ctx.chem_inventory or "chemInventoryAPI"
+    found = shutil.which(candidate) if os.path.sep not in candidate else (
+        candidate if Path(candidate).exists() else None)
+    if found:
+        return found
+    # chemInventoryAPI lives in a submodule: ~/bin/chemInventoryAPI/chemInventoryAPI
+    fallback = Path.home() / "bin" / "chemInventoryAPI"
+    if fallback.is_file():
+        return str(fallback)
+    entry = fallback / "chemInventoryAPI"
+    return str(entry) if entry.is_file() else None
+
+
+def chem_inventory_available() -> bool:
+    """True when the chemInventoryAPI CLI can be found (the `chem` gate)."""
+    return find_chem_inventory(ToolContext()) is not None
 
 
 def speech_hosts(report: str) -> str:
@@ -1962,13 +2169,16 @@ HANDLERS: dict[str, Callable[[dict[str, Any], ToolContext], str]] = {
     "search_sessions": _handler_search_sessions,
     "list_models": _handler_list_models,
     "system_status": _handler_system_status,
+    "chem_search": _handler_chem_search,
+    "chem_container": _handler_chem_container,
+    "chem_locations": _handler_chem_locations,
     "web_search": _handler_web_search,
     "fetch_url": _handler_fetch_url,
     "speak": _handler_speak,
     "list_voices": _handler_list_voices,
 }
 
-REQUIREMENTS = {"search", "tts"}
+REQUIREMENTS = {"search", "tts", "chem"}
 
 _NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
@@ -2005,7 +2215,7 @@ def _parse_definition(path: Path) -> ToolDefinition:
         raise ValueError(f"unknown handler {handler!r}")
     requires = data.get("requires")
     if requires is not None and requires not in REQUIREMENTS:
-        raise ValueError(f"unknown requirement {requires!r} (search/tts)")
+        raise ValueError(f"unknown requirement {requires!r} (search/tts/chem)")
     aliases = data.get("aliases") or []
     if not isinstance(aliases, list) or not all(
             isinstance(alias, str) for alias in aliases):
@@ -2076,12 +2286,14 @@ def tool_aliases() -> dict[str, str]:
 
 
 def default_registry(*, tts: Optional[bool] = None,
-                     search: Optional[bool] = None) -> dict[str, ToolSpec]:
+                     search: Optional[bool] = None,
+                     chem: Optional[bool] = None) -> dict[str, ToolSpec]:
     """The tool set, built from the definition files (defs/tools/*.json).
 
     `tts` forces the speech tools on/off; None auto-detects a `tts-remote`
     binary (the tools are simply absent when there is none). `search` does
-    the same for `web_search` against the `ddgs` package.
+    the same for `web_search` against the `ddgs` package, and `chem` for
+    the chemInventoryAPI tools against the CLI.
     """
     if search is None:
         search = search_available()
@@ -2089,7 +2301,9 @@ def default_registry(*, tts: Optional[bool] = None,
         fallback = Path.home() / "bin" / "tts-remote"
         tts = bool(shutil.which("tts-remote")) \
             or fallback.is_file() or (fallback / "tts-remote").is_file()
-    available = {"search": bool(search), "tts": bool(tts)}
+    if chem is None:
+        chem = chem_inventory_available()
+    available = {"search": bool(search), "tts": bool(tts), "chem": bool(chem)}
     registry: dict[str, ToolSpec] = {}
     for definition in tool_definitions():
         if definition.requires and not available.get(definition.requires):

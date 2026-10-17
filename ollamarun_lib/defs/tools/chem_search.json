@@ -1,0 +1,17 @@
+{
+  "name": "chem_search",
+  "description": "Search the chemical inventory (ChemInventory) for containers by name, CAS, barcode or GHS; returns id, name, CAS, amount, location and barcode of each match.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {"type": "string", "description": "what to search for"},
+      "type": {"type": "string", "description": "search field: name (default; includes synonyms), cas, barcode, ghs, ..."},
+      "limit": {"type": "integer", "description": "maximum containers shown (default 10, max 50)"}
+    },
+    "required": ["query"]
+  },
+  "handler": "chem_search",
+  "read_only": true,
+  "requires": "chem",
+  "aliases": ["chem", "inventory_search", "chemical_search", "find_chemical"]
+}

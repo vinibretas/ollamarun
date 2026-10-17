@@ -173,6 +173,9 @@ TOOL_COLORS: dict[str, str] = {
     "search_sessions": "medium_turquoise",
     "list_models": "wheat1",
     "system_status": "steel_blue1",
+    "chem_search": "rosy_brown",
+    "chem_container": "pale_turquoise4",
+    "chem_locations": "plum2",
     "fetch_url": "spring_green2",
     "web_search": "hot_pink2",
     "speak": "salmon1",
@@ -275,6 +278,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tts_lang": None,
     "tts_remote": "tts-remote",
     "tts_tools": True,
+    "chem_inventory": "chemInventoryAPI",
+    "chem_tools": True,
 }
 
 THINKING_MODES = {"collapsed", "expanded", "hidden"}

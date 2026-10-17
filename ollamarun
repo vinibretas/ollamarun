@@ -20,6 +20,12 @@ Summary of changes in this version:
   - `system_status` answers resource questions: RAM, GPU VRAM and the
     model-disk space of the machine running Ollama, probed over ssh when
     the session uses `--remote` (`target="local"` reports this machine).
+  - Read-only chemical-inventory lookups through `chemInventoryAPI`:
+    `chem_search` (containers by name/CAS/barcode/GHS), `chem_container`
+    (one full record with custom fields and GHS) and `chem_locations`
+    (the location tree, or the containers in one location). The three
+    tools only appear when the CLI is installed (`chem_inventory` names a
+    different path, `chem_tools: false` hides them).
 
 Version: 1.36
 
