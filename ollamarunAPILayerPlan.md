@@ -88,15 +88,20 @@ Security baseline
 The API executes tools and modifies files, so the baseline ships
 with the first HTTP phase rather than at hardening time:
 
-* Bind to 127.0.0.1 by default.
-* Keep non-loopback binding disabled until authentication and
-  authorization are implemented (Phase 6 completes them; external
-  reachability must not precede its controls).
+* LAN access without authentication is the locked contract: the
+  default listener is 0.0.0.0:11440 (all interfaces), configurable
+  with --bind, and the API listener stays separate from Ollama's
+  --host. The service is trusted-network-only and must never be
+  exposed directly to the public internet; the startup banner and
+  the docs say so.
 * Reject oversized request bodies before parsing them.
 * Apply request and upstream timeouts, and propagate cancellation
   to inference when the client cancels or disconnects.
 * Return sanitized, structured errors: no internal tracebacks, no
   filesystem paths.
+* Preserve tool policies exactly: network access never changes the
+  configured execution policy, and authentication (when it is added
+  later) is never a substitute for tool approval.
 
 Support the common request fields used by existing clients, with explicit handling of unsupported parameters rather than silently ignoring them.
 
@@ -263,33 +268,31 @@ Acceptance criteria
 
 Phase 6 — Security and Operational Controls
 
-Treat the API as a remote control surface for an agent capable of executing code and modifying files.
-
-The Phase 3 baseline (loopback binding, body limits, timeouts, sanitized
-errors) already ships with the server; this phase completes the controls
-rather than making the service safe for the first time.
+Treat the API as a remote control surface for an agent capable of executing code and modifying files. The service is LAN-accessible without authentication (locked): the bind address and the network are the boundary, and the documentation must state trusted-network-only.
 
 Tasks
 
-* Keep non-loopback binding disabled until authentication and
-  authorization are in place; then require explicit configuration to
-  listen on external interfaces.
-* Complete authentication and authorization for agent execution, session
-  management, approvals, and artifact access.
-* Apply authorization to agent execution, session management, approvals, and artifact access.
-* Preserve tool-level permissions and approval policies.
+* Keep the default listener LAN-accessible (0.0.0.0:11440) with --bind
+  to narrow or change it; keep the API listener configuration separate
+  from Ollama's --host.
+* Do not implement authentication in this stage; keep the route
+  structure and config keys easy to wrap with it later.
+* Preserve tool-level permissions and approval policies; unauthenticated
+  access must not silently change the configured tool execution policy.
 * Validate request sizes, message lengths, file sizes, and parameter ranges.
 * Add request timeouts, cancellation propagation, and controlled concurrency.
 * Prevent clients from accessing arbitrary files through uploaded paths or artifact identifiers.
-* Keep credentials and sensitive runtime data out of logs.
+* Keep message content and sensitive runtime data out of logs by default.
 * Return structured, sanitized errors.
 
-Authentication is not a replacement for tool approval. A valid API client must not automatically gain permission to execute every available tool without the intended policy checks.
+Authentication, when it is added later, is not a replacement for tool
+approval: a valid API client must not automatically gain permission to
+execute every available tool without the intended policy checks.
 
 Acceptance criteria
 
-* External exposure requires deliberate configuration and authentication.
-* Existing tool safeguards remain effective over HTTP.
+* The API is LAN-accessible by default and documented as trusted-network-only.
+* Existing tool safeguards remain effective over HTTP unchanged.
 * Invalid or oversized requests fail safely.
 * Cancellation and failures leave sessions and runtime resources in a consistent state.
 
@@ -322,7 +325,8 @@ HTTP tests
 * Streaming chunk format and stream termination.
 * Tool-call serialization.
 * Error status codes and bodies.
-* Authentication and authorization.
+* No-auth behavior in trusted-network mode (loopback + LAN bind;
+  requests need no credentials).
 * File and artifact access controls.
 * Concurrent requests and session isolation.
 
@@ -358,7 +362,8 @@ Agent API documentation
 * Sessions and persistence.
 * Approval workflows.
 * Attachments and artifact retrieval.
-* Authentication, configuration, and deployment.
+* Configuration and deployment (the trusted-network boundary;
+  authentication is deferred, with its hooks documented).
 
 Add a minimal example client that demonstrates standard completions and a second example that executes an agent turn. These become practical integration tests and reference implementations.
 
