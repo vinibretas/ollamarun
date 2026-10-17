@@ -419,6 +419,223 @@ def test_chat_payload() -> int:
     return failures
 
 
+def test_tool_definitions() -> int:
+    failures = 0
+    defs = orun.tool_definitions()
+    names = sorted(definition.name for definition in defs)
+    failures = _check(failures, "the shipped tool definitions load",
+                      names == ["fetch_url", "list_dir", "list_voices", "read_file",
+                                "run_python", "run_shell", "speak", "web_search",
+                                "write_file"], str(names))
+    failures = _check(failures, "every definition's handler resolves",
+                      all(definition.handler in orun.HANDLERS
+                          for definition in defs))
+    web = next((definition for definition in defs
+                if definition.name == "web_search"), None)
+    failures = _check(failures, "web_search declares its capability and aliases",
+                      web is not None and web.read_only
+                      and web.requires == "search" and "google" in web.aliases)
+    with_search = orun.default_registry(tts=False, search=True)
+    without_search = orun.default_registry(tts=False, search=False)
+    failures = _check(failures, "requires gates web_search and the speech tools",
+                      "web_search" in with_search
+                      and "web_search" not in without_search
+                      and "speak" not in without_search
+                      and "fetch_url" in without_search)
+    failures = _check(failures, "aliases are built from the definitions",
+                      orun.resolve_tool_alias("google") == "web_search"
+                      and orun.resolve_tool_alias("browse") == "fetch_url"
+                      and orun.resolve_tool_alias("unheard_of") == "unheard_of")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp) / "tools"
+        override = Path(tmp) / "override"
+        base.mkdir()
+        override.mkdir()
+        schema = {"type": "object", "properties": {}, "required": []}
+
+        def write(folder: Path, filename: str, payload: dict) -> None:
+            (folder / filename).write_text(json.dumps(payload), encoding="utf-8")
+
+        write(base, "alpha.json", {"name": "alpha", "description": "first",
+                                   "parameters": schema, "handler": "list_dir",
+                                   "read_only": True})
+        write(base, "beta.json", {"name": "alpha", "description": "duplicate",
+                                  "parameters": schema, "handler": "list_dir"})
+        (base / "broken.json").write_text("{not json", encoding="utf-8")
+        write(base, "nosuch.json", {"name": "nosuch", "description": "x",
+                                    "parameters": schema,
+                                    "handler": "does_not_exist"})
+        with orun.console.capture() as cap:
+            loaded = orun.load_tool_definitions([base, override])
+        out = _plain(cap.get())
+        failures = _check(failures, "bad files and duplicate names are skipped",
+                          [definition.name for definition in loaded] == ["alpha"],
+                          str([definition.name for definition in loaded]))
+        failures = _check(failures, "bad definitions warn and continue",
+                          "ignoring tool definition" in out
+                          and "duplicate name" in out and "unknown handler" in out,
+                          out)
+
+        write(override, "alpha.json", {"name": "alpha", "description": "overridden",
+                                       "parameters": schema, "handler": "list_dir"})
+        with orun.console.capture():
+            loaded = orun.load_tool_definitions([base, override])
+        alpha = next((definition for definition in loaded
+                      if definition.name == "alpha"), None)
+        failures = _check(failures, "a later layer overrides a file by name",
+                          alpha is not None and alpha.description == "overridden",
+                          str(alpha))
+    return failures
+
+
+def test_prompts() -> int:
+    failures = 0
+    base = orun.default_system_prompt(with_tools=False) or ""
+    with_tools = orun.default_system_prompt(with_tools=True) or ""
+    failures = _check(failures, "the built-in system prompt loads from its file",
+                      bool(base) and "ollamarun" in base, base[:60])
+    failures = _check(failures, "the tool rules are appended only with tools on",
+                      with_tools.startswith(base) and "Web search" in with_tools
+                      and with_tools != base, with_tools[:80])
+    title = orun.title_prompt("the first message")
+    failures = _check(failures, "the title prompt substitutes its content",
+                      title is not None and "the first message" in title
+                      and "{{content}}" not in title, str(title))
+    summary = orun.summarize_prompt("user: hi\n\nassistant: hello")
+    failures = _check(failures, "the summarize prompt substitutes its transcript",
+                      summary is not None and "user: hi" in summary
+                      and "{{content}}" not in summary, str(summary))
+    failures = _check(failures, "a marker-less template appends the content",
+                      orun.render_prompt("just a title", "BODY")
+                      == "just a title\n\nBODY")
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp) / "prompts"
+        folder.mkdir()
+        (folder / "system.md").write_text("OVERRIDE FIRST", encoding="utf-8")
+        loaded = orun.load_prompt("system.md", directories=[folder])
+        failures = _check(failures, "an explicit override layer is read first",
+                          loaded == "OVERRIDE FIRST", str(loaded))
+        with orun.console.capture() as cap:
+            missing = orun.load_prompt("nope.md", directories=[folder])
+        failures = _check(failures, "a missing prompt reads as None and warns",
+                          missing is None and "not found" in _plain(cap.get()))
+    return failures
+
+
+def test_system_prompt() -> int:
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        config = dict(orun.DEFAULT_CONFIG)
+        args = orun.build_parser().parse_args(["m1", "--render", "plain", "--no-save"])
+        client = _FakeClient(models=["m1"])
+        repl = orun.Repl(args, config, client, store,
+                         orun.Session.create("m1", client.base))
+        repl._build_prompt_session = lambda: None
+
+        repl.session.add_message("user", "hi")
+        with orun.console.capture():
+            repl._generate()
+        first = client.chat_payloads[0]["messages"]
+        failures = _check(failures, "the built-in default leads the chat request",
+                          first[0]["role"] == "system"
+                          and "ollamarun" in first[0]["content"], str(first[:1]))
+        failures = _check(failures, "the system prompt stays out of the history",
+                          all(message.get("role") != "system"
+                              for message in repl.session.messages))
+
+        repl.session.system = "BE TERSE"
+        with orun.console.capture():
+            repl._generate()
+        second = client.chat_payloads[1]["messages"]
+        failures = _check(failures, "a session prompt replaces the built-in default",
+                          second[0] == {"role": "system", "content": "BE TERSE"},
+                          str(second[:1]))
+
+        repl.session.system = ""
+        with orun.console.capture():
+            repl._generate()
+        third = client.chat_payloads[2]["messages"]
+        failures = _check(failures, "an empty session prompt sends no system message",
+                          all(message.get("role") != "system" for message in third))
+
+        with orun.console.capture() as cap:
+            orun.cmd_system(repl, "clear")
+        failures = _check(failures, "/system clear resets to the built-in default",
+                          repl.session.system is None
+                          and "built-in default" in _plain(cap.get()), cap.get())
+        with orun.console.capture() as cap:
+            orun.cmd_system(repl, "")
+        failures = _check(failures, "/system shows the built-in prompt",
+                          "ollamarun" in _plain(cap.get()), cap.get())
+        with orun.console.capture():
+            orun.cmd_system(repl, "off")
+        failures = _check(failures, "/system off disables the prompt",
+                          repl.session.system == "")
+        with orun.console.capture() as cap:
+            orun.cmd_system(repl, "")
+        failures = _check(failures, "/system reports the disabled state",
+                          "disabled" in _plain(cap.get()), cap.get())
+        with orun.console.capture():
+            orun.cmd_system(repl, "be nice")
+        failures = _check(failures, "/system TEXT sets a custom prompt",
+                          repl.session.system == "be nice")
+        with orun.console.capture():
+            orun.cmd_set(repl, "system off")
+        failures = _check(failures, "/set system off disables it",
+                          repl.session.system == "")
+        with orun.console.capture():
+            orun.cmd_set(repl, "system clear")
+        failures = _check(failures, "/set system clear resets to the default",
+                          repl.session.system is None)
+        repl.session.system = "be nice"
+        with orun.console.capture() as cap:
+            orun.cmd_params(repl, "")
+        failures = _check(failures, "the parameter table shows the system state",
+                          "be nice" in _plain(cap.get()), cap.get())
+
+        repl.auto_title = True
+        with orun.console.capture():
+            repl._maybe_title("plan the trip")
+        title_text = client.chat_once_payloads[-1]["messages"][0]["content"]
+        failures = _check(failures, "auto-title uses the prompt file",
+                          "plan the trip" in title_text
+                          and "starts with" in title_text, title_text[:80])
+
+        repl.session.messages = [
+            {"role": "user", "content": "one", "ts": ""},
+            {"role": "assistant", "content": "two", "ts": ""},
+            {"role": "user", "content": "three", "ts": ""},
+            {"role": "assistant", "content": "four", "ts": ""},
+            {"role": "user", "content": "five", "ts": ""},
+        ]
+        with orun.console.capture():
+            orun.cmd_summarize(repl, "go")
+        summary_text = client.chat_once_payloads[-1]["messages"][0]["content"]
+        failures = _check(failures, "summarize uses the prompt file",
+                          "Summarize the following conversation" in summary_text
+                          and "user: one" in summary_text, summary_text[:80])
+        failures = _check(failures, "the summary replaces the older messages",
+                          repl.session.messages[0]["content"].startswith(
+                              "[Summary of earlier conversation]"),
+                          str(repl.session.messages[0])[:80])
+
+        args_no = orun.build_parser().parse_args(["m1", "--no-system"])
+        failures = _check(failures, "--no-system parses",
+                          args_no.no_system is True
+                          and orun.build_parser().parse_args(["m1"]).no_system is False)
+        fresh = orun.resolve_session(args_no, dict(orun.DEFAULT_CONFIG), client, store)
+        failures = _check(failures, "--no-system disables the prompt for a new session",
+                          fresh.system == "", repr(fresh.system))
+        args_sys = orun.build_parser().parse_args(["m1", "--system", "custom text"])
+        fresh = orun.resolve_session(args_sys, dict(orun.DEFAULT_CONFIG), client, store)
+        failures = _check(failures, "--system sets the session prompt",
+                          fresh.system == "custom text", repr(fresh.system))
+    return failures
+
+
 def test_normalize_argv() -> int:
     failures = 0
     with tempfile.TemporaryDirectory() as tmp:
@@ -913,7 +1130,8 @@ def test_tps_estimator() -> int:
 class _FakeClient:
     def __init__(self, resident=(), models=(), ps_entries=(), show_data=None,
                  capabilities=("completion",), chat_script=None,
-                 pull_events=None, pull_error=None, tag_data=None):
+                 pull_events=None, pull_error=None, tag_data=None,
+                 chat_once_reply="ok"):
         self.base = "http://fake:11434"
         self.resident = list(resident)
         self.models = list(models)
@@ -922,6 +1140,8 @@ class _FakeClient:
         self.capability_list = list(capabilities)
         self.chat_script = [list(events) for events in (chat_script or [])]
         self.chat_calls = 0
+        self.chat_once_reply = chat_once_reply
+        self.chat_once_payloads = []
         self.unloaded = []
         self.loaded = []
         self.load_options = []
@@ -952,6 +1172,10 @@ class _FakeClient:
             self.chat_calls += 1
             return iter(events)
         return iter([{"message": {"content": "ok"}, "done": True}])
+
+    def chat_once(self, payload, timeout=None):
+        self.chat_once_payloads.append(payload)
+        return {"message": {"content": self.chat_once_reply}, "done": True}
 
     def tags(self):
         if self.tag_data is not None:
@@ -3721,7 +3945,8 @@ def test_web_tools() -> int:
         content_type="text/html", body="<html><h1>Not Found</h1></html>", size=34)
     failures = _check(failures, "404 explains itself and points at web_search",
                       "HTTP 404" in not_found and "does not exist" in not_found
-                      and "web_search" in not_found and "<h1>" not in not_found,
+                      and "web_search" in not_found and "search again" in not_found
+                      and "<h1>" not in not_found,
                       not_found)
     blocked = orun.format_fetch_response(
         url="https://x.test/", final_url="https://x.test/", status=403,
@@ -3773,6 +3998,12 @@ def test_web_tools() -> int:
 
     # ── the handlers, against a fake network
     registry = orun.default_registry(tts=False, search=True)
+    failures = _check(failures, "web_search pushes a re-search over a verdict",
+                      "starting point, not a verdict" in registry["web_search"].description
+                      and "search again" in registry["web_search"].description,
+                      registry["web_search"].description)
+    failures = _check(failures, "fetch_url points back at a re-search too",
+                      "search again" in registry["fetch_url"].description)
     ctx = orun.ToolContext(cwd=os.getcwd(), timeout=10, max_output=4000)
     real_get = requests.get
     calls: list[str] = []
@@ -3880,7 +4111,8 @@ def test_web_tools() -> int:
                               and "2. Second" in search.text
                               and "docs.test/ai-hat" in search.text, search.text)
             failures = _check(failures, "web_search nudges the model to fetch",
-                              "fetch_url" in search.text, search.text)
+                              "fetch_url" in search.text
+                              and "search again" in search.text, search.text)
             count = len(_FakeDDGS.queries)
             cached = orun.execute_tool(registry["web_search"],
                                        {"query": "Raspberry Pi AI Hat"}, ctx)
@@ -3893,8 +4125,10 @@ def test_web_tools() -> int:
                               _FakeDDGS.queries[-1] == ("clamp", 10),
                               str(_FakeDDGS.queries[-1:]))
             none = orun.execute_tool(registry["web_search"], {"query": "nothing"}, ctx)
-            failures = _check(failures, "no results tells the model what to do",
+            failures = _check(failures, "no results tells the model to search again",
                               none.ok and "no results" in none.text
+                              and "not proof" in none.text
+                              and "search again" in none.text
                               and "do not guess URLs" in none.text, none.text)
             broken = orun.execute_tool(registry["web_search"], {"query": "boom"}, ctx)
             failures = _check(failures, "backend failures surface as errors",
@@ -4785,8 +5019,11 @@ def test_boundary_delivery() -> int:
                       scripted.chat_calls == 2, str(scripted.chat_calls))
     second = scripted.chat_payloads[1]["messages"]
     roles = [message["role"] for message in second]
+    failures = _check(failures, "the system prompt leads the request",
+                      roles[:1] == ["system"]
+                      and second[0]["content"].strip() != "", str(roles))
     failures = _check(failures, "second round carries tool result, then the message",
-                      roles == ["user", "assistant", "tool", "user"], str(roles))
+                      roles[1:] == ["user", "assistant", "tool", "user"], str(roles))
     failures = _check(failures, "the queued text is the last user message",
                       second[-1]["content"] == "and also check the parent directory",
                       str(second[-1]))
@@ -5723,6 +5960,7 @@ if __name__ == "__main__":
              + test_resolve_show_stats()
              + test_file_mentions() + test_images() + test_session_store()
              + test_session_payloads() + test_chat_payload()
+             + test_tool_definitions() + test_prompts() + test_system_prompt()
              + test_normalize_argv() + test_renderer_plain()
              + test_thinking_display() + test_math_layout()
              + test_render_content() + test_tps_estimator()

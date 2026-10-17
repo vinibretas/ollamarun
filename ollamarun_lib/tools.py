@@ -4,7 +4,9 @@
 a handler); `default_registry()` builds the built-in set (shell, python,
 files, web -- `web_search` when `ddgs` is installed, plus `fetch_url`, which
 returns readable page text rather than raw markup -- and, when `tts-remote`
-is available, speech).
+is available, speech) from the definition files in `defs/tools/`, one JSON
+per tool, with `~/etc/config_files/ollamarun-defs/tools/` overriding the
+shipped files by name.
 `approval_decision()` classifies a call as auto-approved or needing user
 confirmation (read-only tools and provably-harmless shell/python calls are
 safe; anything else asks), and `execute_tool()` runs the handler with a
@@ -40,6 +42,7 @@ from typing import Any, Callable, Optional
 
 import requests
 
+from .constants import DEFS_DIR, DEFS_OVERRIDE_DIR, console
 from .helpers import now_iso, short_stamp
 
 FETCH_TIMEOUT = 30.0
@@ -453,27 +456,13 @@ def call_detail(name: str, args: dict[str, Any]) -> str:
     return text if len(text) <= 160 else text[:159] + "…"
 
 
-#: Tool names models tend to invent for the web tools, mapped onto the real
-#: ones so a slightly-wrong call still does the right thing.
-TOOL_ALIASES = {
-    "search": "web_search",
-    "websearch": "web_search",
-    "web": "web_search",
-    "google": "web_search",
-    "fetch": "fetch_url",
-    "browse": "fetch_url",
-    "open_url": "fetch_url",
-    "read_url": "fetch_url",
-    "get_url": "fetch_url",
-    "http_get": "fetch_url",
-    "curl": "fetch_url",
-}
-
-
+#: Tool names models tend to invent for the web tools are mapped onto the
+#: real ones through each definition's `aliases` list (see the defs loader
+#: below); `tool_aliases()` builds that map, `resolve_tool_alias()` uses it.
 def resolve_tool_alias(name: str) -> str:
     """The real tool for a name a model may have invented (identity otherwise)."""
     key = str(name or "").strip().lower().replace("-", "_")
-    return TOOL_ALIASES.get(key, name)
+    return tool_aliases().get(key, name)
 
 
 def normalize_arguments(raw: Any) -> Optional[dict[str, Any]]:
@@ -1096,7 +1085,8 @@ def _failure_note(status: int, content_type: str, body: str) -> str:
     blocked = any(marker in lower for marker in BOT_WALL_MARKERS)
     if status in (404, 410):
         return ("the page does not exist at this URL. Do not guess more URLs on "
-                "this site; call web_search to find the right page.")
+                "this site; call web_search to find the right page — and if the "
+                "first search misses it, search again with different words.")
     if status in (401, 407):
         return ("the page needs a login. If it should be public, call web_search "
                 "for another source; otherwise ask the user for access.")
@@ -1187,7 +1177,8 @@ def format_fetch_response(*, url: str, final_url: str, status: int,
                 "no readable text: this page is rendered by JavaScript (only "
                 "the app shell came back). Fetching it again will not help — "
                 "call web_search and pick a result that serves static text, an "
-                "API endpoint or a docs page.")
+                "API endpoint or a docs page; if nothing fits, search again "
+                "with different words.")
             return "\n".join(lines)
         parts = [head]
         if title:
@@ -1238,8 +1229,11 @@ def search_available() -> bool:
 
 def format_search_results(query: str, results: list[tuple[str, str, str]]) -> str:
     if not results:
-        return (f"web_search: no results for {query!r}. Try fewer or different "
-                f"words (and do not guess URLs).")
+        return (f"web_search: no results for {query!r}. That is not proof the "
+                f"information does not exist — search again with different or "
+                f"narrower words (synonyms, exact phrases, site:, a year) instead "
+                f"of deciding it is not available; only report it as not found "
+                f"after a few rephrased searches come up empty (do not guess URLs).")
     lines = [f"web_search: {query!r} — {len(results)} result(s)"]
     for index, (title, url, snippet) in enumerate(results, 1):
         lines.append(f"{index}. {title or '(untitled)'}")
@@ -1247,7 +1241,9 @@ def format_search_results(query: str, results: list[tuple[str, str, str]]) -> st
         if snippet:
             lines.append(f"   {' '.join(snippet.split())[:300]}")
     lines.append("")
-    lines.append("Next: call fetch_url on the most promising result(s) to read them.")
+    lines.append("Next: call fetch_url on the most promising result(s) to read them. "
+                 "If none of them answers the question, search again with different "
+                 "or narrower words instead of settling.")
     return "\n".join(lines)
 
 
@@ -1624,121 +1620,167 @@ def _handler_list_voices(args: dict[str, Any], ctx: ToolContext) -> str:
     return "\n".join(lines) or "no voices reported"
 
 
-# ── registry ────────────────────────────────────────────────────────────────
+# ── definitions (defs/tools/*.json + config overrides) ──────────────────────
 
 
-def _object_schema(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
-    return {"type": "object", "properties": properties, "required": required}
+@dataclass
+class ToolDefinition:
+    """One tool's declaration, loaded from its JSON file."""
+    name: str
+    description: str
+    parameters: dict[str, Any]
+    handler: str
+    read_only: bool = False
+    always_safe: bool = False
+    #: capability the tool needs to appear: None, "search" or "tts"
+    requires: Optional[str] = None
+    #: names models tend to invent for this tool
+    aliases: list[str] = field(default_factory=list)
+
+
+#: `handler` name in a tool JSON -> the function that executes it.
+HANDLERS: dict[str, Callable[[dict[str, Any], ToolContext], str]] = {
+    "shell": _handler_shell,
+    "python": _handler_python,
+    "read_file": _handler_read_file,
+    "write_file": _handler_write_file,
+    "list_dir": _handler_list_dir,
+    "web_search": _handler_web_search,
+    "fetch_url": _handler_fetch_url,
+    "speak": _handler_speak,
+    "list_voices": _handler_list_voices,
+}
+
+REQUIREMENTS = {"search", "tts"}
+
+_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+_DEFS_CACHE: Optional[list[ToolDefinition]] = None
+_ALIASES_CACHE: Optional[dict[str, str]] = None
+
+
+def tool_definition_dirs() -> list[Path]:
+    """The definition layers, lowest priority first (config overrides ship on top)."""
+    return [DEFS_DIR / "tools", DEFS_OVERRIDE_DIR / "tools"]
+
+
+def _parse_definition(path: Path) -> ToolDefinition:
+    """One JSON file -> ToolDefinition; raises ValueError with the reason."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"cannot read: {exc}") from exc
+    except ValueError as exc:
+        raise ValueError(f"bad JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("not a JSON object")
+    name = str(data.get("name") or "").strip()
+    if not _NAME_RE.fullmatch(name):
+        raise ValueError(f"bad tool name {name!r}")
+    description = str(data.get("description") or "").strip()
+    if not description:
+        raise ValueError("missing 'description'")
+    parameters = data.get("parameters")
+    if not isinstance(parameters, dict) or parameters.get("type") != "object":
+        raise ValueError("'parameters' must be a JSON-schema object")
+    handler = str(data.get("handler") or "").strip()
+    if handler not in HANDLERS:
+        raise ValueError(f"unknown handler {handler!r}")
+    requires = data.get("requires")
+    if requires is not None and requires not in REQUIREMENTS:
+        raise ValueError(f"unknown requirement {requires!r} (search/tts)")
+    aliases = data.get("aliases") or []
+    if not isinstance(aliases, list) or not all(
+            isinstance(alias, str) for alias in aliases):
+        raise ValueError("'aliases' must be a list of strings")
+    return ToolDefinition(
+        name=name, description=description, parameters=parameters,
+        handler=handler,
+        read_only=bool(data.get("read_only", False)),
+        always_safe=bool(data.get("always_safe", False)),
+        requires=requires,
+        aliases=[alias.strip().lower() for alias in aliases if alias.strip()])
+
+
+def load_tool_definitions(
+        directories: Optional[list[Path]] = None) -> list[ToolDefinition]:
+    """Every tool definition; a same-named file in a later layer wins.
+
+    Bad files and duplicate tool names are skipped with a warning: a broken
+    edit must never take the whole tool harness down.
+    """
+    if directories is not None:
+        folders = [Path(directory) for directory in directories]
+    else:
+        folders = tool_definition_dirs()
+    files: dict[str, Path] = {}
+    for folder in folders:
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.glob("*.json")):
+            files[path.stem] = path  # the later folder's file replaces it
+    definitions: list[ToolDefinition] = []
+    seen: dict[str, Path] = {}
+    for stem in sorted(files):
+        path = files[stem]
+        try:
+            definition = _parse_definition(path)
+        except ValueError as exc:
+            console.print(f"[warn]ignoring tool definition {path}: {exc}[/warn]")
+            continue
+        if definition.name in seen:
+            console.print(f"[warn]ignoring tool definition {path}: duplicate name "
+                          f"{definition.name!r} (already defined by "
+                          f"{seen[definition.name]})[/warn]")
+            continue
+        seen[definition.name] = path
+        definitions.append(definition)
+    return definitions
+
+
+def tool_definitions() -> list[ToolDefinition]:
+    """The cached default-path definitions (a restart picks up file edits)."""
+    global _DEFS_CACHE
+    if _DEFS_CACHE is None:
+        _DEFS_CACHE = load_tool_definitions()
+    return _DEFS_CACHE
+
+
+def tool_aliases() -> dict[str, str]:
+    """alias -> tool name, built from each definition's `aliases` list."""
+    global _ALIASES_CACHE
+    if _ALIASES_CACHE is None:
+        aliases: dict[str, str] = {}
+        for definition in tool_definitions():
+            for alias in definition.aliases:
+                aliases.setdefault(alias, definition.name)
+        _ALIASES_CACHE = aliases
+    return _ALIASES_CACHE
 
 
 def default_registry(*, tts: Optional[bool] = None,
                      search: Optional[bool] = None) -> dict[str, ToolSpec]:
-    """The built-in tool set, keyed by name.
+    """The tool set, built from the definition files (defs/tools/*.json).
 
     `tts` forces the speech tools on/off; None auto-detects a `tts-remote`
     binary (the tools are simply absent when there is none). `search` does
     the same for `web_search` against the `ddgs` package.
     """
-    specs = [
-        ToolSpec(
-            "run_shell",
-            "Run a shell command (bash -lc) and return its output and exit code. "
-            "Use it for listings, search, git and similar read-only commands; "
-            "anything that modifies the system asks the user first.",
-            _object_schema({
-                "command": {"type": "string", "description": "the command to run"},
-                "cwd": {"type": "string", "description": "working directory (optional)"},
-                "timeout": {"type": "number", "description": "seconds (optional)"},
-            }, ["command"]),
-            _handler_shell),
-        ToolSpec(
-            "run_python",
-            "Execute a short Python 3 program and return its stdout/stderr. Good "
-            "for calculations and text processing; snippets that touch files or "
-            "the OS ask the user first.",
-            _object_schema({
-                "code": {"type": "string", "description": "the python source to run"},
-                "timeout": {"type": "number", "description": "seconds (optional)"},
-            }, ["code"]),
-            _handler_python),
-        ToolSpec(
-            "read_file",
-            "Read a text file (optionally a line range) from the local machine.",
-            _object_schema({
-                "path": {"type": "string", "description": "file path"},
-                "offset": {"type": "integer", "description": "first line (0-based)"},
-                "limit": {"type": "integer", "description": "how many lines"},
-            }, ["path"]),
-            _handler_read_file, read_only=True),
-        ToolSpec(
-            "write_file",
-            "Write (or append) text to a file, creating it if needed. Asks the "
-            "user for confirmation unless tools are running unlocked.",
-            _object_schema({
-                "path": {"type": "string", "description": "file path"},
-                "content": {"type": "string", "description": "text to write"},
-                "append": {"type": "boolean", "description": "append instead of replacing"},
-            }, ["path", "content"]),
-            _handler_write_file),
-        ToolSpec(
-            "list_dir",
-            "List a directory with sizes and modification times.",
-            _object_schema({
-                "path": {"type": "string", "description": "directory (default: cwd)"},
-            }, []),
-            _handler_list_dir, read_only=True),
-    ]
     if search is None:
         search = search_available()
-    if search:
-        specs.append(ToolSpec(
-            "web_search",
-            "Search the web and return the best results (title, URL, snippet). "
-            "Use it for anything current or factual you are not sure about, and "
-            "whenever you need a URL — never invent or guess URLs. Then read "
-            "the one or two most promising results with fetch_url.",
-            _object_schema({
-                "query": {"type": "string", "description": "what to search for"},
-                "max_results": {"type": "integer",
-                                "description": "how many results (default 5, max 10)"},
-                "timeout": {"type": "number", "description": "seconds (optional)"},
-            }, ["query"]),
-            _handler_web_search, read_only=True))
-    specs.append(ToolSpec(
-        "fetch_url",
-        "Fetch one exact http(s) URL and return its readable content: HTML is "
-        "converted to text (plus the page's links), JSON is pretty-printed and "
-        "PDFs are turned into text. Call web_search first when you do not "
-        "already have a real URL — never guess URLs — and do not fetch the "
-        "same URL twice.",
-        _object_schema({
-            "url": {"type": "string", "description": "absolute http(s) URL"},
-            "timeout": {"type": "number", "description": "seconds (optional)"},
-        }, ["url"]),
-        _handler_fetch_url, read_only=True))
-    registry = {spec.name: spec for spec in specs}
     if tts is None:
         fallback = Path.home() / "bin" / "tts-remote"
-        available = bool(shutil.which("tts-remote")) \
+        tts = bool(shutil.which("tts-remote")) \
             or fallback.is_file() or (fallback / "tts-remote").is_file()
-    else:
-        available = bool(tts)
-    if available:
-        registry["speak"] = ToolSpec(
-            "speak",
-            "Speak text out loud through tts-remote (queued in the background; "
-            "returns immediately). Pass voice/lang to override the default voice.",
-            _object_schema({
-                "text": {"type": "string", "description": "what to say"},
-                "voice": {"type": "string", "description": "voice slug (optional)"},
-                "lang": {"type": "string", "description": "ISO language code (optional)"},
-            }, ["text"]),
-            _handler_speak, always_safe=True)
-        registry["list_voices"] = ToolSpec(
-            "list_voices",
-            "List the voices available to the speak tool (slug, language, style).",
-            _object_schema({}, []),
-            _handler_list_voices, read_only=True)
+    available = {"search": bool(search), "tts": bool(tts)}
+    registry: dict[str, ToolSpec] = {}
+    for definition in tool_definitions():
+        if definition.requires and not available.get(definition.requires):
+            continue
+        registry[definition.name] = ToolSpec(
+            definition.name, definition.description, definition.parameters,
+            HANDLERS[definition.handler],
+            read_only=definition.read_only, always_safe=definition.always_safe)
     return registry
 
 

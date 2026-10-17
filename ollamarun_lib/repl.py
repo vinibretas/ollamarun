@@ -60,6 +60,7 @@ from .helpers import (
     shortcut,
 )
 from .images import encode_image
+from .prompts import default_system_prompt, summarize_prompt, title_prompt
 from .ctxfit import (
     FitRequest,
     NUM_CTX_HELP,
@@ -137,7 +138,7 @@ COMMAND_INFO: dict[str, tuple[str, str]] = {
     "/tts": ("[on|off|voice NAME|lang CODE|tools on|off|voices]", "auto-speak via tts-remote"),
     "/think": ("[on|off|low|medium|high]", "thinking mode"),
     "/thinking": ("[show|collapse|hide|toggle|full]", "thinking display (Ctrl+T while streaming)"),
-    "/system": ("[TEXT|clear]", "show or set the system prompt"),
+    "/system": ("[TEXT|clear|off]", "show or set the system prompt (built-in default when unset)"),
     "/undo": ("", "drop the last exchange"),
     "/retry": ("", "regenerate the last response"),
     "/edit": ("", "edit the last message in $EDITOR and resend"),
@@ -590,6 +591,14 @@ class Repl:
     def gpu_layers_summary(self) -> str:
         return gpu_layers_label(self.session.gpu_layers, self._model_block_count())
 
+    def effective_system(self) -> Optional[str]:
+        """What chat requests carry: the session's text when set, the built-in
+        default otherwise (composed for the current tool state), or None when
+        the session disabled system prompts with an empty string."""
+        if self.session.system is not None:
+            return self.session.system or None
+        return default_system_prompt(with_tools=self.tools_enabled)
+
     def _payload(self, messages: list[dict[str, Any]], *, stream: bool = True,
                  with_tools: Optional[bool] = None) -> dict[str, Any]:
         if with_tools is None:
@@ -604,6 +613,10 @@ class Repl:
         if with_tools:
             tools = build_tool_schemas(self.tool_registry,
                                        set(self.session.tools_disabled)) or None
+        messages = list(messages)
+        system = self.effective_system()
+        if system and (not messages or messages[0].get("role") != "system"):
+            messages.insert(0, {"role": "system", "content": system})
         options = dict(self.session.parameters)
         gpu_layers = self.gpu_layers_value()
         if gpu_layers is not None:
@@ -1023,10 +1036,11 @@ class Repl:
 
     def _maybe_title(self, first_text: str) -> None:
         title = ""
+        prompt = None
         if self.auto_title and self.session.model:
+            prompt = title_prompt(first_text)
+        if prompt:
             try:
-                prompt = ("Give a short title (max 8 words, no quotes) for a chat that "
-                          f"starts with:\n\n{first_text[:1500]}")
                 response = self.client.chat_once(build_chat_payload(
                     self.session.model, [{"role": "user", "content": prompt}],
                     stream=False, options={"num_predict": 24, "temperature": 0.2}))
@@ -1215,10 +1229,7 @@ def cmd_set(repl: Repl, argument: str) -> None:
                           f"{escape(json.dumps(repl.session.parameters[parts[1]]))}")
             repl.session.touch()
     elif kind == "system":
-        text = argument[len("system"):].strip()
-        repl.session.system = text or None
-        console.print("[ok]system prompt set[/ok]" if text else "[ok]system prompt cleared[/ok]")
-        repl.session.touch()
+        _apply_system(repl, argument[len("system"):].strip())
     else:
         console.print("[err]usage: /set parameter NAME VALUE | /set system TEXT[/err]")
 
@@ -1236,7 +1247,7 @@ def cmd_params(repl: Repl, argument: str) -> None:
     table.add_row("keep_alive", escape(str(repl.session.keepalive or "")))
     table.add_row("gpu layers", escape(repl.gpu_layers_summary()))
     table.add_row("format", escape(str(repl.session.format or "")))
-    table.add_row("system", shortcut(repl.session.system or "", 60))
+    table.add_row("system", escape(system_label(repl)))
     console.print(table)
 
 
@@ -1830,7 +1841,7 @@ def cmd_save(repl: Repl, argument: str) -> None:
 
     try:
         repl.client.create_model(name, repl.session.model,
-                                 system=repl.session.system,
+                                 system=repl.effective_system(),
                                  parameters=repl.session.parameters,
                                  progress=progress)
     except OllamaError as exc:
@@ -2044,22 +2055,57 @@ def cmd_thinking(repl: Repl, argument: str) -> None:
     console.print(f"[ok]thinking[/ok] {repl.thinking_mode}")
 
 
+def _apply_system(repl: Repl, text: str) -> None:
+    """One place for the /system and /set system semantics.
+
+    None means "use the built-in default", an empty string means "send no
+    system prompt at all", any other text is the session's own prompt.
+    """
+    if text in ("off", "none"):
+        repl.session.system = ""
+        console.print("[ok]system prompt disabled[/ok]")
+    elif text in ("", "clear", "default", "reset"):
+        repl.session.system = None
+        console.print("[ok]system prompt reset to the built-in default[/ok]")
+    else:
+        repl.session.system = text
+        console.print("[ok]system prompt set[/ok]")
+    repl.session.touch()
+
+
+def _show_system(repl: Repl) -> None:
+    if repl.session.system:
+        console.print(Panel(escape(repl.session.system), title="system",
+                            border_style="dim", title_align="left"))
+        return
+    if repl.session.system == "":
+        console.print("[dim]no system prompt (disabled; /system clear re-enables "
+                      "the built-in default)[/dim]")
+        return
+    text = repl.effective_system() or ""
+    if not text:
+        console.print("[warn]the built-in system prompt file is missing "
+                      "(defs/prompts/system.md)[/warn]")
+        return
+    console.print(Panel(escape(text), title="system (built-in default)",
+                        border_style="dim", title_align="left"))
+
+
+def system_label(repl: Repl) -> str:
+    """One-line system-prompt state for the parameter/session tables."""
+    if repl.session.system:
+        return shortcut(repl.session.system, 60)
+    if repl.session.system == "":
+        return "disabled"
+    text = repl.effective_system()
+    return f"built-in default ({len(text)} chars)" if text else "none"
+
+
 def cmd_system(repl: Repl, argument: str) -> None:
     if not argument:
-        if repl.session.system:
-            console.print(Panel(escape(repl.session.system), title="system",
-                                border_style="dim", title_align="left"))
-        else:
-            console.print("[dim]no system prompt[/dim]")
+        _show_system(repl)
         return
-    if argument == "clear":
-        repl.session.system = None
-        repl.session.touch()
-        console.print("[ok]system prompt cleared[/ok]")
-        return
-    repl.session.system = argument
-    repl.session.touch()
-    console.print("[ok]system prompt set[/ok]")
+    _apply_system(repl, argument.strip())
 
 
 def cmd_undo(repl: Repl, argument: str) -> None:
@@ -2185,9 +2231,10 @@ def cmd_summarize(repl: Repl, argument: str) -> None:
     for message in older:
         role = message.get("role", "?")
         transcript_lines.append(f"{role}: {message.get('content', '')}")
-    prompt = ("Summarize the following conversation concisely for continued use as "
-              "context. Keep decisions, facts, names, numbers, code identifiers and open "
-              "questions. Output only the summary.\n\n" + "\n\n".join(transcript_lines))
+    prompt = summarize_prompt("\n\n".join(transcript_lines))
+    if prompt is None:
+        console.print("[err]prompt file defs/prompts/summarize.md is missing[/err]")
+        return
     console.print("[dim]summarizing…[/dim]")
     try:
         response = repl.client.chat_once(build_chat_payload(

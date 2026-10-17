@@ -1,0 +1,14 @@
+{
+  "name": "write_file",
+  "description": "Write (or append) text to a file, creating it if needed. Asks the user for confirmation unless tools are running unlocked.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {"type": "string", "description": "file path"},
+      "content": {"type": "string", "description": "text to write"},
+      "append": {"type": "boolean", "description": "append instead of replacing"}
+    },
+    "required": ["path", "content"]
+  },
+  "handler": "write_file"
+}

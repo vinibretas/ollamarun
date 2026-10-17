@@ -102,7 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
 interactive commands:
   /help                 all commands (/? shortcuts for key bindings)
   /set parameter NAME V session parameter (temperature, num_ctx, seed, …)
-  /set system TEXT      system prompt
+  /set system TEXT      system prompt (unset: the built-in default)
   /show [topic]         model info|license|modelfile|parameters|system|template
   /model [NAME|--list|--sort KEY]
                         switch model, or list/sort installed models
@@ -214,9 +214,13 @@ sessions live in ~/etc/data/ollamarun; config in ~/etc/config_files/ollamarun.js
                               + " (default: modified)")
     wrapper.add_argument("-m", "--model", dest="model_flag", metavar="MODEL",
                          help="model name (same as the positional MODEL)")
-    wrapper.add_argument("--system", metavar="TEXT", help="system prompt")
+    wrapper.add_argument("--system", metavar="TEXT",
+                         help="system prompt (replaces the built-in default)")
     wrapper.add_argument("--system-file", metavar="FILE",
                          help="read the system prompt from a file")
+    wrapper.add_argument("--no-system", action="store_true",
+                         help="send no system prompt at all (the built-in default "
+                              "is used otherwise)")
     wrapper.add_argument("--option", action="append", metavar="KEY=VALUE",
                          help="model option, repeatable (e.g. -o temperature=0.7)")
     wrapper.add_argument("--num-ctx", nargs="?", const="", default=None,
@@ -382,15 +386,23 @@ def resolve_session(args: argparse.Namespace, config: dict[str, Any],
             fmt = parse_format(args.format)
         except (ValueError, json.JSONDecodeError) as exc:
             raise SessionError(str(exc)) from exc
+        if args.no_system:
+            system: Optional[str] = ""
+        elif args.system is not None:
+            system = args.system
+        else:
+            system = config.get("system")
         return Session.create(
             "", client.base,
-            system=args.system if args.system is not None else config.get("system"),
+            system=system,
             parameters=options, think=think,
             keepalive=args.keepalive or config.get("keepalive"),
             format=fmt, tags=list(args.tag or []), title=args.title or "",
             gpu_layers=config.get("gpu_layers"))
     try:
-        if args.system is not None:
+        if args.no_system:
+            session.system = ""
+        elif args.system is not None:
             session.system = args.system
         if args.think is not None:
             session.think = parse_think(args.think)
@@ -739,6 +751,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                 return 2
         if session.system:
             console.print(f"[dim]system prompt: {shortcut(session.system, 80)}[/dim]")
+        elif session.system == "":
+            console.print("[dim]system prompt disabled[/dim]")
+        elif console.is_terminal:
+            console.print("[dim]system prompt: built-in default[/dim]")
 
         if prompt_text:
             return run_once(args, config, client, store, session, prompt_text, repl)

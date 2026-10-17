@@ -2,6 +2,34 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.36
+
+Summary of changes in this version:
+  - Web search is more insistent about actually finding the answer. The
+    `web_search` and `fetch_url` tool texts (now files, see below) say a
+    search is a starting point, not a verdict: when the results do not clear
+    the question up, search again with different or narrower words instead
+    of concluding the information is not there. The no-results reply, the
+    results footer and the 404/JavaScript-shell fetch notes carry the same
+    nudge.
+  - System prompts are actually sent now. `--system`/`--system-file`, config
+    `system` and `/system` were stored, shown, exported and baked into
+    `/save` models, but never reached `/api/chat`; the session prompt now
+    leads every request as a system message (kept out of the history, so
+    `/system` changes apply on the next turn). With nothing set, a small
+    built-in default ships as `defs/prompts/system.md` (plus
+    `system_tools.md`, the tool/web-search rules, when tools are on);
+    `--no-system`, config `system: ""` or `/system off` send none, `/system
+    clear` returns to the default, and `/system` alone shows what is in
+    effect.
+  - Model-facing text moved out of the code: one JSON per tool in
+    `ollamarun_lib/defs/tools/` (name, description, JSON schema, safety
+    flags, capability `requires`, aliases, handler), and the system, title
+    and summarize prompts in `ollamarun_lib/defs/prompts/`. A same-named
+    file under `~/etc/config_files/ollamarun-defs/` overrides the shipped
+    one; bad files warn and are skipped instead of breaking the tool
+    harness. Title and summarize now read their prompts from files too.
+
 Version: 1.35
 
 Summary of changes in this version:

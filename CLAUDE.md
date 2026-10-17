@@ -88,6 +88,15 @@ docstring convention) — it is binding, not optional, for edits in this repo.
   conversation plus `index.json` under `~/etc/data/ollamarun/sessions/`.
   Debug logs go to `~/etc/logs/ollamarun.log` (`--debug`). Deletes always go
   through `trash-put`, never a raw unlink.
+- Model-facing text lives in files under `ollamarun_lib/defs/`, not in code:
+  `defs/tools/*.json` (one per tool) and `defs/prompts/*.md` (`system.md`,
+  `system_tools.md`, `title.md`, `summarize.md`). Edit those instead of
+  hardcoding strings; a same-named file in
+  `~/etc/config_files/ollamarun-defs/{tools,prompts}/` overrides the shipped
+  one (the loaders warn and skip/ignore bad files rather than crash). The
+  system-prompt contract: unset session `system` = built-in default, `""` =
+  no system prompt (`--no-system`, `/system off`), text = replaces it
+  (`/system clear` returns to the default).
 - Inspection-style flags (`--list`, `--show`, `--search`, `--export`) share
   one output convention: rich table by default, `--json`/`--csv`/`--markdown`
   plus `--out FILE` to redirect — implemented once in `emit()`
@@ -174,28 +183,39 @@ a module's own docstring for what lives there before editing:
    speak/list_voices), the allowlist policy
    (`shell_safety`, `python_safety`, `approval_decision`), the approval-rule
    engine (`ToolRule`, `suggest_rules`, `rule_matches`, `dangerous_command`),
-   argument normalization, output truncation and `execute_tool()`. The web half
+   argument normalization, output truncation and `execute_tool()`. The tool
+   *declarations* load from the definition files — one JSON per tool under
+   `defs/tools/` (`ToolDefinition`, `load_tool_definitions()`; `HANDLERS`
+   maps the JSON's `handler` name onto the function, `requires` gates a tool
+   on a capability, `tool_aliases()` is built from the `aliases` lists so
+   invented names like `search`/`curl` resolve onto the real tools; bad files
+   warn and are skipped). The web half
    is self-contained: `_HTMLTextExtractor`/`extract_html_text` turn pages into
    readable text plus links, `extract_pdf_text` uses pypdf or pdftotext,
    `format_fetch_response` maps a response onto model-readable text (never the
-   site's error page), `run_web_search` wraps ddgs and `TOOL_ALIASES`/
-   `resolve_tool_alias` map invented tool names (`search`, `curl`, ...) onto
-   the real ones. The speech half speaks through `run_tts_say()` (an older
+   site's error page), `run_web_search` wraps ddgs. The speech half speaks
+   through `run_tts_say()` (an older
    `tts-remote` without `--json` is retried without it) and turns the
    `say --json` plan into the shared `title_note` via `speech_hosts()`.
    The agent loop that
    calls into it lives in `repl.py` (approve → execute → append a `role: tool`
    message → ask the model again), auto-speak lives in `Repl.speak_text`, and
    rendering of calls/results is `renderer.py`.
-9. **`session.py`** — `Session` (in-memory conversation model: messages,
+9. **`prompts.py`** — the prompt files: `load_prompt()` (override layer first,
+   shipped default after, cached per process; missing/unreadable warns and
+   reads as None), `default_system_prompt()` (composes `system.md` +
+   `system_tools.md` when tools are on), `title_prompt()`/`summarize_prompt()`
+   (both expand `{{content}}`) and `render_prompt()`. Defaults live in
+   `defs/prompts/`.
+10. **`session.py`** — `Session` (in-memory conversation model: messages,
    model, system prompt, options) and `SessionStore` (atomic read/write of
    the JSON files + `index.json`, list/search/export/delete).
    `export_markdown`/`export_json`/`export_html` are the three export
    formats.
-10. **`emit.py`** — `emit()` plus the `cli_list`/`cli_search`/`cli_show`/
+11. **`emit.py`** — `emit()` plus the `cli_list`/`cli_search`/`cli_show`/
    `cli_export`/`cli_delete` functions that implement the non-interactive
    inspection flags.
-11. **`ui.py`** — the front-end seam: `Ui` (the interactive hooks `repl.py`
+12. **`ui.py`** — the front-end seam: `Ui` (the interactive hooks `repl.py`
    and `interactive.py` call: `ask`, `confirm`, `editor`, `approval`,
    `notify`), `ConsoleUi` (the inline implementation — the same rich prompts
    as always, notifications are a no-op), the tool-approval choice list
@@ -205,7 +225,7 @@ a module's own docstring for what lives there before editing:
    `format_status()`, `spinner_frame()`): plain data plus a pure formatter
    (context text via `format_context`, tps + `tps_avg`), unit-testable
    without a terminal.
-12. **`interactive.py`** — `open_in_editor` (`$OLLAMA_EDITOR`),
+13. **`interactive.py`** — `open_in_editor` (`$OLLAMA_EDITOR`),
    `pick_model`/`pick_session` (fuzzy pickers; `ui=` routes the question to
    the TUI front end), `model_context_length`
    (reads context window from `/api/show`), and the missing-model flow:
@@ -222,7 +242,7 @@ a module's own docstring for what lives there before editing:
    Also
    the GPU-layer spec logic: `model_block_count()`,
    `parse_gpu_layers_spec()`, `resolve_gpu_layers()`, `gpu_layers_label()`.
-13. **`ctxfit.py`** — the context fits behind `/num-ctx --max-gpu` and
+14. **`ctxfit.py`** — the context fits behind `/num-ctx --max-gpu` and
    `/num-ctx --max-cpu N`: `kv_bytes_per_token()` (llama.cpp's KV formula
    applied to `/api/show`'s GGUF metadata, per-layer `head_count_kv` arrays
    included), `machine_state_for()`/`probe_machine_gpu()` (free VRAM plus
@@ -241,12 +261,20 @@ a module's own docstring for what lives there before editing:
    command and the CLI `--num-ctx max-gpu` / `--num-ctx --max-cpu N` flags
    both call. The probes themselves live in `helpers.py` (`local_gpu_probe`,
    `ssh_gpu_probe`, `local_ram_probe`, `ssh_ram_probe`, `host_is_self`).
-14. **`repl.py`** — `SlashCompleter`/`completion_candidates` (completion for
+15. **`repl.py`** — `SlashCompleter`/`completion_candidates` (completion for
    `/commands`, session ids, models, `@files`, shared with the TUI input),
    the `Repl` class (the multi-round tool loop
    `_generate` → `_execute_tool_calls`, the approval flow
    `_approve_tool_call`, the `MessageQueue` of what was typed while a turn was
-   running and `CancelToken`-driven stopping), then the `cmd_*` functions.
+   running and `CancelToken`-driven stopping). `_payload()` is the one chat-
+   request builder: it prepends the effective system prompt as a leading
+   `role: system` message — `Repl.effective_system()` returns the session's
+   text when set, the built-in default otherwise, None when disabled (empty
+   string) — deliberately *not* stored in `session.messages`, so `/system`
+   changes land on the next request and exports keep the history clean.
+   `/system` semantics live in `_apply_system` (`clear`/`default` → built-in,
+   `off` → disabled, text → custom) plus `_show_system`, shared with
+   `/set system`. Then the `cmd_*` functions.
    The numbered tool-approval prompt itself and the entry list it is built
    from (`approval_entries`/`_prompt_approval`, storing generalized
    `ToolRule`s in the session) now live in `ui.py`, re-exported here so
@@ -264,7 +292,7 @@ a module's own docstring for what lives there before editing:
    `cmd_num_ctx` are their only callers (`resolve_num_ctx` is reused by
    `main()` in `cli.py` for `--num-ctx`). `ApprovalPicker` and its runners are
    re-exported from `ui.py` for compatibility.
-15. **`tui.py`** — the optional Textual front end (`--ui tui`): the app
+16. **`tui.py`** — the optional Textual front end (`--ui tui`): the app
    (transcript pane / rule / status bar / always-on `PromptInput`),
    `TuiStreamSink` (the `StreamSink` that paints the streaming answer),
    `TranscriptWriter` (a file-like sink capturing everything printed through
@@ -274,10 +302,10 @@ a module's own docstring for what lives there before editing:
    workers that marshal widget updates back with `call_from_thread`;
    `run_tui()` is the entry point. Textual is optional — `cli.py`'s
    `wants_tui()` checks it and falls back to the inline REPL with a note.
-16. **`run.py`** — `run_once()` (non-REPL path, built on an already-constructed
+17. **`run.py`** — `run_once()` (non-REPL path, built on an already-constructed
    `Repl`) and `run_embed()` (routes embedding-capable models to
    `/api/embed` instead of chat).
-17. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
+18. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
    every `ollama run` flag), `resolve_model`/`resolve_session` (figuring out
    what model/session a given invocation means, including the `-c`/`-r`/
    `--session` disambiguation in `normalize_argv`), `ui_mode()`/`wants_tui()`

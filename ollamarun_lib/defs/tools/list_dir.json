@@ -1,0 +1,13 @@
+{
+  "name": "list_dir",
+  "description": "List a directory with sizes and modification times.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {"type": "string", "description": "directory (default: cwd)"}
+    },
+    "required": []
+  },
+  "handler": "list_dir",
+  "read_only": true
+}

@@ -14,6 +14,7 @@ from .helpers import *  # noqa: F401,F403
 from .mathrender import *  # noqa: F401,F403
 from .files import *  # noqa: F401,F403
 from .images import *  # noqa: F401,F403
+from .prompts import *  # noqa: F401,F403
 from .renderer import *  # noqa: F401,F403
 from .client import *  # noqa: F401,F403
 from .tools import *  # noqa: F401,F403

@@ -1,0 +1,12 @@
+{
+  "name": "list_voices",
+  "description": "List the voices available to the speak tool (slug, language, style).",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  },
+  "handler": "list_voices",
+  "read_only": true,
+  "requires": "tts"
+}

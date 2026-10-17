@@ -1,0 +1,17 @@
+{
+  "name": "web_search",
+  "description": "Search the web and return the best results (title, URL, snippet). Use it for anything current, factual or specific you are not sure about, and whenever you need a URL — never invent or guess URLs. One search is a starting point, not a verdict: if the results do not clear the question up, search again with different or narrower words (synonyms, exact phrases, site: and year qualifiers) — a second or third query beats giving up, and information is not 'not found' just because the first query missed it. Then read the most promising results with fetch_url.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {"type": "string", "description": "what to search for"},
+      "max_results": {"type": "integer", "description": "how many results (default 5, max 10)"},
+      "timeout": {"type": "number", "description": "seconds (optional)"}
+    },
+    "required": ["query"]
+  },
+  "handler": "web_search",
+  "read_only": true,
+  "requires": "search",
+  "aliases": ["search", "websearch", "web", "google"]
+}
