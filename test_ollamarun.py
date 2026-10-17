@@ -2812,6 +2812,152 @@ def test_ctxfit_cancel_progress() -> int:
     return failures
 
 
+def test_fit_service() -> int:
+    """Fit jobs: lifecycle, progress, cancel, caps, TTL, apply and shutdown."""
+    failures = 0
+    gate = threading.Event()
+    gate.set()
+
+    def slow_fit(req, *, mode, percent=None, probe=False):
+        req.on_progress({"stage": "probe", "mode": mode, "ctx": 2048,
+                         "attempt": 1, "max": 2})
+        gate.wait(timeout=5)
+        if req.cancel is not None and req.cancel.cancelled:
+            raise orun.FitCancelled("fit cancelled")
+        outcome = orun.FitOutcome(mode=mode, model=req.model, probe=probe,
+                                  bound="max_gpu" if mode == "gpu" else "max_cpu")
+        outcome.num_ctx = 4096
+        return outcome
+
+    original = orun.fits.fit_context
+    orun.fits.fit_context = slow_fit
+    try:
+        service = orun.FitService(max_active=1, ttl=3600)
+        failures = _fit_check("cancelling an unknown fit is a no-op",
+                              service.cancel("fit_nope") is None)
+        gate.clear()
+        job = service.submit(model="m1", mode="gpu", probe=True,
+                             req=orun.FitRequest(client=object(), model="m1"),
+                             session_id="s1")
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not job.progress:
+            time.sleep(0.01)
+        failures = _fit_check("a submitted fit runs and reports progress",
+                              job.status == "running"
+                              and job.progress.get("ctx") == 2048,
+                              f"{job.status} {job.progress}")
+        try:
+            service.submit(model="m1", mode="gpu",
+                           req=orun.FitRequest(client=object(), model="m1"))
+            cap_error = None
+        except orun.TooManyFits as exc:
+            cap_error = exc
+        failures = _fit_check("the global cap refuses a second job",
+                              cap_error is not None and cap_error.limit == 1,
+                              repr(cap_error))
+        try:
+            service.submit(model="m1", mode="gpu", session_id="s1",
+                           req=orun.FitRequest(client=object(), model="m1"))
+            busy = None
+        except orun.FitBusy as exc:
+            busy = exc
+        failures = _fit_check("a second fit for the same session is refused",
+                              busy is not None and busy.active_fit_id == job.id,
+                              repr(busy))
+        failures = _fit_check("active_for names the holding job",
+                              service.active_for("s1") == job.id
+                              and service.active_count() == 1,
+                              f"{service.active_for('s1')} "
+                              f"{service.active_count()}")
+        gate.set()
+        service.wait(job.id, timeout=5)
+        failures = _fit_check("a finished fit carries its outcome",
+                              job.status == "completed" and job.outcome is not None
+                              and job.outcome.num_ctx == 4096,
+                              f"{job.status} {job.outcome}")
+        body = orun.fit_body(job)
+        failures = _fit_check("the fit body carries status and result",
+                              body["status"] == "completed"
+                              and body["result"]["num_ctx"] == 4096
+                              and body["object"] == "fit"
+                              and body["session_id"] == "s1",
+                              str(body)[:200])
+
+        gate.clear()
+        cancel_job = service.submit(
+            model="m1", mode="gpu", session_id="s2",
+            req=orun.FitRequest(client=object(), model="m1"))
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and cancel_job.status != "running":
+            time.sleep(0.01)
+        service.cancel(cancel_job.id)
+        gate.set()
+        service.wait(cancel_job.id, timeout=5)
+        failures = _fit_check("a cancelled job reports cancelled",
+                              cancel_job.status == "cancelled"
+                              and cancel_job.error == "cancelled",
+                              f"{cancel_job.status} {cancel_job.error}")
+
+        applied: list = []
+        apply_job = service.submit(
+            model="m1", mode="gpu", apply=True, session_id="s3",
+            req=orun.FitRequest(client=object(), model="m1"),
+            on_success=lambda finished: applied.append(finished.id))
+        service.wait(apply_job.id, timeout=5)
+        failures = _fit_check("apply runs after a successful fit",
+                              apply_job.applied and applied == [apply_job.id],
+                              f"{apply_job.applied} {applied}")
+
+        def broken(finished):
+            raise RuntimeError("nope")
+
+        broken_job = service.submit(
+            model="m1", mode="gpu", apply=True, session_id="s4",
+            req=orun.FitRequest(client=object(), model="m1"),
+            on_success=broken)
+        service.wait(broken_job.id, timeout=5)
+        failures = _fit_check("a failed apply is reported, not fatal",
+                              broken_job.status == "completed"
+                              and broken_job.applied is False
+                              and broken_job.apply_error == "nope",
+                              f"{broken_job.status} {broken_job.apply_error}")
+
+        clock = [1000.0]
+        ttl_service = orun.FitService(max_active=1, ttl=50,
+                                      clock=lambda: clock[0])
+        fast_job = ttl_service.submit(
+            model="m1", mode="gpu",
+            req=orun.FitRequest(client=object(), model="m1"))
+        ttl_service.wait(fast_job.id, timeout=5)
+        clock[0] += 100
+        failures = _fit_check("a terminal job is swept after its TTL",
+                              ttl_service.get(fast_job.id) is None,
+                              "still there")
+        ttl_service.shutdown()
+
+        gate.clear()
+        shut_job = service.submit(
+            model="m1", mode="gpu",
+            req=orun.FitRequest(client=object(), model="m1"))
+        service.shutdown(cancel=True, timeout=0.2)
+        gate.set()
+        service.wait(shut_job.id, timeout=5)
+        failures = _fit_check("shutdown cancels an active fit",
+                              shut_job.status == "cancelled", shut_job.status)
+        try:
+            service.submit(model="m1", mode="gpu",
+                           req=orun.FitRequest(client=object(), model="m1"))
+            closed = None
+        except orun.FitsClosed as exc:
+            closed = exc
+        failures = _fit_check("a shut-down service refuses new fits",
+                              closed is not None, repr(closed))
+    finally:
+        gate.set()
+        orun.fits.fit_context = original
+    return failures
+
+
 def test_model_profile() -> int:
     """First-principles modelling: GGUF geometry, quant/params and tags facts."""
     failures = 0
@@ -11690,6 +11836,7 @@ if __name__ == "__main__":
              + test_context_usage()
              + test_cmd_num_ctx() + test_ctxfit()
              + test_ctxfit_outcome() + test_ctxfit_cancel_progress()
+             + test_fit_service()
              + test_cmd_num_ctx_max_gpu()
              + test_ram_helpers() + test_cpu_fit() + test_cmd_num_ctx_max_cpu()
              + test_model_profile()
