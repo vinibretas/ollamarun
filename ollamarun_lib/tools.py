@@ -31,7 +31,6 @@ import queue
 import re
 import shlex
 import shutil
-import signal
 import socket
 import subprocess
 import sys
@@ -50,10 +49,11 @@ import requests
 
 from .constants import DEFS_DIR, DEFS_OVERRIDE_DIR, console
 from .client import OllamaError
-from .helpers import (canonical_model_name, diff_preview, host_is_self,
-                      human_bytes, is_local_host, local_free_disk,
-                      local_gpu_probe, local_ram_probe, now_iso, short_stamp,
-                      ssh_free_disk, ssh_gpu_probe, ssh_ram_probe)
+from .helpers import (CommandCancelled, canonical_model_name, diff_preview,
+                      host_is_self, human_bytes, is_local_host, local_free_disk,
+                      local_gpu_probe, local_ram_probe, now_iso,
+                      run_cancellable, short_stamp, ssh_free_disk,
+                      ssh_gpu_probe, ssh_ram_probe)
 
 FETCH_TIMEOUT = 30.0
 MAX_LIST_ENTRIES = 200
@@ -186,8 +186,9 @@ class ToolError(Exception):
     """A tool could not run; the message goes back to the model as-is."""
 
 
-class ToolCancelled(ToolError):
-    """The turn was cancelled while this tool was running."""
+#: The tools-level name for a subprocess call a cancelled turn killed. The
+#: generic implementation lives in helpers.py so the ssh probes can cancel too.
+ToolCancelled = CommandCancelled
 
 
 @dataclass
@@ -1611,8 +1612,8 @@ def _handler_delete_file(args: dict[str, Any], ctx: ToolContext) -> str:
     if not trash:
         raise ToolError("trash-put not found; refusing to delete without a trash")
     try:
-        proc = subprocess.run([trash, str(path)], capture_output=True, text=True,
-                              timeout=ctx.timeout)
+        proc = run_cancellable([trash, str(path)], timeout=ctx.timeout,
+                               cancel=getattr(ctx, "cancel", None))
     except subprocess.TimeoutExpired:
         raise ToolError("trash-put timed out") from None
     except OSError as exc:
@@ -1739,9 +1740,10 @@ def _handler_system_status(args: dict[str, Any], ctx: ToolContext) -> str:
     lines = [label]
 
     if ssh_target:
-        ram = ssh_ram_probe(ssh_target, user=ctx.ssh_user)
-        gpu = ssh_gpu_probe(ssh_target, user=ctx.ssh_user)
-        disk = ssh_free_disk(ssh_target, user=ctx.ssh_user)
+        probe_cancel = getattr(ctx, "cancel", None)
+        ram = ssh_ram_probe(ssh_target, user=ctx.ssh_user, cancel=probe_cancel)
+        gpu = ssh_gpu_probe(ssh_target, user=ctx.ssh_user, cancel=probe_cancel)
+        disk = ssh_free_disk(ssh_target, user=ctx.ssh_user, cancel=probe_cancel)
     else:
         ram = local_ram_probe()
         gpu = local_gpu_probe()
@@ -1870,11 +1872,12 @@ def _handler_session_info(args: dict[str, Any], ctx: ToolContext) -> str:
 # ── chem inventory (chemInventoryAPI) ───────────────────────────────────────
 
 
-def run_chem_inventory(binary: str, argv: list[str], timeout: float) -> Any:
+def run_chem_inventory(binary: str, argv: list[str], timeout: float,
+                       cancel: Optional[Any] = None) -> Any:
     """Run `chemInventoryAPI … --json` and parse the JSON it prints."""
     try:
-        proc = subprocess.run([binary, *argv, "--json"], capture_output=True,
-                              text=True, timeout=timeout, errors="replace")
+        proc = run_cancellable([binary, *argv, "--json"], timeout=timeout,
+                               cancel=cancel)
     except subprocess.TimeoutExpired:
         raise ToolError(f"chemInventoryAPI timed out after {timeout:.0f}s") from None
     except OSError as exc:
@@ -1894,7 +1897,8 @@ def _chem_run(ctx: ToolContext, argv: list[str]) -> Any:
     binary = find_chem_inventory(ctx)
     if not binary:
         raise ToolError("chemInventoryAPI not found (PATH or config chem_inventory)")
-    return run_chem_inventory(binary, argv, min(ctx.timeout, 90))
+    return run_chem_inventory(binary, argv, min(ctx.timeout, 90),
+                              cancel=getattr(ctx, "cancel", None))
 
 
 def _flatten(value: Any) -> str:
@@ -2191,13 +2195,15 @@ def speech_hosts(report: str) -> str:
 
 def run_tts_say(binary: str, text: str, *, voice: Optional[str] = None,
                 lang: Optional[str] = None, markdown: bool = False,
-                timeout: float = 120.0) -> subprocess.CompletedProcess:
+                timeout: float = 120.0, cancel: Optional[Any] = None
+                ) -> subprocess.CompletedProcess:
     """Queue speech via `tts-remote say`; an older CLI is retried without --json.
 
     The `--json` report behind the speak hosts note is new, so a tts-remote
     that does not know the flag yet still gets to speak -- it just comes back
     without the report. Raises subprocess.TimeoutExpired when the CLI never
-    returns; the caller turns that into its own message.
+    returns; the caller turns that into its own message. `cancel` makes the
+    synthesis killable by a stopped turn.
     """
     command = [binary, "say", "-q", "--json"]
     if markdown:
@@ -2206,12 +2212,11 @@ def run_tts_say(binary: str, text: str, *, voice: Optional[str] = None,
         command += ["--voice", str(voice)]
     if lang:
         command += ["--lang", str(lang)]
-    proc = subprocess.run(command, input=text, capture_output=True, text=True,
-                          timeout=timeout)
+    proc = run_cancellable(command, input_text=text, timeout=timeout,
+                           cancel=cancel)
     if proc.returncode != 0 and "--json" in (proc.stderr or ""):
-        proc = subprocess.run([part for part in command if part != "--json"],
-                              input=text, capture_output=True, text=True,
-                              timeout=timeout)
+        proc = run_cancellable([part for part in command if part != "--json"],
+                               input_text=text, timeout=timeout, cancel=cancel)
     return proc
 
 
@@ -2225,7 +2230,8 @@ def _handler_speak(args: dict[str, Any], ctx: ToolContext) -> str:
     voice = args.get("voice")
     lang = args.get("lang")
     try:
-        proc = run_tts_say(binary, text, voice=voice, lang=lang, timeout=ctx.timeout)
+        proc = run_tts_say(binary, text, voice=voice, lang=lang, timeout=ctx.timeout,
+                           cancel=getattr(ctx, "cancel", None))
     except subprocess.TimeoutExpired:
         raise ToolError("tts-remote timed out") from None
     if proc.returncode != 0:
@@ -2246,8 +2252,8 @@ def _handler_list_voices(args: dict[str, Any], ctx: ToolContext) -> str:
     if not binary:
         raise ToolError("tts-remote not found on PATH")
     try:
-        proc = subprocess.run([binary, "voices", "--json"], capture_output=True,
-                              text=True, timeout=ctx.timeout)
+        proc = run_cancellable([binary, "voices", "--json"], timeout=ctx.timeout,
+                               cancel=getattr(ctx, "cancel", None))
     except subprocess.TimeoutExpired:
         raise ToolError("tts-remote voices timed out") from None
     if proc.returncode != 0:
@@ -2509,66 +2515,6 @@ def execute_tool(spec: ToolSpec, args: dict[str, Any],
     outcome.text = truncate_output(outcome.text, ctx.max_output)
     outcome.title_note = ctx.title_note
     return outcome
-
-
-def _kill_process_group(proc: subprocess.Popen) -> None:
-    """Kill a Popen'd command and everything it spawned (never raises)."""
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (OSError, ProcessLookupError):
-        try:
-            proc.kill()
-        except OSError:
-            pass
-
-
-def run_cancellable(argv: list[str], *, input_text: Optional[str] = None,
-                    cwd: Optional[str] = None, env: Optional[dict[str, str]] = None,
-                    timeout: float = 120.0, cancel: Optional[Any] = None
-                    ) -> subprocess.CompletedProcess:
-    """`subprocess.run()` that a cancel token can actually stop.
-
-    Without a token this is exactly `subprocess.run(...)`. With one, the child
-    runs in its own session and a cancel (or the timeout) kills the whole
-    process group, so a `sleep` or a spawned pipeline does not outlive the
-    turn.
-    """
-    if cancel is None:
-        return subprocess.run(argv, input=input_text, capture_output=True,
-                              text=True, timeout=timeout, errors="replace",
-                              cwd=cwd, env=env)
-    proc = subprocess.Popen(argv,
-                            stdin=subprocess.PIPE if input_text is not None else None,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, errors="replace",
-                            cwd=cwd, env=env, start_new_session=True)
-    if input_text is not None and proc.stdin is not None:
-        try:
-            proc.stdin.write(input_text)
-        except (BrokenPipeError, OSError):
-            pass
-        try:
-            proc.stdin.close()
-        except OSError:
-            pass
-        # communicate() would flush a closed stdin and die with "I/O operation
-        # on closed file"; dropping the handle keeps the retry loop below alive.
-        proc.stdin = None
-    deadline = time.monotonic() + max(0.1, timeout)
-    while True:
-        try:
-            stdout, stderr = proc.communicate(timeout=0.1)
-            break
-        except subprocess.TimeoutExpired:
-            if cancel is not None and cancel.cancelled:
-                _kill_process_group(proc)
-                proc.communicate()
-                raise ToolCancelled("cancelled by user; the process was killed")
-            if time.monotonic() >= deadline:
-                _kill_process_group(proc)
-                proc.communicate()
-                raise subprocess.TimeoutExpired(argv, timeout)
-    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
 
 
 #: Tools whose handlers block on network I/O. The runner moves them to a

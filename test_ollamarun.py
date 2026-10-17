@@ -6984,6 +6984,49 @@ def test_tool_cancellation() -> int:
     return failures
 
 
+def test_cancellation_coverage() -> int:
+    """Nested subprocess callers refuse a cancelled turn without spawning."""
+    failures = 0
+    token = orun.CancelToken()
+    token.cancel()
+
+    try:
+        orun.run_chem_inventory(sys.executable,
+                                ["-c", "import time; time.sleep(30)"],
+                                timeout=30, cancel=token)
+        raised = None
+    except Exception as exc:  # the test wants the exception type
+        raised = exc
+    failures = _check(failures, "a cancelled chem call refuses to start",
+                      isinstance(raised, orun.CommandCancelled), repr(raised))
+
+    try:
+        orun.run_tts_say(sys.executable, "hi", timeout=30, cancel=token)
+        raised = None
+    except Exception as exc:
+        raised = exc
+    failures = _check(failures, "a cancelled speak call refuses to start",
+                      isinstance(raised, orun.CommandCancelled), repr(raised))
+
+    spec = orun.ToolSpec(name="list_voices", description="", parameters={},
+                         handler=orun.HANDLERS["list_voices"])
+    ctx = orun.ToolContext(cwd=".", timeout=5, cancel=token,
+                           tts_remote=sys.executable)
+    outcome = orun.execute_tool(spec, {}, ctx)
+    failures = _check(failures, "the voices tool reports the cancellation",
+                      outcome.cancelled and not outcome.ok, str(outcome))
+
+    if shutil.which("ssh"):
+        try:
+            orun.ssh_free_disk("example.invalid", cancel=token)
+            raised = None
+        except Exception as exc:
+            raised = exc
+        failures = _check(failures, "a cancelled ssh probe refuses to start",
+                          isinstance(raised, orun.CommandCancelled), repr(raised))
+    return failures
+
+
 def test_tool_support_warning() -> int:
     """The capability warning fires once per model, after turn.started."""
     failures = 0
@@ -7178,6 +7221,7 @@ if __name__ == "__main__":
              + test_runtime_events() + test_headless_renderer()
              + test_session_store_lock() + test_ui_interactive()
              + test_tool_cancellation() + test_run_once_json()
+             + test_cancellation_coverage()
              + test_tool_support_warning() + test_quiet_tools_live()
              + test_approval_event_contract())
     if total:
