@@ -200,6 +200,12 @@ def _prompt_approval(suggestions: list[ToolRule]
 class Ui:
     """Interactive hooks the REPL calls; the console implementation is the default."""
 
+    #: True when this front end can actually ask the user something. Headless
+    #: hosts (a server turn with no approval client) leave it False, so
+    #: policy-gated tools are denied explicitly instead of prompting into a
+    #: terminal that is not there.
+    interactive: bool = False
+
     def notify(self, event: str, **data: Any) -> None:
         """Status/state change for the front end (`turn_start`, `done`, …)."""
 
@@ -231,3 +237,8 @@ class Ui:
 
 class ConsoleUi(Ui):
     """Inline front end: rich prompts, nothing to notify."""
+
+    def __init__(self) -> None:
+        # The approval gate asks a real terminal; a piped run has no UI and
+        # denies policy-gated calls instead of prompting into nothing.
+        self.interactive = console.is_terminal
