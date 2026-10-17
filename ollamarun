@@ -2,6 +2,38 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.58
+
+Summary of changes in this version:
+  - Phase 9: the OpenAI-compatible surface is complete. `POST
+    /v1/embeddings` maps to `/api/embed` with the OpenAI schema: a string
+    or an array of strings as `input` (token arrays are rejected
+    explicitly), `encoding_format` "float" or "base64" (the little-endian
+    float32 packing the official SDK sends by default), `dimensions`
+    forwarded for models that support truncated vectors, and the
+    `{object: "list", data: [{object: "embedding", index, embedding}],
+    model, usage: {prompt_tokens, total_tokens}}` response. The model must
+    advertise the `embedding` capability (`model_does_not_support_embeddings`
+    otherwise; an unverifiable empty list passes), the `serve_models`
+    allowlist and the resolved-input budget apply, and upstream failures
+    keep the sanitized error mapping.
+  - `n > 1` is implemented as an emulation: `n` sequential upstream
+    generations (capped at 8), choices indexed `0..n-1`, usage summed
+    across the calls. Streaming multiplexes per-choice indexes — each
+    choice's role, deltas, tool calls and finish chunk carry its index,
+    and one aggregated usage chunk follows before `[DONE]`; a mid-stream
+    failure keeps the one-error-then-`[DONE]` shape and abandons the rest.
+  - `parallel_tool_calls: false` is honored by truncation: only the first
+    tool call the backend returned is forwarded (streaming and not);
+    `true`/absent pass every call through. The backend cannot be told to
+    emit one call, so this is truncation rather than model steering.
+  - The remote-image rules are verified end to end on the OpenAI surface
+    (http(s) `image_url` through the bounded fetch), and the README now
+    describes only accepted/rejected behavior: the permanently
+    unsupported features (logprobs/top_logprobs, logit_bias, audio and
+    non-text modalities, `tool_choice: "required"`, `strict: true` tool
+    schemas) each carry their recorded rationale.
+
 Version: 1.57
 
 Summary of changes in this version:

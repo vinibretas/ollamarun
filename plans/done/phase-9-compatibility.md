@@ -6,6 +6,10 @@ remaining surface so the API never carries a standing list of rejected
 features. Every item is either implemented here or closed with a recorded
 rationale — nothing is left as a documented gap.
 
+Status: implemented and landed at v1.58. The contracts below are what
+shipped; the deviations and the recorded closures are under "Recorded
+implementation decisions".
+
 ## Baseline (audited at v1.57)
 
 - The `/v1` surface is `openai_api.py`: `GET /v1/models`,
@@ -144,3 +148,67 @@ here rather than only in the README.
 - **Phase 8**: the README sections this phase updates are the ones the docs
   pass finalizes; `examples/openai_client.py` should exercise embeddings and
   `n > 1` once written.
+
+## Recorded implementation decisions
+
+- **The official SDK's base64 default shaped the endpoint.** openai-python
+  2.x sends `encoding_format: "base64"` whenever the caller does not specify
+  one and decodes it client-side, so the endpoint implements both `"float"`
+  and `"base64"` (little-endian float32, `struct.pack("<…f")`); the SDK
+  round-trip in `test_openai_sdk` pins both.
+- **`MAX_N = 8` is a module constant**, not a `serve_*` config key: it is a
+  structural bound of the emulation (each choice is a full sequential
+  generation), in the same spirit as `MAX_IMAGE_BYTES`, and it is documented
+  in the README. A request above it is `400 unsupported_value`.
+- **Generations run sequentially, not concurrently.** Parallel fan-out would
+  multiply load on a local backend for a feature whose per-choice sampling is
+  stochastic anyway; the documented consequence is latency ≈ n × one
+  generation. Streaming therefore emits complete per-choice blocks (role,
+  deltas, finish) with the choice's `index`, then one aggregated usage chunk,
+  then `[DONE]`.
+- **`parallel_tool_calls: false` truncates rather than steers.** The backend
+  has no "emit one call" instruction, so the flag keeps the first returned
+  call (`_forwarded_tool_calls`, non-streaming and streaming); the README
+  says exactly that so the semantics are not oversold.
+- **Embeddings gates mirror the vision rules**: an advertised capability list
+  without `embedding` is `400 model_does_not_support_embeddings`; an empty
+  list passes (older backends cannot be verified); the model is noted on the
+  serve tracker (unload skips embedding-capability models by house rule).
+- **`dimensions` is forwarded, not emulated.** The backend rejects it for
+  models without truncated-vector support; the API does not slice vectors
+  itself. `truncate` keeps the client default (true).
+- **Embeddings inputs ride the shared `InputBudget`** (count against
+  `serve_max_messages`, per-input bytes against `serve_max_message_bytes`,
+  the total against `serve_max_text_bytes`), so the Phase 6 aggregate caps
+  cannot be bypassed through the new endpoint.
+- **The SDK test's rejection case moved to `n = 9`.** The old matrix used
+  `n = 2` as the rejected field; it is now the positive emulation case
+  (indexes/usage asserted), and the `> 8` bound is the 400 contract. The
+  SDK's fake advertises the embedding capability so its embeddings checks
+  can run.
+- **The remote-image verification is a surface test, not new code.** The
+  OpenAI mapper already resolved http(s) `image_url` values through
+  `fetch_remote_media`; `test_artifact_remote_fetch` now pins that path
+  through the stub server, and the stub's deliberate-timeout write no longer
+  prints a broken-pipe traceback.
+- **`usage_from` stays** (agent_api's `turn_body` shares it); the new
+  `aggregate_usage` sums per-generation stats and is used by both chat
+  response shapes.
+
+## Closure
+
+Closed at v1.58 with the full deterministic suite green through the canonical
+command (`python3 test_ollamarun.py`, ~47 s), the pyflakes gate and the
+required SDK round-trip (openai 2.29.0) included, and these new/extended
+regression groups: `test_embeddings_api`, `test_openai_mapping` (n bounds and
+the three-state `parallel_tool_calls`), `test_serve_http` (n = 3 non-stream,
+n = 2 streaming, streaming truncation), `test_artifact_remote_fetch` (the
+OpenAI-surface fetch), `test_openai_sdk` (embeddings in both encodings, n = 2)
+and `test_serve_live` (a real embedding model).
+
+Recorded live run (2026-10-17, `python3 test_ollamarun_serve.py --live`):
+backend `100.64.0.10:11434`, chat model `smollm:135m`, embeddings
+`nomic-embed-text:latest` (768-dim vectors for both inputs, usage counted) —
+all green, including the agent turn. `OLLAMARUN_TEST_EMBED_MODEL` overrides
+the embedding-model pick and the check prints a note and skips when none is
+installed.
