@@ -344,11 +344,22 @@ class _Handler(BaseHTTPRequestHandler):
                                code="invalid_json")
         return request
 
+    _CHUNK_HEX = b"0123456789abcdefABCDEF"
+
     def _read_body(self) -> bytes:
-        transfer = (self.headers.get("Transfer-Encoding") or "").lower()
-        if "chunked" in transfer:
-            raise ApiError(411, "chunked request bodies are not supported",
-                           code="length_required")
+        raw_transfer = (self.headers.get("Transfer-Encoding") or "").strip()
+        if raw_transfer:
+            codings = [coding.strip().lower()
+                       for coding in raw_transfer.split(",") if coding.strip()]
+            if codings != ["chunked"]:
+                raise ApiError(400,
+                               f"unsupported Transfer-Encoding: {raw_transfer}",
+                               code="unsupported_value")
+            if self.headers.get("Content-Length") is not None:
+                raise ApiError(
+                    400, "ambiguous framing: both Transfer-Encoding and "
+                         "Content-Length are present", code="invalid_header")
+            return self._read_chunked_body()
         raw_length = self.headers.get("Content-Length")
         if raw_length is None:
             return b""
@@ -372,6 +383,58 @@ class _Handler(BaseHTTPRequestHandler):
                            code="invalid_body")
         return data
 
+    def _read_chunk_line(self, what: str) -> bytes:
+        line = self.rfile.readline(8192)
+        if not line.endswith(b"\n"):
+            raise ApiError(400, f"malformed chunked body ({what})",
+                           code="invalid_body")
+        return line.rstrip(b"\r\n")
+
+    def _read_chunked_body(self) -> bytes:
+        """Decode `Transfer-Encoding: chunked` under the same body cap.
+
+        The cap applies to the cumulative decoded size and is enforced
+        before each chunk is read, so an oversized upload is rejected
+        without buffering it. Malformed framing fails predictably: the
+        connection closes with the error (`_send_json_error`), so leftover
+        bytes can never be parsed as the next request.
+        """
+        limit = self.server.body_limit
+        data = bytearray()
+        while True:
+            size_text = self._read_chunk_line("chunk size").split(b";", 1)[0]
+            size_text = size_text.strip()
+            if not size_text or any(byte not in self._CHUNK_HEX
+                                    for byte in size_text):
+                raise ApiError(400, "malformed chunked body (invalid chunk size)",
+                               code="invalid_body")
+            size = int(size_text, 16)
+            if size == 0:
+                break
+            if len(data) + size > limit:
+                raise ApiError(413, f"request body exceeds the {limit} byte "
+                                    "limit", code="body_too_large")
+            chunk = self.rfile.read(size)
+            if len(chunk) < size:
+                raise ApiError(400, "request body was truncated",
+                               code="invalid_body")
+            data.extend(chunk)
+            if self.rfile.read(2) != b"\r\n":
+                raise ApiError(400, "malformed chunked body (missing CRLF)",
+                               code="invalid_body")
+        # Trailers are drained to the blank line, bounded and ignored.
+        trailer_bytes = 0
+        while True:
+            trailer = self._read_chunk_line("trailer")
+            if not trailer:
+                break
+            trailer_bytes += len(trailer)
+            if trailer_bytes > 8192:
+                raise ApiError(400, "malformed chunked body "
+                                    "(oversized trailers)",
+                               code="invalid_body")
+        return bytes(data)
+
     def _send(self, response: Response, request: Optional[Request] = None) -> None:
         self.send_response(response.status)
         self.send_header("Content-Type", response.media_type)
@@ -388,7 +451,11 @@ class _Handler(BaseHTTPRequestHandler):
         # The request body may not have been read (oversize, truncated, ...):
         # close the connection instead of parsing leftover bytes as a request.
         self.close_connection = True
-        self._send(Response.json(error.to_dict(), status=error.status), request)
+        try:
+            self._send(Response.json(error.to_dict(), status=error.status),
+                       request)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # the client vanished; there is nobody to tell
 
     def _send_stream(self, request: Request, stream: StreamResponse) -> None:
         self.close_connection = True

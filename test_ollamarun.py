@@ -11336,6 +11336,183 @@ def test_serve_config_matrix() -> int:
     return failures
 
 
+def _raw_exchange(server, payload: bytes, *, shutdown_write: bool = False,
+                  timeout: float = 10.0):
+    """One raw HTTP/1.1 exchange; returns (status, body, full response)."""
+    sock = socket.create_connection(("127.0.0.1", server.address[1]),
+                                    timeout=timeout)
+    try:
+        sock.sendall(payload)
+        if shutdown_write:
+            sock.shutdown(socket.SHUT_WR)
+        collected = []
+        while True:
+            try:
+                piece = sock.recv(65536)
+            except socket.timeout:
+                break
+            if not piece:
+                break
+            collected.append(piece)
+    finally:
+        sock.close()
+    raw = b"".join(collected)
+    head, _, body = raw.partition(b"\r\n\r\n")
+    status_line = head.split(b"\r\n", 1)[0]
+    parts = status_line.split(b" ", 2)
+    status = int(parts[1]) if len(parts) > 1 else 0
+    return status, body, raw
+
+
+def _sized_chat_body(size: int) -> bytes:
+    """A `POST /v1/chat/completions` JSON body of exactly `size` bytes."""
+    separators = (",", ":")
+    payload = {"model": "m1", "stream": False,
+               "messages": [{"role": "user", "content": ""}]}
+    pad = size - len(json.dumps(payload, separators=separators).encode("utf-8"))
+    payload["messages"][0]["content"] = "a" * pad
+    raw = json.dumps(payload, separators=separators).encode("utf-8")
+    assert len(raw) == size, (len(raw), size)
+    return raw
+
+
+def test_chunked_bodies() -> int:
+    """Chunked decoding: same decoded cap, structured framing errors."""
+    failures = 0
+    body = json.dumps({
+        "model": "m1", "stream": False,
+        "messages": [{"role": "user", "content": "hi"}],
+    }).encode("utf-8")
+    client = _ServeClient(models=["m1"], capabilities=["completion"])
+    server, client, thread = _start_api(client)
+    base_headers = (b"Host: 127.0.0.1\r\nContent-Type: application/json\r\n"
+                    b"Connection: close\r\n")
+
+    def request(headers: bytes, body_bytes: bytes) -> bytes:
+        return (b"POST /v1/chat/completions HTTP/1.1\r\n" + base_headers
+                + headers + b"\r\n" + body_bytes)
+
+    def chunked(pieces, *, trailers: bytes = b"",
+                extensions: bytes = b";ext=1") -> bytes:
+        out = bytearray()
+        for piece in pieces:
+            out += f"{len(piece):x}".encode() + extensions + b"\r\n"
+            out += piece + b"\r\n"
+        out += b"0\r\n" + trailers + b"\r\n"
+        return bytes(out)
+
+    def error_code(body_bytes: bytes) -> str:
+        try:
+            return json.loads(body_bytes.decode("utf-8"))["error"]["code"]
+        except (ValueError, KeyError, UnicodeDecodeError):
+            return f"<{body_bytes[:80]!r}>"
+
+    try:
+        status, response, raw = _raw_exchange(server, request(
+            b"Transfer-Encoding: chunked\r\n",
+            chunked([body[:10], body[10:33], body[33:]],
+                    trailers=b"X-Trace: 1\r\n")))
+        failures = _check(
+            failures, "a chunked request decodes and completes",
+            status == 200 and len(client.chat_once_payloads) == 1
+            and client.chat_once_payloads[-1]["messages"][0]["content"] == "hi",
+            f"{status} {raw[:200]}")
+
+        client.chat_once_payloads.clear()
+        server2, client2, thread2 = _start_api(
+            _ServeClient(models=["m1"], capabilities=["completion"]),
+            server_kwargs={"body_limit": 256})
+        try:
+            exact = _sized_chat_body(256)
+            status, _body, raw = _raw_exchange(server2, request(
+                b"Transfer-Encoding: chunked\r\n",
+                chunked([exact[:20], exact[20:]])))
+            failures = _check(
+                failures, "a chunked body at the exact cap is accepted",
+                status == 200 and len(client2.chat_once_payloads) == 1,
+                f"{status} {raw[:200]}")
+
+            over = _sized_chat_body(257)
+            status, response, raw = _raw_exchange(server2, request(
+                b"Transfer-Encoding: chunked\r\n", chunked([over])))
+            failures = _check(
+                failures, "an over-cap chunked body is a 413",
+                status == 413 and error_code(response) == "body_too_large",
+                f"{status} {error_code(response)}")
+
+            status, response, raw = _raw_exchange(server2, request(
+                f"Content-Length: {len(over)}\r\n".encode(), over))
+            failures = _check(
+                failures, "the Content-Length path enforces the same cap",
+                status == 413 and error_code(response) == "body_too_large",
+                f"{status} {error_code(response)}")
+
+            huge = request(b"Transfer-Encoding: chunked\r\n",
+                           b"7fffffff\r\n")
+            status, response, _raw = _raw_exchange(server2, huge)
+            failures = _check(
+                failures, "an oversized chunk size is refused before reading",
+                status == 413 and error_code(response) == "body_too_large",
+                f"{status} {error_code(response)}")
+        finally:
+            _stop_api(server2, thread2)
+
+        status, response, _raw = _raw_exchange(server, request(
+            b"Transfer-Encoding: chunked\r\n",
+            chunked([body], extensions=b"")))
+        failures = _check(failures, "chunk extensions are ignored",
+                          status == 200, f"{status} {_raw[:120]}")
+
+        client.chat_once_payloads.clear()
+        cases = [
+            ("an invalid chunk size is a 400",
+             request(b"Transfer-Encoding: chunked\r\n", b"zz\r\n"),
+             "invalid_body"),
+            ("a missing chunk CRLF is a 400",
+             request(b"Transfer-Encoding: chunked\r\n",
+                     b"2\r\nhiXX0\r\n\r\n"),
+             "invalid_body"),
+            ("empty trailers with the terminal chunk succeed",
+             request(b"Transfer-Encoding: chunked\r\n",
+                     f"{len(body):x}\r\n".encode() + body + b"\r\n0\r\n\r\n"),
+             ""),
+            ("Transfer-Encoding plus Content-Length is ambiguous",
+             request(b"Transfer-Encoding: chunked\r\nContent-Length: 4\r\n",
+                     b"0\r\n\r\n"),
+             "invalid_header"),
+            ("a non-chunked coding is rejected",
+             request(b"Transfer-Encoding: gzip\r\n",
+                     chunked([body])),
+             "unsupported_value"),
+            ("a chunked+gzip coding list is rejected",
+             request(b"Transfer-Encoding: chunked, gzip\r\n",
+                     chunked([body])),
+             "unsupported_value"),
+        ]
+        for name, payload, expected in cases:
+            status, response, _raw = _raw_exchange(server, payload)
+            ok = (status == 200 if not expected
+                  else status == 400 and error_code(response) == expected)
+            failures = _check(failures, name, ok,
+                              f"{status} {error_code(response)}")
+
+        truncated = request(b"Transfer-Encoding: chunked\r\n", b"a\r\nabcd")
+        for name, payload in [
+            ("a missing terminal chunk is a 400",
+             request(b"Transfer-Encoding: chunked\r\n", b"5\r\nhello\r\n")),
+            ("a truncated chunk is a 400", truncated),
+        ]:
+            status, response, _raw = _raw_exchange(server, payload,
+                                                   shutdown_write=True)
+            failures = _check(failures, name,
+                              status == 400
+                              and error_code(response) == "invalid_body",
+                              f"{status} {error_code(response)}")
+    finally:
+        _stop_api(server, thread)
+    return failures
+
+
 def test_serve_cli() -> int:
     """The `serve` subcommand: parser, config defaults and dispatch."""
     failures = 0
@@ -12581,6 +12758,7 @@ if __name__ == "__main__":
              + test_serve_disconnect() + test_serve_sockets()
              + test_serve_cache_concurrency()
              + test_serve_config_matrix()
+             + test_chunked_bodies()
              + test_serve_cli()
              + test_openai_sdk()
              + test_agent_turn_lifecycle() + test_agent_turn_controls()
