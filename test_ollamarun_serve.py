@@ -2193,8 +2193,13 @@ def test_artifact_remote_fetch() -> int:
                 self.send_header("Location", location)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            if body:
-                self.wfile.write(body)
+            try:
+                if body:
+                    self.wfile.write(body)
+            except BrokenPipeError:
+                # The client timed out on purpose (the /slow case); the
+                # stub's write failing after that is expected.
+                pass
 
         def do_GET(self):
             if self.path == "/small.png":
@@ -2252,6 +2257,31 @@ def test_artifact_remote_fetch() -> int:
             failures = _check(failures, name,
                               error is not None and error.status in (400, 413)
                               and error.code == code, repr(error))
+
+        # The OpenAI surface resolves http(s) image URLs through the same
+        # bounded fetch (a data URI still works; the mapper test covers the
+        # scheme rejection).
+        vision = _ServeClient(models=["m1"],
+                              capabilities=["completion", "vision"])
+        api_server, _vision, api_thread = _start_api(vision)
+        try:
+            status, _headers, raw = _http(
+                api_server, "POST", "/v1/chat/completions", body={
+                    "model": "m1",
+                    "messages": [{"role": "user", "content": [
+                        {"type": "text", "text": "what is this"},
+                        {"type": "image_url",
+                         "image_url": {"url": f"{base}/small.png"}}]}]})
+            sent = vision.chat_once_payloads[-1]
+            images = sent["messages"][-1].get("images") or []
+            failures = _check(
+                failures, "the OpenAI surface fetches http(s) image URLs",
+                status == 200 and images
+                and images[0] == base64.b64encode(
+                    b"\x89PNG\r\n\x1a\nbody").decode(),
+                f"{status} {raw[:160]} {images[:1]}")
+        finally:
+            _stop_api(api_server, api_thread)
     finally:
         server.shutdown()
         server.server_close()
@@ -4594,7 +4624,8 @@ def test_openai_sdk() -> int:
         {"message": {"content": ""}, "done": True, "prompt_eval_count": 6,
          "eval_count": 3, "done_reason": "stop"},
     ]]
-    client = _ServeClient(models=["m1"], capabilities=["completion", "tools"],
+    client = _ServeClient(models=["m1"],
+                          capabilities=["completion", "tools", "embedding"],
                           chat_script=script)
     server, client, thread = _start_api(client)
     api = OpenAI(base_url=f"http://127.0.0.1:{server.address[1]}/v1",
@@ -4604,6 +4635,25 @@ def test_openai_sdk() -> int:
         failures = _check(failures, "the SDK lists models",
                           [model.id for model in models.data] == ["m1"],
                           str(models)[:160])
+
+        embeddings = api.embeddings.create(model="m1", input="hello")
+        failures = _check(
+            failures, "the SDK embedding round-trips (its default base64)",
+            embeddings.object == "list" and embeddings.model == "m1"
+            and len(embeddings.data) == 1
+            and embeddings.data[0].index == 0
+            and embeddings.data[0].embedding == [0.0, 0.5]
+            and embeddings.usage.prompt_tokens == 1
+            and embeddings.usage.total_tokens == 1,
+            str(embeddings)[:200])
+
+        floats = api.embeddings.create(model="m1", input=["a", "b"],
+                                       encoding_format="float", dimensions=2)
+        failures = _check(
+            failures, "the SDK embedding batches floats on request",
+            [item.embedding for item in floats.data]
+            == [[0.0, 0.5], [1.0, 0.5]],
+            str(floats)[:200])
 
         response = api.chat.completions.create(
             model="m1", temperature=0,
@@ -4747,6 +4797,13 @@ def test_serve_live() -> int:
         print("FAIL  --live: no chat-capable model found on the backend")
         return 1
     print(f"      --live: using {model} on {host}")
+    embed_model = os.environ.get("OLLAMARUN_TEST_EMBED_MODEL") or ""
+    if not embed_model:
+        for entry in entries:
+            name = str(entry.get("name") or "")
+            if name and "embedding" in client.capabilities(name):
+                embed_model = name
+                break
     server, _client, thread = _start_api(
         factory=lambda: orun.OllamaClient(host, timeout=600))
     try:
@@ -4785,6 +4842,27 @@ def test_serve_live() -> int:
                           status == 200 and bool(events)
                           and events[-1] == "[DONE]" and bool(streamed),
                           str(events[-2:])[:200])
+
+        if embed_model:
+            status, _headers, raw = _http(
+                server, "POST", "/v1/embeddings",
+                body={"model": embed_model, "input": ["hello", "world"]},
+                timeout=600)
+            body = json.loads(raw)
+            vectors = [item.get("embedding") for item in body.get("data", [])]
+            dims = [len(vector) for vector in vectors
+                    if isinstance(vector, list)]
+            failures = _check(
+                failures, "live: embeddings round-trip",
+                status == 200 and len(vectors) == 2
+                and all(isinstance(vector, list) and vector
+                        for vector in vectors)
+                and (body.get("usage") or {}).get("prompt_tokens", 0) > 0,
+                raw[:240])
+            print(f"      --live: {embed_model} embeddings dims={dims}")
+        else:
+            print("      --live: no embedding-capable model is installed; "
+                  "skipping the embeddings check")
 
         if os.environ.get("OLLAMARUN_TEST_MODEL"):
             status, _headers, raw = _http(
