@@ -3,6 +3,7 @@ the `CancelToken` the UI threads use to stop a running turn.
 """
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 import os
@@ -35,6 +36,22 @@ def now_iso() -> str:
 
 def short_stamp(value: Optional[str]) -> str:
     return (value or "")[:19].replace("T", " ")
+
+
+def diff_preview(old: str, new: str, *, context: int = 1, limit: int = 40) -> str:
+    """A compact unified diff between two text fragments, for panels/results.
+
+    The `---`/`+++` file header and per-hunk range lines are dropped: the
+    callers already show the path, and the ranges are noise for a preview
+    that may be cut off. `limit` caps the shown lines with a tail marker.
+    """
+    lines = [line for line in difflib.unified_diff(
+        old.splitlines(), new.splitlines(), lineterm="", n=context)
+        if not line.startswith(("---", "+++", "@@"))]
+    hidden = max(0, len(lines) - limit)
+    if hidden:
+        lines = lines[:limit] + [f"… {hidden} more diff line(s)"]
+    return "\n".join(lines)
 
 
 def new_session_id() -> str:

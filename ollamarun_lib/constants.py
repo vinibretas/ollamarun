@@ -102,7 +102,7 @@ except ImportError:  # pragma: no cover - fallback path
     TEXTUAL_VERSION = ""
     TextualApp = None
 
-VERSION = "1.36"
+VERSION = "1.37"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -164,6 +164,11 @@ TOOL_COLORS: dict[str, str] = {
     "run_python": "yellow",
     "read_file": "deep_sky_blue1",
     "write_file": "orange1",
+    "edit_file": "light_goldenrod2",
+    "make_dir": "dark_sea_green2",
+    "move_file": "cornflower_blue",
+    "copy_file": "sky_blue2",
+    "delete_file": "indian_red",
     "list_dir": "magenta",
     "fetch_url": "spring_green2",
     "web_search": "hot_pink2",

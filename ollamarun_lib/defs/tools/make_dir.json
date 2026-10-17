@@ -1,0 +1,13 @@
+{
+  "name": "make_dir",
+  "description": "Create a directory, parents included (like mkdir -p).",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {"type": "string", "description": "directory path"}
+    },
+    "required": ["path"]
+  },
+  "handler": "make_dir",
+  "aliases": ["mkdir", "create_dir", "create_directory"]
+}

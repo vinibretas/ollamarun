@@ -29,8 +29,8 @@ from rich.spinner import Spinner
 from rich.text import Text
 
 from .constants import CTRL_T, THINKING_MODES, tool_color
-from .helpers import (CancelToken, format_context, human_chars, human_duration,
-                      short_stamp)
+from .helpers import (CancelToken, diff_preview, format_context, human_chars,
+                      human_duration, short_stamp)
 from .mathrender import render_content, render_thinking
 
 if TYPE_CHECKING:
@@ -147,12 +147,51 @@ def thinking_panel(text: str, title: str = "thinking",
 
 
 def tool_call_panel(name: str, args: Any) -> Panel:
-    """The arguments panel for one tool call, bordered in the tool's colour."""
+    """The arguments panel for one tool call, bordered in the tool's colour.
+
+    `edit_file` calls render an old→new diff instead of raw JSON so the
+    change is readable before it is approved; anything that does not parse
+    into the expected shape falls back to the JSON dump.
+    """
+    if name == "edit_file":
+        preview = _edit_diff_body(args)
+        if preview is not None:
+            color = tool_color(name)
+            return Panel(preview, border_style=color, title_align="left",
+                         title=Text(f"tool · {name}", style=color))
     if not isinstance(args, str):
         args = json.dumps(args, indent=2)
     color = tool_color(name)
     return Panel(escape(args), border_style=color, title_align="left",
                  title=Text(f"tool · {name}", style=color))
+
+
+def _edit_diff_body(args: Any) -> Optional[Text]:
+    """Colored diff body for an edit_file call; None = use the JSON dump."""
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            return None
+    if not isinstance(args, dict):
+        return None
+    old, new = args.get("old_string"), args.get("new_string")
+    if not isinstance(old, str) or not isinstance(new, str):
+        return None
+    body = Text()
+    path = args.get("path")
+    if path:
+        body.append(f"{path}\n", style="bold")
+    diff = diff_preview(old, new, limit=20)
+    for line in (diff.splitlines() or ["(no change)"]):
+        if line.startswith("+"):
+            style = "green"
+        elif line.startswith("-"):
+            style = "red"
+        else:
+            style = "dim"
+        body.append(line + "\n", style=style)
+    return body
 
 
 def tool_result_panel(name: str, detail: str = "", text: str = "", *,

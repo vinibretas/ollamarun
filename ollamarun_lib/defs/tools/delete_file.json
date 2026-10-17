@@ -1,0 +1,13 @@
+{
+  "name": "delete_file",
+  "description": "Delete a file or directory by moving it to the trash (trash-put) — recoverable, never a permanent unlink.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {"type": "string", "description": "file or directory to delete"}
+    },
+    "required": ["path"]
+  },
+  "handler": "delete_file",
+  "aliases": ["delete", "remove", "rm", "trash"]
+}
