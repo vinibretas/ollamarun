@@ -2,6 +2,22 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.53
+
+Summary of changes in this version:
+  - Pre-Phase-5 housekeeping. `parallel_tool_calls` is type-checked like
+    every other field the OpenAI surface accepts (a boolean or absent;
+    anything else is a structured 400) while its semantics stay with the
+    compatibility phase. A parked approval cancelled with its turn now
+    reports why — "cancelled (turn timeout)", "cancelled (client
+    disconnected)", "cancelled (server shutting down)" or "cancelled by
+    user" — instead of always "cancelled by user", and the documented
+    `Last-Event-ID` resume path gained its regression test (a malformed
+    header answers 400). Stale "next phase"/"Phase N" references in the
+    runtime and API comments were cleared up, and the README now states
+    that an events subscription without `?after=`/`Last-Event-ID` is
+    live-only (a finished turn yields an empty stream).
+
 Version: 1.52
 
 Summary of changes in this version:
