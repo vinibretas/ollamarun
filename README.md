@@ -1,24 +1,138 @@
 # ollamarun
 
-Full `ollama run` wrapper: every ollama 0.34 run flag plus markdown rendering with a live re-render while streaming and 2D Unicode math — display math (`$$…$$`, `\[…\]`) is laid out by a self-contained engine (stacked fractions, sqrt overlines, sum/prod/lim limits above-below, integral side-limits, matrices, cases, aligned, `\boxed`, `\binom`, tall delimiters, accents, `\mathbb`/`\mathcal`/`\mathfrak`/`\mathbf`) centered in cyan, with flattened Unicode for inline math and pylatexenc as the never-crashing fallback. A `~tok/s` footer streams live (thinking + answer) with the 5s windowed rate, its cumulative average, the streamed token count and a live context counter — `~24.0 tok/s (avg 21.4) · 45 tok · ctx 12.345k/32.768k (38.123%)`, the ctx figure ticking with every token, its denominator the window the model is actually loaded with (`/api/ps`; a session `num_ctx` wins, the architectural maximum is only the fallback), and its counts reading raw below 1k / 3-decimal k above — and the TUI status bar shows the same rate, average and live ctx (`--no-tps`/`/tps` switch it off). Response timings (`⏱ load … · prompt … · eval … · total …`) print under every answer on a terminal — `--verbose` is obsolete there and now only adds them to piped/redirected output; `--raw`/`--json` never get the line, and config `show_stats: false` turns it off. Thinking streams live and is collapsible — collapsed by default as an animated `thinking · N chars · Ctrl+T to expand` line; Ctrl+T expands a tail-capped boxed preview in place (press it again to collapse) and `/thinking full` prints the stored thinking panel later. A tool harness gives the model `run_shell`, `run_python`, `read_file`, `write_file`, `edit_file` (exact-fragment replacement with an atomic write; the call panel shows a coloured diff before the change is approved), `list_dir`, `make_dir`/`move_file`/`copy_file`/`delete_file` (trash-put only, never a permanent unlink), `fetch_url`, `web_search` (when the `ddgs` package is installed), `search_sessions` (searches the saved conversations), `list_models` (installed models with the loaded ones marked by VRAM and unload time), `system_status` (RAM, GPU VRAM and model-disk space of the machine running Ollama — ssh-probed under `--remote`, `target="local"` for this machine), `context_status`/`session_info` (the model's own context budget — window size and usage — plus the date, model capabilities and tool round budget) and, when the `chemInventoryAPI` CLI is installed, the read-only `chem_search`/`chem_container`/`chem_locations` through Ollama function calling, plus tts-remote's `speak`/`list_voices`. `fetch_url` returns readable page text instead of raw markup — HTML as text plus the page's links, JSON pretty-printed, PDFs text-extracted, failed fetches as one actionable line rather than the site's error page, a URL already fetched in the session answered from its cache — and `web_search` returns titles/URLs/snippets (cached too, with search-engine URLs rerouted to it), so the model no longer has to guess URLs. Invented tool names (`search`, `curl`, ...) are resolved onto the real tools, the allowlist policy still applies (read-only calls run unattended, allowlisted shell commands and provably-harmless python run unattended, everything else lists numbered choices — run once, always-allow that exact call, or always-allow a suggested generalized rule (`shell: mkdir -p :*`, `path: ~/proj/**`, `python: imports os`, stored for the session) — and you type one, unless `-y` or `/tools policy auto`), and multi-round tool loops keep calls/results in the session (a finished loop is separated from the committed answer by a bright centered `response` divider); every tool's call and result panels are colour-coded — one fixed colour per tool, a random palette colour (remembered for the run) for anything unmapped, and config `tool_colors` overrides; the result box wears the same colour as the call, with ok/failed printed green/red in its title, and the speak tool's box also names where the voice is generated and where it will be heard (`optiplex → g3`, with `(cached)` for a phrase served from disk). tts-remote can also read every final answer aloud (`--speak`, config `tts_auto`, `/tts on` — the `speaking` line ends with the same `X → Y`) and `/tts` manages voice, language and whether the model may use the speech tools at all. Model housekeeping: `/model` and `/load --model` unload the current model before switching, `/load SESSION` prompts current-vs-last model and unloads when switching, REPL exit unloads (`--keep-loaded`/`--unload` override; one-shots stay warm by default; embedding models are never unloaded). Conversations persist as one atomic JSON per session in `~/etc/data/ollamarun` (`-c/--continue`, `-r/--resume` picker, `--list/--show/--search/--export/--delete`, export as md/json/html, deletes via `trash-put`), and the prompt_toolkit REPL's slash commands are a superset of ollama's (`/set`, `/show`, `/load`, `/save` → `/api/create`, `/clear`, `/bye`) with `/undo`, `/retry`, `/edit`, `/branch`, `/context`, `/summarize`, `/image`, `/copy`, `/export`, `/stats`, `/tools`, `@file` mentions and tab completion. Embedding models route to `/api/embed` honoring `--dimensions`/`--truncate`; `--json`/`--raw`/`--no-save` cover scripting. Raw HTTP, so it works through `llm-jukebox` on `:11434`. `--remote NAME` runs the whole thing on a tailnet machine — `pi`, `kiddo`, `g3`, `optiplex7070` (alias `optiplex`) or `guri`, or any `host[:port]`, resolved through `tailscale status --json` — so models load, generate and unload there while sessions, files, images and tools stay local; a short `/api/version` preflight fails fast with the tailscale node state when the machine is down, and resuming a session reconnects to the machine it last ran on. A model that is not installed on the target machine (local or remote) offers to pull it after printing that machine's free disk space, with live per-layer progress (`--pull` pulls without asking, `/pull [MODEL]` in the REPL, and declining the prompt opens the model picker). `--gpu-layers SPEC` / `/gpu-layers` chooses how many layers run on the GPU — `20`, `50%` of the model's layers, `+4`/`-4` adjustments, `all`, `cpu` or `auto` — stored in the session, re-resolved per model, effective on the next load. `/num-ctx --max-gpu` picks the largest context that still keeps the model fully on the GPU: the KV-cache size per token comes from `/api/show`'s GGUF metadata (exactly, hybrid per-layer attention included), the model size from `/api/tags`, and free VRAM from nvidia-smi — locally or over one ssh probe for `--remote` machines — minus llama.cpp's fit margin and an overhead allowance; resident models' VRAM is credited back (it is released when they reload at the new context, `max_gpu_credit_residents: false` limits the credit to the model being sized) and a margin-only infeasible placement reports the context it would fit without the reserve; a pinned `/gpu-layers` is honoured. `/num-ctx --max-gpu --probe` (CLI `--num-ctx max-gpu --probe`) then verifies by loading the model from that estimate and reading each real GPU split back from `/api/ps`, solving the measured bytes-per-token line for the capacity instead of stepping bisection midpoints, and leaves the model warm at the largest 100%-GPU context. `/num-ctx --max-cpu N` (CLI `--num-ctx --max-cpu N [--probe]`) fills DRAM instead: it raises the context until the model's host RAM reaches N% (1-100) of the DRAM available to it — `/proc/meminfo`'s MemAvailable on the ollama machine (one ssh probe for `--remote` hosts) plus the RAM the loaded model already holds (`/api/ps` `size - size_vram`, back when it reloads; other programs and models keep theirs), less a `max_cpu_overhead_mb` allowance — some layers staying on the GPU unless `/gpu-layers` is cpu (a pinned layer count is honoured and only the host side counts); `--probe` loads candidates, reads the real footprint back from `/api/ps` and solves the measured footprint line for the target (`max_cpu_probes`, default 8), never choosing a context above it, and leaves the model warm there.
+A terminal agent harness for Ollama: run models, give them tools, keep the
+conversation. It is a drop-in superset of `ollama run` — every ollama 0.34 run
+flag is accepted — and adds an approval-gated tool-calling loop (22 built-in
+tools), persistent sessions, live markdown + 2D Unicode math rendering, an
+optional Textual TUI, context/GPU placement fitting, and inference on any
+Tailscale machine.
 
-```console
-$ ollamarun MODEL [PROMPT] [--host HOST | --remote NAME] [--pull] [--sort KEY] [--gpu-layers SPEC] [--num-ctx [N|max-gpu | --max-cpu N] [--probe]] [--think [STR]] [--render MODE] [--option K=V]
-                  [--image PATH] [--system TEXT | --no-system] [-c [ID] | --session NAME | -r] [--new]
-                  [--tools | --no-tools] [-y] [--list | --show ID | --search TEXT | --export ID]
-                  [--export-format FMT] [--delete ID [-y]] [--out FILE] [--no-save]
-                  [--json | --raw] [--verbose] [--speak | --no-speak]
-                  [--show-thinking | --hidethinking] [--no-tps] [--unload | --keep-loaded]
-                  # Ctrl+T: expand/collapse the thinking panel while streaming
-                  # /model (or /models): switch, list (--list) or sort the
-                  #   installed models -- --sort name|size|parameters|context|modified
-                  #   also works at the picker prompt, and --sort KEY before a
-                  #   model-less run orders the picker it opens
-                  # /tools: harness status, policy, tool toggles and approval rules
-                  # /tts: auto-speak, voice, language, model access to tts tools
-```
+- **Agent loop, not a pipe.** The model calls tools through Ollama function
+  calling — shell, Python, files, web, your saved sessions, system stats,
+  speech, the chemical inventory — in multi-round loops. Read-only calls run
+  unattended; everything else asks, with numbered choices and remembered
+  rules.
+- **Rendering that keeps up.** Markdown re-renders while tokens stream, display
+  math is laid out in 2D Unicode by a self-contained engine, thinking streams
+  live in a collapsible panel, and a `~tok/s · ctx` footer ticks with every
+  token (`--no-tps`/`/tps` switch it off).
+- **Sessions that persist.** One atomic JSON per conversation plus an index
+  under `~/etc/data/ollamarun/`, with search, export (md/json/html), branch,
+  tags and `trash-put` deletes.
+- **Two front ends.** The prompt_toolkit inline REPL (default) or `--ui tui`:
+  transcript pane, status bar, and an input box that stays usable while the
+  model works.
+- **Any machine on the tailnet.** `--remote NAME` runs all inference and model
+  management on `pi`, `kiddo`, `g3`, `optiplex7070` (alias `optiplex`) or
+  `guri` while sessions, files and tools stay local.
+- **Context and placement fitting.** `/num-ctx --max-gpu` finds the largest
+  window that stays fully on the GPU, `/num-ctx --max-cpu N` fills DRAM to N%,
+  `--probe` verifies by loading, and `/gpu-layers` pins layer counts.
+- **Model-facing text is data.** Tool definitions and prompts live as
+  JSON/Markdown under `ollamarun_lib/defs/`, overridable per user without
+  touching Python.
 
-## TUI (`--ui tui`)
+## The tool harness
+
+With `--tools` (the default), the request carries the tool definitions and the
+model can call them through Ollama function calling. Calls and results are
+kept in the session (so `/show`/`--show` replay them), a finished loop is
+separated from the committed answer by a centered `response` divider, and
+every call/result panel is colour-coded — one fixed colour per tool, a random
+palette colour (remembered for the run) for anything unmapped, with config
+`tool_colors` overrides. The result box wears the call's colour, prints
+ok/failed green/red in its title, and the `speak` tool's box names where the
+voice is generated and where it will be heard (`optiplex → g3`, `(cached)` for
+a phrase served from disk). Invented tool names (`search`, `curl`, `mkdir`,
+...) resolve onto the real tools through per-tool alias lists.
+
+### Tools
+
+| Tool | What it does | Needs |
+| --- | --- | --- |
+| `run_shell` | Run a shell command (`bash -lc`), return output and exit code | — |
+| `run_python` | Execute a short Python 3 program; the model is told to compute with it, never mentally | — |
+| `read_file` | Read a text file, optionally a line range | — |
+| `write_file` | Write or append text, creating the file | — |
+| `edit_file` | Replace one exact fragment (unique match unless `replace_all`), atomic write keeping the mode; the call panel shows a coloured diff before approval | — |
+| `list_dir` | Directory listing with sizes and modification times | — |
+| `make_dir` | `mkdir -p` | — |
+| `move_file` / `copy_file` | Move/copy; refuse an existing destination unless `overwrite=true` | — |
+| `delete_file` | Move to the trash (`trash-put`) — never a permanent unlink | — |
+| `fetch_url` | Fetch one exact URL as readable content — HTML to text plus the page's links, JSON pretty-printed, PDFs text-extracted; a URL already fetched in the session is answered from cache, and failures come back as one actionable line | — |
+| `web_search` | Search the web for titles/URLs/snippets (cached; search-engine `q=` URLs are rerouted here) | `ddgs` package |
+| `search_sessions` | Search your saved ollamarun conversations (titles, models, messages, thinking) | — |
+| `list_models` | Installed models; loaded ones marked with VRAM and unload time (`loaded_only` for just the residents) | — |
+| `system_status` | RAM, GPU VRAM and model-disk space of the machine running Ollama (ssh-probed under `--remote`; `target="local"` for this machine) | — |
+| `context_status` | The context budget in use: window (labelled source), tokens the last request carried, free space, message counts, wrap-up note past 80% | — |
+| `session_info` | Date/time, session id/title, model size/quantization/capabilities, server + cwd, parameters, thinking/render modes, system-prompt status, tool policy and remaining rounds | — |
+| `speak` / `list_voices` | Speak text aloud through tts-remote (fire-and-forget), or list its voices | tts-remote |
+| `chem_search` / `chem_container` / `chem_locations` | Read-only chemical-inventory lookups through the `chemInventoryAPI` CLI | chemInventoryAPI |
+
+`web_search` only appears when `ddgs` is installed, the speech tools when
+`tts-remote` is available, and the chem tools when `chemInventoryAPI` resolves
+(config `chem_inventory` names a different path, `chem_tools: false` hides
+them). A tool's `requires` capability gates it the same way for user-added
+definitions.
+
+### Approvals and policy
+
+Read-only tools run unattended, as do allowlisted shell commands
+(`ls`/`cat`/`grep`/`rg`, read-only `git`, ... — no substitutions or
+redirections) and provably-harmless Python. Everything else lists numbered
+choices — run once, always allow that exact call, or always allow a suggested
+generalized rule (`shell: mkdir -p :*`, `path: ~/proj/**`,
+`python: imports os`) stored for the session — and you type one. Unattended
+runs deny with a note unless `-y/--yes` or `/tools policy auto` is in effect.
+`dangerous_command()` is the floor no rule ever covers: substitutions,
+redirections, privilege/wrapper/interpreter commands, disk-level tools,
+catastrophic `rm` and pipes into an interpreter always prompt again.
+
+- `/tools` — `on|off`, `policy MODE`, `enable`/`disable NAME…`, `allow`, `rules`
+- `--tools` / `--no-tools` for a single run; config `tools`, `tools_policy`,
+  `tools_shell_allow`, `tools_timeout`, `tools_max_output`, `tools_max_rounds`
+  (default 8), `tool_colors`
+
+## Rendering
+
+Output streams through a `rich.Live` view with a throttled markdown re-render
+(raw streaming past `max_render_chars`, default 12000); `--pager` buffers into
+the pager, `--render markdown|plain|raw` picks the mode.
+
+- **2D Unicode math.** Display math (`$$…$$`, `\[…\]`) is laid out by a
+  self-contained parser/layout engine — stacked fractions, sqrt overlines,
+  sum/prod/lim limits above-below, integral side-limits, matrices, cases,
+  aligned, `\boxed`, `\binom`, tall delimiters, accents,
+  `\mathbb`/`\mathcal`/`\mathfrak`/`\mathbf` — centered in cyan, with
+  flattened Unicode for inline math and `pylatexenc` as the never-crashing
+  fallback (unknown env/over-wide/over-budget). `--no-math` / `/math` disable
+  the conversion.
+- **Thinking, collapsible.** Thinking streams live and is collapsed by default
+  as an animated `thinking · N chars · Ctrl+T to expand` line. Ctrl+T expands
+  a tail-capped boxed preview in place (press again to collapse; the stream
+  never pauses), and `/thinking full` prints the stored panel later.
+  `--show-thinking`/`--hidethinking` and config `thinking` set the start mode.
+- **Live footer.** `~24.0 tok/s (avg 21.4) · 45 tok · ctx 12.345k/32.768k
+  (38.123%)` — the 5s windowed rate, its cumulative average, the streamed
+  token count and a context counter that ticks with every token. Its
+  denominator is the window the model is actually loaded with (`/api/ps`; a
+  session `num_ctx` wins, the architectural maximum is only the fallback),
+  and counts read raw below 1k / 3-decimal k above. The TUI status bar shows
+  the same rate, average and live ctx.
+- **Timings.** `⏱ load … · prompt … · eval … · total …` prints under every
+  answer on a terminal; `--verbose` is obsolete there and now only adds the
+  line to piped/redirected output. `--raw`/`--json` never get it, and config
+  `show_stats: false` turns it off.
+
+## Front ends
+
+The inline prompt_toolkit REPL is the default (`--ui inline`). It is a
+superset of ollama's own commands, with `@path` file mentions (inlined into
+the prompt), Tab completion for commands/session ids/models/`@files`, prompt
+history (unless `OLLAMA_NOHISTORY` is set) and Ctrl+G to open
+`$OLLAMA_EDITOR` on the current input. See [Slash commands](#slash-commands).
+
+### TUI (`--ui tui`)
 
 `--ui tui` (config `"ui": "tui"`, or `--ui auto` to use it when the optional
 `textual` package is installed) separates the interactive session into panes:
@@ -42,8 +156,98 @@ key hints) and an input box that stays available while the model works.
   completion and Up/Down history shared with the inline REPL. Tool approvals
   ask in a modal (`y`/`a`/`n`/`A`).
 
-The inline prompt_toolkit REPL remains the default (`--ui inline`) and is the
-fallback whenever Textual is missing or the output is not a terminal.
+`OLLAMARUN_TUI_FULLSCREEN=1` runs the app on the alternate screen (the
+transcript disappears on exit instead of staying in the terminal), and
+`OLLAMA_TUI_DISABLE` keeps `--ui tui` on the inline REPL. The inline REPL is
+also the fallback whenever Textual is missing or the output is not a terminal.
+
+## Sessions
+
+Every conversation is one atomic JSON file plus `index.json` under
+`~/etc/data/ollamarun/sessions/` (prompt history in `~/etc/data/ollamarun/`,
+honoring `OLLAMA_NOHISTORY`); this is a session store, not a cache — nothing
+is deleted without going through `trash-put`.
+
+- Start/resume: `-c/--continue [ID]`, `--session NAME`, `-r/--resume` picker,
+  `--new` to force a fresh session, `--title TEXT`, `--tag TAG` (repeatable),
+  `--auto-title` to ask the model for a title after the first turn.
+- Inspect: `--list`, `--show ID`, `--search TEXT`, `--export ID`
+  (`--export-format md|json|html`), `--delete ID [-y]`, `--reindex` — all with
+  the shared output convention: rich table by default, `--json`/`--csv`/
+  `--markdown` plus `--out FILE` to redirect.
+- `--no-save` keeps a run out of the store entirely; `--json`/`--raw` cover
+  scripting.
+
+`/set`, `/show`, `/load`, `/save` (`/api/create`), `/clear`, `/new`, `/bye`
+mirror ollama's REPL; `/undo`, `/retry`, `/edit`, `/branch`, `/context`,
+`/summarize`, `/image`, `/copy`, `/export`, `/stats`, `/title`, `/tag`,
+`/sessions` and the rest are described in [Slash commands](#slash-commands).
+
+## Models and housekeeping
+
+- The model picker (a model-less `ollamarun` run, `/model`) sorts
+  by `modified` (newest first), `name`, `size`, `parameters` or `context`;
+  `--sort KEY` seeds it and the picker prompt takes `--sort KEY` in place.
+  `context` costs one lazy `/api/show` per model, cached per host.
+- A model missing from the target machine (local or `--remote`) offers to pull
+  it after printing that machine's free disk space (local `disk_usage`,
+  remote via a BatchMode ssh `df` probe; degrades to unknown), with live
+  per-layer progress. `--pull` pulls without asking, `/pull [MODEL]` does it
+  from the REPL, and declining the prompt opens the model picker.
+- Unloading: `/model` and `/load --model` unload the current model before
+  switching, `/load SESSION` prompts current-vs-last model and unloads when
+  switching, and REPL exit unloads (`unload_on_exit` config, `--keep-loaded`
+  disables, `--unload` also unloads after one-shots). Embedding models are
+  never unloaded.
+- Embedding-capability models route to `/api/embed` honoring
+  `--dimensions`/`--truncate` instead of chat.
+
+## Context and placement
+
+`--gpu-layers SPEC` / `/gpu-layers` sets how many layers run on the GPU: `N`,
+`P%` of the model's layers (`block_count` from `/api/show`), `+N`/`-N`
+adjustments (baseline: the current value, else a full offload), `all`, `cpu`
+or `auto`. It is stored in the session, re-resolved per model, wins over
+`/set parameter num_gpu`, and unloads a resident model so the next request
+reloads with the new placement.
+
+`/num-ctx` sizes the window:
+
+- `N` sets it (capped to the model's max with a warning).
+- `--max-gpu` picks the largest context that still keeps the model fully on
+  the GPU: KV bytes per token come from `/api/show`'s GGUF metadata (hybrid
+  per-layer attention included), the model size from `/api/tags`, and free
+  VRAM from nvidia-smi — locally or over one ssh probe for `--remote`
+  machines — minus llama.cpp's fit margin and an overhead allowance. Resident
+  models' VRAM is credited back (it returns when they reload at the new
+  context), and a pinned `/gpu-layers` is honoured. `--probe` then verifies
+  by loading candidates and reading each real GPU split back from `/api/ps`,
+  solving the measured bytes-per-token line for the capacity, and leaves the
+  model warm at the largest 100%-GPU context.
+- `--max-cpu N` fills DRAM instead: it raises the context until the model's
+  host RAM reaches N% (1-100) of the DRAM available to it —
+  `/proc/meminfo`'s MemAvailable on the Ollama machine (one ssh probe for
+  `--remote` hosts) plus the RAM the loaded model already holds (`/api/ps`
+  `size - size_vram`, back when it reloads), less a `max_cpu_overhead_mb`
+  allowance. Some layers may stay on the GPU unless `/gpu-layers` is `cpu`; a
+  pinned layer count is honoured and only the host side counts. `--probe`
+  solves the measured footprint line the same way and never chooses a context
+  above the target.
+
+CLI forms: `--num-ctx N | max-gpu`, plus `--probe` and `--max-cpu N`. Config
+knobs: `max_gpu_margin_mb`, `max_gpu_overhead_mb`, `max_gpu_probes`,
+`max_cpu_overhead_mb`, `max_cpu_probes`.
+
+## Remote
+
+`--remote NAME` (config `remote`/`remote_hosts`) runs the whole thing on
+another machine: inference, model management (load/unload, `/api/ps`) and
+`/pull` happen there, while sessions, files, images and the tool harness stay
+local — there is no separate remote code path. Names resolve through
+`tailscale status --json` (falling back to the MagicDNS name), and any
+`host[:port]` works. A short `/api/version` preflight fails fast with the
+tailscale node state when the machine is down, and resuming a session
+reconnects to the machine it last ran on.
 
 ## Prompts and tool definitions
 
@@ -52,8 +256,9 @@ The model-facing text lives in files, not code:
 - `ollamarun_lib/defs/tools/*.json` — one JSON per tool: `name`, the
   `description` and JSON-schema `parameters` the model sees, `read_only` /
   `always_safe` safety flags, `requires` (`search` for `web_search`'s ddgs
-  backend, `tts` for the speech tools), the model-invented `aliases` that
-  resolve onto it, and the `handler` that runs it.
+  backend, `tts` for the speech tools, `chem` for the inventory tools), the
+  model-invented `aliases` that resolve onto it, and the `handler` that runs
+  it.
 - `ollamarun_lib/defs/prompts/` — `system.md` (the built-in default system
   prompt), `system_tools.md` (the tool, web-search and math-in-code rules,
   appended when tools are on), `title.md` and `summarize.md` (both take the
@@ -71,14 +276,102 @@ none, `/system clear` returns to the default, and `/system` alone shows what
 is in effect. It is sent as a leading system message and never enters the
 saved history.
 
+## Usage
+
+```console
+$ ollamarun MODEL [PROMPT] [--host HOST | --remote NAME] [--ui MODE]
+                  [--pull] [--sort KEY] [--gpu-layers SPEC]
+                  [--num-ctx [N | max-gpu | --max-cpu N] [--probe]]
+                  [--think [STR]] [--render MODE] [--option K=V]
+                  [--image PATH] [--system TEXT | --system-file FILE | --no-system]
+                  [-c [ID] | --session NAME | -r] [--new] [--title TEXT] [--tag TAG]
+                  [--tools | --no-tools] [-y] [--speak | --no-speak]
+                  [--list | --show ID | --search TEXT | --export ID] [--export-format FMT]
+                  [--delete ID [-y]] [--reindex] [--out FILE] [--no-save]
+                  [--json | --csv | --markdown | --raw] [--verbose]
+                  [--show-thinking | --hidethinking] [--no-math] [--no-tps]
+                  [--unload | --keep-loaded] [--pager] [--timeout SECONDS] [--debug]
+                  # ollama-compatible: --dimensions --format --hidethinking --insecure
+                  #   --keepalive --nowordwrap --think --truncate --verbose
+                  # Ctrl+T expands/collapses the thinking panel while streaming
+```
+
+## Slash commands
+
+Dispatched in the REPL and the TUI; `/help` also lists the shortcuts (`/?`).
+
+| Command | What it does |
+| --- | --- |
+| `/help, /? [topic]` | Show commands (topic: shortcuts) |
+| `/set parameter NAME VALUE \| system TEXT` | Session parameters / system prompt |
+| `/show [info\|license\|modelfile\|parameters\|system\|template]` | Model details |
+| `/load [MODEL\|SESSION]` | Load a saved session or switch model |
+| `/save NAME` | Create an Ollama model from this session |
+| `/pull [MODEL]` | Pull a model onto this host (updates if present) |
+| `/clear` | Forget the context, keep settings, start a new session |
+| `/new` | Start a brand new session |
+| `/sessions [filter]` | Browse and switch saved sessions |
+| `/title [TEXT\|--auto]` | Show or set the session title |
+| `/tag [list\|add TAG…\|rm TAG]` | Session tags |
+| `/model, /models [NAME\|--list\|--sort KEY]` | Switch model, list or sort the installed models |
+| `/ps` | Show resident models (ollama ps) |
+| `/num-ctx [N \| --max-gpu [--probe] \| --max-cpu N [--probe]]` | Context window: N, the largest that keeps the GPU, or N% of DRAM |
+| `/gpu-layers [N\|N%\|+N\|-N\|all\|cpu\|auto]` | GPU layers for this model |
+| `/params` | Show session parameters |
+| `/tools [on\|off\|policy MODE\|enable\|disable NAME…\|allow\|rules]` | Tool harness, approval rules and per-tool control |
+| `/tts [on\|off\|voice NAME\|lang CODE\|tools on\|off\|voices]` | Auto-speak via tts-remote |
+| `/think [on\|off\|low\|medium\|high]` | Thinking mode |
+| `/thinking [show\|collapse\|hide\|toggle\|full]` | Thinking display (Ctrl+T while streaming) |
+| `/system [TEXT\|clear\|off]` | Show or set the system prompt (built-in default when unset) |
+| `/undo` | Drop the last exchange |
+| `/retry` | Regenerate the last response |
+| `/edit` | Edit the last message in `$EDITOR` and resend |
+| `/branch [TITLE]` | Fork this conversation into a new session |
+| `/context` | Context-window usage |
+| `/summarize` | Compact older messages into a summary |
+| `/image PATH… \| clear` | Attach images to the next message |
+| `/render [markdown\|plain\|raw]` | Response rendering mode |
+| `/math [on\|off]` | LaTeX→Unicode math conversion |
+| `/pager [on\|off]` | Page long transcripts |
+| `/tps [on\|off]` | Tokens/s footer while streaming |
+| `/copy [N]` | Copy the last response (or its Nth code block) |
+| `/export [--format md\|json\|html] [FILE]` | Export this session |
+| `/stats` | Session and last-generation stats |
+| `/queue [list\|clear\|rm N]` | Messages and commands typed while busy |
+| `/bye, /exit` | Leave |
+
+Auto-speak: `--speak` / config `tts_auto` / `/tts on` read every final answer
+aloud through `tts-remote say --markdown` (fire-and-forget; the `speaking`
+line ends with the same `X → Y` as the tool's result box).
+
+## Config, files and logs
+
+| Path | What |
+| --- | --- |
+| `~/etc/config_files/ollamarun.json` | Config (created from defaults on first run); `--config FILE` overrides |
+| `~/etc/config_files/ollamarun-defs/{tools,prompts}/` | Per-user tool/prompt overrides |
+| `~/etc/data/ollamarun/sessions/`, `index.json`, `history` | Session store, index and prompt history |
+| `~/etc/logs/ollamarun.log` | Debug log (`--debug`) |
+
+Selected config keys: `render`, `math`, `thinking`, `ui`, `show_stats`,
+`tps_footer`, `max_render_chars`, `pager`, `auto_title`, `auto_compact`,
+`image_storage`, `max_file_kb`, `options`, `unload_on_exit`, `gpu_layers`,
+`tools*`, `tool_colors`, `tts*`, `chem_*`, `remote*`, `max_gpu_*`,
+`max_cpu_*`, `timeout`. See `DEFAULT_CONFIG` in `ollamarun_lib/constants.py`
+for the full set.
+
 ## Layout
 
 - `ollamarun` — thin executable entry point (`#! /bin/python3.10`); calls
   into `ollamarun_lib/`.
 - `ollamarun_lib/` — the implementation, one module per pipeline stage
-  (math rendering, HTTP client, sessions, REPL, CLI, ...) — see CLAUDE.md's
-  Architecture section for what lives where.
+  (math rendering, HTTP client, sessions, REPL, TUI, CLI, ...) — see
+  CLAUDE.md's Architecture section for what lives where.
+- `ollamarun_lib/defs/` — the model-facing tool definitions and prompts.
 - `test_ollamarun.py` — test suite. Run with `python3 test_ollamarun.py`.
+
+`CLAUDE.md` and `AGENTS.md` (mirror copies) carry the working guidance for
+agents editing this repo.
 
 ## Usage as a submodule
 
