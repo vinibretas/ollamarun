@@ -6,6 +6,10 @@ two missing gates (a pyflakes pass and a *required* SDK test), a real-process
 smoke check, and the suite split so the canonical command stays workable. It
 changes no product behavior.
 
+Status: implemented and landed at v1.57. The contracts below are what
+shipped; the audit's findings and the deviations are recorded under "Recorded
+implementation decisions".
+
 ## Baseline: what already exists (audited at v1.56)
 
 - `test_ollamarun.py` is the single canonical suite (~13.4k lines, ~150
@@ -174,3 +178,83 @@ the Phase-1b item closes explicitly.
   pass; the split file and the gates are the documented test command.
 - **Phase 9**: `/v1/embeddings`, `n > 1` and `parallel_tool_calls` land in
   `test_ollamarun_serve.py` under the same gates.
+
+## Recorded implementation decisions
+
+- **The split covers more than the contiguous block.** The original file
+  defined the Phase-10 API tests (`test_session_context_fields`,
+  `test_fit_estimate_api`, `test_fit_job_api`, `test_turn_start_fit`) early,
+  next to the ctxfit CLI tests, while they use the serve helpers that live
+  with the API tests; they moved to `test_ollamarun_serve.py` too, so every
+  API-surface test shares one home. The move is mechanical (no assertion
+  changed), and the canonical command is unchanged: `python3
+  test_ollamarun.py` imports the serve half and prints one verdict.
+- **The shared harness stays in the main file** (`_plain`, `_check`,
+  `_FakeClient`, `CTX_SHOW`, `_fit_check`) and the serve half imports it — no
+  third module. The canonical entry registers itself under its import name
+  (`sys.modules.setdefault`) before importing the serve half, so the 400 KB
+  main file is parsed once; `python3 test_ollamarun_serve.py` also runs
+  standalone.
+- **The pyflakes gate runs in-process** (`pyflakes.api.checkPath` into a
+  captured reporter) rather than as a subprocess, and fails — like the SDK
+  gate — when the package is missing. The tolerated findings are exactly the
+  deliberate re-export sites: `constants.py`'s "imported but unused" hub
+  names, **everything** in `__init__.py` (the star-import hub flags its own
+  re-exports and its two compatibility names), and `repl._prompt_approval`'s
+  "imported but unused". The audit found more hub noise than the plan
+  assumed (the `.tui.*`/`.run.*`/... star lines each report both classes),
+  which is why `__init__.py` is exempt as a file.
+- **The five real findings were fixed**: `ui.py`'s unused `field`/`Callable`,
+  `repl.py`'s two placeholder-less f-strings, the dead `iter()` in
+  `test_stream_cancel`, the undefined `Any` in the TUI answers annotation
+  (plus the missing `typing` import) and two more dead locals that moved into
+  the serve half. The Textual probe became
+  `importlib.util.find_spec("textual")`; the TUI itself is scheduled for a
+  later refactor, so nothing else there was touched. `repl.py`'s
+  compatibility re-export stays as production code and is exempted by the
+  gate's documented policy instead of being contorted to satisfy a linter.
+- **A backend failure is `content: ""`, not `None`.** The new lifecycle
+  assertion pins the actual contract: failed status, the backend message on
+  `error` and on `turn.error`, and a persisted session with the user turn
+  only. A cancelled mid-stream turn is the opposite shape: partial assistant
+  text with `cancelled: true`.
+- **The real-process smoke uses a stub upstream** (loopback
+  `ThreadingHTTPServer` answering `/api/tags`, `/api/ps`, `/api/show`,
+  `/api/chat` — streamed and not — and `/api/generate` for the unload), an
+  ephemeral `--port 0` and a temp config for workspace/artifact root. The
+  bound address is parsed from the banner; SIGTERM lands mid-stream and the
+  test proves the drain let the SSE body finish `[DONE]`, the exit is 0 with
+  no traceback, the tracked model is unloaded (`keep_alive: 0`) and the port
+  is released.
+- **The live smoke enables tools only when the chosen model advertises
+  them.** Live observation while landing this: Ollama answers a hard 400
+  (`<model> does not support tools`) when tools are sent to a model without
+  the capability, and the runtime's capability check is warning-only (CLI and
+  API alike) — the turn then fails with the sanitized backend error after the
+  warning. That is pre-existing, consistent behavior outside this phase's
+  scope; it is recorded here rather than changed. The live agent turn
+  therefore passes `settings.tools` per capability, and the live tool
+  round-trip stays behind `OLLAMARUN_TEST_MODEL`.
+- **Python 3.10 stays recorded, not tested**: `/bin/python3.10` is 3.12.3 on
+  this box and no fleet host runs `serve`; the `feature_version=(3, 10)` AST
+  guard is the enforcement.
+
+## Closure
+
+Closed at v1.57 with the full deterministic suite green through the canonical
+command (`python3 test_ollamarun.py`, ~45 s) and the standalone serve half
+(`python3 test_ollamarun_serve.py`), including the new gates and tests:
+`test_turn_mode_isolation`, the extended `test_agent_turn_lifecycle`,
+`test_agent_policy_mode`, `test_turn_buffer_truncation`, `test_serve_http`,
+`test_agent_turn_controls`, `test_serve_process`, `test_pyflakes_clean` and
+the required `test_openai_sdk` (it printed the exercised SDK version,
+2.29.0, under this run).
+
+Recorded live run (2026-10-17, `python3 test_ollamarun_serve.py --live`):
+backend `100.64.0.10:11434` (the `OLLAMA_HOST` tailnet endpoint), model
+`smollm:135m` (smallest local chat model, no tools capability) — the model
+list, a completion with usage, streaming `[DONE]` and one full agent turn
+(completed, `tools=false`, session persisted) all passed; the SDK
+round-trip and the deterministic groups ran green in the same command. The
+`OLLAMARUN_TEST_MODEL`-gated live tool pass-through was not exercised in
+this run (no tool-capable model was selected for it).

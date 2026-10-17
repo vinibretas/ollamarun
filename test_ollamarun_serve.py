@@ -4710,7 +4710,13 @@ def test_serve_process() -> int:
 
                 reader = threading.Thread(target=read_stream, daemon=True)
                 reader.start()
-                time.sleep(0.4)
+                # Wait until the stream has actually started, then stop the
+                # server a few chunks in: the drain must let it finish.
+                deadline = time.monotonic() + 10
+                while "status" not in streamed and "error" not in streamed \
+                        and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                time.sleep(0.2)
                 proc.send_signal(signal.SIGTERM)
                 reader.join(30)
                 failures = _check(
