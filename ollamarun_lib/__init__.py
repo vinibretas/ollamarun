@@ -25,6 +25,7 @@ from .ui import *  # noqa: F401,F403
 from .interactive import *  # noqa: F401,F403
 from .ctxfit import *  # noqa: F401,F403
 from .runtime import *  # noqa: F401,F403
+from .turns import *  # noqa: F401,F403
 from .repl import *  # noqa: F401,F403
 if HAS_TEXTUAL:
     # `tui.py` imports the Textual classes at module level; without the

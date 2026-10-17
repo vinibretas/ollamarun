@@ -7211,6 +7211,303 @@ def test_turn_event_envelope() -> int:
     return failures
 
 
+def _collect(subscription, timeout: float = 0.2) -> list:
+    events = []
+    while True:
+        event = subscription.get(timeout=timeout)
+        if event is None:
+            break
+        events.append(event)
+    return events
+
+
+def test_turn_manager_lifecycle() -> int:
+    """A turn runs on a worker, envelopes its events and stores a result."""
+    failures = 0
+    manager = orun.TurnManager()
+
+    def work(sink, cancel):
+        sink(orun.RuntimeEvent(orun.TURN_STARTED, {"model": "m1"}))
+        sink(orun.RuntimeEvent(orun.MESSAGE_DELTA,
+                               {"channel": "content", "text": "hi"}))
+        sink(orun.RuntimeEvent(orun.TURN_COMPLETED, {"content": "hi"}))
+        return orun.TurnResult(id="x", session_id="s1", status="completed",
+                               final_message={"role": "assistant", "content": "hi"},
+                               usage={"completion_tokens": 1}, rounds=1)
+
+    handle = manager.submit(session_id="s1", work=work)
+    snapshot = manager.wait(handle.id, timeout=5)
+    failures = _check(failures, "the turn completes and stores its result",
+                      snapshot is not None and snapshot.status == "completed"
+                      and snapshot.result is not None
+                      and snapshot.result.final_message["content"] == "hi"
+                      and snapshot.seq == 3 and snapshot.oldest_seq == 1,
+                      str(snapshot))
+    replay = _collect(manager.subscribe(handle.id, after=0))
+    failures = _check(failures, "replay after=0 returns every envelope in order",
+                      [event.seq for event in replay] == [1, 2, 3]
+                      and [event.id for event in replay]
+                      == [f"{handle.id}:1", f"{handle.id}:2", f"{handle.id}:3"],
+                      str([(event.seq, event.type) for event in replay]))
+    after = _collect(manager.subscribe(handle.id, after=2))
+    failures = _check(failures, "replay after=k returns only the tail",
+                      [event.seq for event in after] == [3], str(after))
+    live = manager.subscribe(handle.id)
+    failures = _check(failures, "a live-only subscriber on a done turn sees nothing",
+                      live.get(timeout=0.05) is None and live.at_terminal)
+    return failures
+
+
+def test_turn_manager_synthesized_terminal() -> int:
+    """A closure that dies (or skips the terminal) still gets one."""
+    failures = 0
+    manager = orun.TurnManager()
+
+    def boom(sink, cancel):
+        sink(orun.RuntimeEvent(orun.TURN_STARTED, {}))
+        raise RuntimeError("boom")
+
+    handle = manager.submit(session_id="boom", work=boom)
+    snapshot = manager.wait(handle.id, timeout=5)
+    events = _collect(manager.subscribe(handle.id, after=0))
+    failures = _check(failures, "a raising closure becomes a failed turn",
+                      snapshot is not None and snapshot.status == "failed"
+                      and snapshot.error == "RuntimeError: boom"
+                      and snapshot.synthetic_terminal,
+                      str(snapshot))
+    failures = _check(failures, "the synthesized terminal is the last event",
+                      [event.type for event in events]
+                      == [orun.TURN_STARTED, orun.TURN_ERROR]
+                      and events[-1].data.get("synthetic") is True
+                      and events[-1].data.get("code") == "internal_error",
+                      str([(event.type, event.data) for event in events]))
+
+    def quiet(sink, cancel):
+        return orun.TurnResult(id="x", session_id="quiet", status="completed")
+
+    handle2 = manager.submit(session_id="quiet", work=quiet)
+    snapshot2 = manager.wait(handle2.id, timeout=5)
+    failures = _check(failures, "a result without a terminal synthesizes one",
+                      snapshot2 is not None and snapshot2.status == "completed"
+                      and snapshot2.synthetic_terminal,
+                      str(snapshot2))
+    return failures
+
+
+def test_turn_buffer_truncation() -> int:
+    """Overflow drops the oldest events; replay says so with a gap."""
+    failures = 0
+    manager = orun.TurnManager(buffer_events=2)
+
+    def work(sink, cancel):
+        for index in range(4):
+            sink(orun.RuntimeEvent(orun.MESSAGE_DELTA,
+                                   {"channel": "content", "text": str(index)}))
+        sink(orun.RuntimeEvent(orun.TURN_COMPLETED, {}))
+        return orun.TurnResult(id="x", session_id="s", status="completed")
+
+    handle = manager.submit(session_id="s", work=work)
+    snapshot = manager.wait(handle.id, timeout=5)
+    failures = _check(failures, "the record keeps only the newest events",
+                      snapshot is not None and snapshot.truncated
+                      and snapshot.oldest_seq == 4 and snapshot.latest_seq == 5,
+                      str(snapshot))
+    events = _collect(manager.subscribe(handle.id, after=0))
+    gap = events[0] if events else None
+    failures = _check(failures, "a stale replay starts with stream.gap",
+                      gap is not None and gap.type == orun.STREAM_GAP
+                      and gap.data.get("reason") == "truncated_buffer"
+                      and gap.seq == 3 and gap.data.get("oldest_seq") == 4,
+                      str(gap))
+    failures = _check(failures, "the gap is followed by the surviving events",
+                      [event.seq for event in events[1:]] == [4, 5],
+                      str([event.seq for event in events[1:]]))
+    return failures
+
+
+def test_turn_expired() -> int:
+    """A swept turn answers TurnExpired, not UnknownTurn."""
+    failures = 0
+    manager = orun.TurnManager(completed_ttl=0.0)
+
+    def work(sink, cancel):
+        sink(orun.RuntimeEvent(orun.TURN_COMPLETED, {}))
+        return orun.TurnResult(id="x", session_id="s", status="completed")
+
+    handle = manager.submit(session_id="s", work=work)
+    manager.wait(handle.id, timeout=5)   # get() sweeps it (ttl 0)
+    try:
+        manager.subscribe(handle.id)
+        raised = None
+    except orun.TurnExpired as exc:
+        raised = exc
+    failures = _check(failures, "a swept turn reports expired with its status",
+                      raised is not None and raised.status == "completed"
+                      and manager.get(handle.id) is None, repr(raised))
+    return failures
+
+
+def test_turn_manager_session_busy() -> int:
+    """One active turn per session; a competing submit is rejected."""
+    failures = 0
+    manager = orun.TurnManager()
+    gate = threading.Event()
+
+    def work(sink, cancel):
+        sink(orun.RuntimeEvent(orun.TURN_STARTED, {}))
+        gate.wait(5)
+        sink(orun.RuntimeEvent(orun.TURN_COMPLETED, {}))
+        return orun.TurnResult(id="x", session_id="s", status="completed")
+
+    handle = manager.submit(session_id="a", work=work)
+    try:
+        manager.submit(session_id="a", work=work)
+        raised = None
+    except orun.SessionBusy as exc:
+        raised = exc
+    failures = _check(failures, "a busy session names its active turn",
+                      raised is not None and raised.active_turn_id == handle.id,
+                      repr(raised))
+    other = manager.submit(session_id="b", work=work)
+    failures = _check(failures, "a different session runs in parallel",
+                      manager.active_for("b") == other.id)
+    gate.set()
+    manager.wait(handle.id, timeout=5)
+    manager.wait(other.id, timeout=5)
+    failures = _check(failures, "the session frees when the turn finishes",
+                      manager.active_for("a") is None
+                      and manager.active_for("b") is None)
+    again = manager.submit(session_id="a", work=work)
+    manager.wait(again.id, timeout=5)
+    failures = _check(failures, "a new turn is accepted after the finish",
+                      again.snapshot() is not None
+                      and again.snapshot().status == "completed")
+    return failures
+
+
+def test_turn_manager_max_active() -> int:
+    """The global active-turn cap rejects with TooManyTurns."""
+    failures = 0
+    manager = orun.TurnManager(max_active=1)
+    gate = threading.Event()
+
+    def work(sink, cancel):
+        sink(orun.RuntimeEvent(orun.TURN_STARTED, {}))
+        gate.wait(5)
+        sink(orun.RuntimeEvent(orun.TURN_COMPLETED, {}))
+        return orun.TurnResult(id="x", session_id="s", status="completed")
+
+    handle = manager.submit(session_id="a", work=work)
+    try:
+        manager.submit(session_id="b", work=work)
+        raised = None
+    except orun.TooManyTurns as exc:
+        raised = exc
+    failures = _check(failures, "the cap rejects with TooManyTurns",
+                      raised is not None and raised.limit == 1, repr(raised))
+    gate.set()
+    manager.wait(handle.id, timeout=5)
+    second = manager.submit(session_id="b", work=work)
+    manager.wait(second.id, timeout=5)
+    failures = _check(failures, "the cap frees after the turn finishes",
+                      second.snapshot() is not None
+                      and second.snapshot().status == "completed")
+    return failures
+
+
+def test_turn_manager_cancel() -> int:
+    """cancel() reaches the turn's token and ends it as cancelled."""
+    failures = 0
+    manager = orun.TurnManager()
+
+    def work(sink, cancel):
+        sink(orun.RuntimeEvent(orun.TURN_STARTED, {}))
+        for _ in range(200):
+            if cancel.cancelled:
+                sink(orun.RuntimeEvent(orun.TURN_CANCELLED, {"reason": "user"}))
+                return orun.TurnResult(id="x", session_id="s", status="cancelled")
+            time.sleep(0.005)
+        sink(orun.RuntimeEvent(orun.TURN_COMPLETED, {}))
+        return orun.TurnResult(id="x", session_id="s", status="completed")
+
+    handle = manager.submit(session_id="s", work=work, cancel=orun.CancelToken())
+    time.sleep(0.05)
+    failures = _check(failures, "cancel() reports the request landed",
+                      handle.cancel() is True)
+    snapshot = manager.wait(handle.id, timeout=5)
+    failures = _check(failures, "a cancelled turn ends cancelled",
+                      snapshot is not None and snapshot.status == "cancelled",
+                      str(snapshot))
+    failures = _check(failures, "cancelling an unknown turn is a no-op",
+                      manager.cancel("turn_nope") is False)
+    return failures
+
+
+def test_turn_subscriber_overflow() -> int:
+    """A slow subscriber gets one gap and is closed; the turn finishes."""
+    failures = 0
+    manager = orun.TurnManager(subscriber_queue=2)
+    gate = threading.Event()
+
+    def work(sink, cancel):
+        gate.wait(5)
+        sink(orun.RuntimeEvent(orun.TURN_STARTED, {}))
+        for index in range(12):
+            sink(orun.RuntimeEvent(orun.MESSAGE_DELTA,
+                                   {"channel": "content", "text": str(index)}))
+        sink(orun.RuntimeEvent(orun.TURN_COMPLETED, {}))
+        return orun.TurnResult(id="x", session_id="s", status="completed")
+
+    handle = manager.submit(session_id="s", work=work)
+    subscription = manager.subscribe(handle.id)
+    gate.set()
+    snapshot = manager.wait(handle.id, timeout=5)
+    events = _collect(subscription)
+    gaps = [event for event in events if event.type == orun.STREAM_GAP]
+    failures = _check(failures, "the slow subscriber is sent a gap and closed",
+                      subscription.closed and subscription.gap_pending
+                      and len(gaps) == 1
+                      and gaps[0].data.get("reason") == "slow_subscriber",
+                      str([(event.type, event.data) for event in events]))
+    failures = _check(failures, "the turn still completes with no reader",
+                      snapshot is not None and snapshot.status == "completed"
+                      and snapshot.seq == 14, str(snapshot))
+    return failures
+
+
+def test_turn_manager_shutdown() -> int:
+    """shutdown cancels active turns, joins, and refuses new ones."""
+    failures = 0
+    manager = orun.TurnManager()
+
+    def work(sink, cancel):
+        sink(orun.RuntimeEvent(orun.TURN_STARTED, {}))
+        for _ in range(400):
+            if cancel.cancelled:
+                sink(orun.RuntimeEvent(orun.TURN_CANCELLED, {"reason": "user"}))
+                return orun.TurnResult(id="x", session_id="s", status="cancelled")
+            time.sleep(0.005)
+        sink(orun.RuntimeEvent(orun.TURN_COMPLETED, {}))
+        return orun.TurnResult(id="x", session_id="s", status="completed")
+
+    handle = manager.submit(session_id="s", work=work, cancel=orun.CancelToken())
+    time.sleep(0.03)
+    manager.shutdown(timeout=5)
+    snapshot = manager.get(handle.id)
+    failures = _check(failures, "shutdown stops the active turn",
+                      snapshot is not None and snapshot.status == "cancelled",
+                      str(snapshot))
+    try:
+        manager.submit(session_id="s2", work=work)
+        raised = None
+    except orun.ManagerClosed as exc:
+        raised = exc
+    failures = _check(failures, "a shut-down manager refuses new turns",
+                      raised is not None, repr(raised))
+    manager.shutdown(timeout=0.1)  # idempotent
+    return failures
+
+
 def test_tool_support_warning() -> int:
     """The capability warning fires once per model, after turn.started."""
     failures = 0
@@ -7961,7 +8258,13 @@ if __name__ == "__main__":
              + test_session_store_same_session_writers()
              + test_session_store_without_fcntl()
              + test_python310_syntax() + test_turn_result_mapping()
-             + test_turn_event_envelope())
+             + test_turn_event_envelope()
+             + test_turn_manager_lifecycle()
+             + test_turn_manager_synthesized_terminal()
+             + test_turn_buffer_truncation() + test_turn_expired()
+             + test_turn_manager_session_busy() + test_turn_manager_max_active()
+             + test_turn_manager_cancel() + test_turn_subscriber_overflow()
+             + test_turn_manager_shutdown())
     if total:
         print(f"\n{total} failure(s)")
         sys.exit(1)
