@@ -13,6 +13,10 @@ Summary of changes in this version:
     `move_file`/`copy_file` (refuse an existing destination unless
     `overwrite=true`) and `delete_file` (trash-put only, never a permanent
     unlink). Path approval rules cover edit_file/make_dir/delete_file.
+  - The model can look things up without shelling out: `search_sessions`
+    searches the user's saved conversations (handy for "what did we decide
+    about X"), and `list_models` lists the installed models and marks the
+    loaded ones with their VRAM and unload time.
 
 Version: 1.36
 

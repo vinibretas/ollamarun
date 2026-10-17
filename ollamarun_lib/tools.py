@@ -44,7 +44,8 @@ from typing import Any, Callable, Optional
 import requests
 
 from .constants import DEFS_DIR, DEFS_OVERRIDE_DIR, console
-from .helpers import diff_preview, now_iso, short_stamp
+from .client import OllamaError
+from .helpers import canonical_model_name, diff_preview, human_bytes, now_iso, short_stamp
 
 FETCH_TIMEOUT = 30.0
 MAX_LIST_ENTRIES = 200
@@ -184,6 +185,11 @@ class ToolContext:
     timeout: float = 120.0
     max_output: int = 4000
     tts_remote: Optional[str] = None
+    #: Live handles injected by the REPL: the Ollama client (`list_models`,
+    #: `system_status`) and the session store (`search_sessions`). Typed Any,
+    #: so this module keeps its one-way dependency graph; None outside a REPL.
+    client: Any = None
+    store: Any = None
     #: URL -> formatted result, so a repeated fetch is answered from the cache
     #: (the model is told instead of silently re-downloading the same page).
     fetched: dict[str, str] = field(default_factory=dict)
@@ -455,6 +461,10 @@ def call_detail(name: str, args: dict[str, Any]) -> str:
         text = str(args.get("path") or "")
     elif name in {"move_file", "copy_file"}:
         text = f"{args.get('source')} → {args.get('destination')}"
+    elif name == "search_sessions":
+        text = str(args.get("query") or "")
+    elif name == "list_models":
+        text = "loaded only" if args.get("loaded_only") else "installed"
     elif name == "fetch_url":
         text = str(args.get("url") or "")
     elif name == "web_search":
@@ -1559,6 +1569,97 @@ def _handler_delete_file(args: dict[str, Any], ctx: ToolContext) -> str:
     return f"moved to trash: {path}"
 
 
+def _handler_search_sessions(args: dict[str, Any], ctx: ToolContext) -> str:
+    store = ctx.store
+    if store is None:
+        raise ToolError("session search is unavailable in this run")
+    query = str(args.get("query") or "").strip()
+    if not query:
+        raise ToolError("missing 'query'")
+    try:
+        limit = int(args.get("limit") or 5)
+    except (TypeError, ValueError):
+        limit = 5
+    limit = max(1, min(limit, 20))
+    try:
+        results = store.search(query, limit)
+    except OSError as exc:
+        raise ToolError(f"could not search sessions: {exc}") from exc
+    if not results:
+        return f"no saved session matches {query!r}"
+    lines = [f"{len(results)} saved session(s) matching {query!r}:"]
+    for session, snippet in results:
+        title = " ".join(str(session.display_title()).split())
+        lines.append(f"- {session.id} · {title} · model {session.model or '?'} "
+                     f"· updated {short_stamp(session.updated_at)}")
+        lines.append(f"  …{' '.join(str(snippet).split())}")
+    lines.append("(Use /show SESSION in the REPL to read a full conversation.)")
+    return "\n".join(lines)
+
+
+def _handler_list_models(args: dict[str, Any], ctx: ToolContext) -> str:
+    client = ctx.client
+    if client is None:
+        raise ToolError("no Ollama server connection in this run")
+    loaded_only = bool(args.get("loaded_only"))
+    try:
+        loaded = client.ps()
+        installed = [] if loaded_only else client.tags()
+    except OllamaError as exc:
+        raise ToolError(str(exc)) from exc
+    by_name = {canonical_model_name(entry.get("name", "")): entry for entry in loaded}
+    if loaded_only:
+        if not loaded:
+            return "no models currently loaded"
+        lines = [f"{len(loaded)} model(s) loaded on {client.base}:"]
+        for entry in loaded:
+            lines.append("- " + _resident_summary(entry))
+        return "\n".join(lines)
+    if not installed:
+        return f"no models installed on {client.base}"
+    lines = [f"{len(installed)} model(s) on {client.base} ({len(loaded)} loaded):"]
+    for entry in installed:
+        name = str(entry.get("name") or "?")
+        details = entry.get("details") or {}
+        bits = [name]
+        if entry.get("size"):
+            bits.append(human_bytes(entry["size"]))
+        if details.get("parameter_size"):
+            bits.append(str(details["parameter_size"]))
+        if details.get("quantization_level"):
+            bits.append(str(details["quantization_level"]))
+        if entry.get("modified_at"):
+            bits.append("modified " + short_stamp(entry["modified_at"]))
+        resident = by_name.get(canonical_model_name(name))
+        if resident is not None:
+            bits.append("loaded (" + ", ".join(_resident_details(resident)) + ")")
+        lines.append("- " + " · ".join(bits))
+    return "\n".join(lines)
+
+
+def _resident_summary(entry: dict[str, Any]) -> str:
+    """`name · X VRAM · unloads at TIME` for one /api/ps entry."""
+    name = str(entry.get("name") or entry.get("model") or "?")
+    return " · ".join([name, *_resident_details(entry)])
+
+
+def _resident_details(entry: dict[str, Any]) -> list[str]:
+    """The VRAM/keep-alive bits of one /api/ps entry, without the name."""
+    bits = []
+    size = entry.get("size")
+    vram = entry.get("size_vram")
+    if vram:
+        bit = f"{human_bytes(vram)} VRAM"
+        if size and size > vram:
+            bit += f" of {human_bytes(size)}"
+        bits.append(bit)
+    elif size:
+        bits.append(human_bytes(size))
+    if entry.get("expires_at"):
+        bits.append("unloads " + short_stamp(entry["expires_at"]))
+    return bits
+
+
 def _handler_fetch_url(args: dict[str, Any], ctx: ToolContext) -> str:
     url = str(args.get("url") or "").strip()
     parsed = urllib.parse.urlsplit(url)
@@ -1796,6 +1897,8 @@ HANDLERS: dict[str, Callable[[dict[str, Any], ToolContext], str]] = {
     "copy_file": _handler_copy_file,
     "delete_file": _handler_delete_file,
     "list_dir": _handler_list_dir,
+    "search_sessions": _handler_search_sessions,
+    "list_models": _handler_list_models,
     "web_search": _handler_web_search,
     "fetch_url": _handler_fetch_url,
     "speak": _handler_speak,

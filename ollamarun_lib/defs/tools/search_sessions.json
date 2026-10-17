@@ -1,0 +1,15 @@
+{
+  "name": "search_sessions",
+  "description": "Search the user's saved ollamarun conversations (titles, models, messages and thinking) for a word or phrase. Use it when the user refers to something discussed before, or asks what was decided earlier.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {"type": "string", "description": "word or phrase to look for"},
+      "limit": {"type": "integer", "description": "maximum sessions to return (default 5, max 20)"}
+    },
+    "required": ["query"]
+  },
+  "handler": "search_sessions",
+  "read_only": true,
+  "aliases": ["recall", "search_history", "session_search", "past_sessions"]
+}
