@@ -131,3 +131,15 @@ Dispositions: chunked request decoding is implemented in
 `phase-5-artifacts.md` / `plans/phase-9-compatibility.md`, alongside the
 recorded closures for features the backend cannot provide (`logprobs`,
 `logit_bias`, `audio`, `tool_choice: "required"`, `strict` tool schemas).
+
+## Closure
+
+Closed at v1.51 with the full `/v1` suite green, including the official
+OpenAI SDK round-trip (`test_openai_sdk`; the package is a test-only
+dependency). The v1.48 review fixes and the strict-validation matrix
+above are in place, and nothing in this phase is outstanding. The
+deferred items stay assigned: chunked request bodies to
+`phase-6-security-operations.md`; `/v1/embeddings`, `n > 1`,
+`parallel_tool_calls` and remote image URLs to
+`phase-9-compatibility.md`. Until Phase 9 lands, `parallel_tool_calls` is
+accepted and ignored, which the README states explicitly.
