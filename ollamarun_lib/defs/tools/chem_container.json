@@ -1,0 +1,15 @@
+{
+  "name": "chem_container",
+  "description": "Full record of one inventory container: name, CAS, location, amount, supplier, formula, custom fields and GHS codes.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "id": {"type": "integer", "description": "container id"}
+    },
+    "required": ["id"]
+  },
+  "handler": "chem_container",
+  "read_only": true,
+  "requires": "chem",
+  "aliases": ["chem_info", "container_info", "inventory_info"]
+}

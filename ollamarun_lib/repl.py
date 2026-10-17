@@ -361,7 +361,8 @@ class Repl:
             tts_remote=config.get("tts_remote") or None,
             client=client, store=store,
             ssh_target=remote_node(session.remote, config) if session.remote else None,
-            ssh_user=config.get("remote_ssh_user"))
+            ssh_user=config.get("remote_ssh_user"),
+            chem_inventory=config.get("chem_inventory") or None)
         tts_option: Optional[bool]
         if not config.get("tts_tools", True):
             tts_option = False
@@ -369,7 +370,14 @@ class Repl:
             tts_option = True  # explicit path: register, the handler reports if missing
         else:
             tts_option = None  # auto-detect a tts-remote binary
-        self.tool_registry = default_registry(tts=tts_option)
+        chem_option: Optional[bool]
+        if not config.get("chem_tools", True):
+            chem_option = False
+        elif config.get("chem_inventory") and config["chem_inventory"] != "chemInventoryAPI":
+            chem_option = True  # explicit path: register, the handler reports if missing
+        else:
+            chem_option = None  # auto-detect the chemInventoryAPI CLI
+        self.tool_registry = default_registry(tts=tts_option, chem=chem_option)
         self._tool_support_checked = False
         self._format_tools_warned = False
         if getattr(args, "no_speak", False):

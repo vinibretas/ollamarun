@@ -424,7 +424,8 @@ def test_tool_definitions() -> int:
     defs = orun.tool_definitions()
     names = sorted(definition.name for definition in defs)
     failures = _check(failures, "the shipped tool definitions load",
-                      names == ["copy_file", "delete_file", "edit_file",
+                      names == ["chem_container", "chem_locations", "chem_search",
+                                "copy_file", "delete_file", "edit_file",
                                 "fetch_url", "list_dir", "list_models",
                                 "list_voices", "make_dir", "move_file",
                                 "read_file", "run_python", "run_shell",
@@ -444,13 +445,23 @@ def test_tool_definitions() -> int:
                       run_python is not None
                       and "instead of doing math mentally" in run_python.description,
                       str(run_python))
-    with_search = orun.default_registry(tts=False, search=True)
-    without_search = orun.default_registry(tts=False, search=False)
+    with_search = orun.default_registry(tts=False, search=True, chem=False)
+    without_search = orun.default_registry(tts=False, search=False, chem=False)
     failures = _check(failures, "requires gates web_search and the speech tools",
                       "web_search" in with_search
                       and "web_search" not in without_search
                       and "speak" not in without_search
                       and "fetch_url" in without_search)
+    with_chem = orun.default_registry(tts=False, search=False, chem=True)
+    without_chem = orun.default_registry(tts=False, search=False, chem=False)
+    failures = _check(failures, "requires gates the chem inventory tools",
+                      "chem_search" in with_chem and "chem_container" in with_chem
+                      and "chem_locations" in with_chem
+                      and "chem_search" not in without_chem)
+    failures = _check(failures, "the chem tools are read-only",
+                      with_chem["chem_search"].read_only
+                      and with_chem["chem_container"].read_only
+                      and with_chem["chem_locations"].read_only)
     failures = _check(failures, "aliases are built from the definitions",
                       orun.resolve_tool_alias("google") == "web_search"
                       and orun.resolve_tool_alias("browse") == "fetch_url"
@@ -4178,6 +4189,93 @@ def test_system_status_tool() -> int:
     return failures
 
 
+def _fake_chem(directory: str) -> Path:
+    """A stand-in chemInventoryAPI answering the read commands with canned JSON."""
+    script = Path(directory) / "chemInventoryAPI"
+    script.write_text(
+        "#! /usr/bin/env python3\n"
+        "import json, sys\n"
+        "args = sys.argv[1:]\n"
+        "if args[:1] == ['search']:\n"
+        "    if len(args) > 1 and args[1] == 'boom':\n"
+        "        print('error: boom', file=sys.stderr)\n"
+        "        sys.exit(2)\n"
+        "    payload = {'containers': [\n"
+        "        {'id': 13368670, 'name': 'Acetone', 'cas': '67-64-1', 'size': '500',\n"
+        "         'unit': 'mL', 'locationtext': 'Shelf 2', 'barcode': 'B1',\n"
+        "         'supplier': 'Sigma'},\n"
+        "        {'id': 7, 'name': 'Acetone-d6', 'cas': '666-52-4', 'size': '10',\n"
+        "         'unit': 'g', 'locationtext': 'Cabinet A'}],\n"
+        "        'orders': [{'id': 3}]}\n"
+        "elif args[:2] == ['container', 'info']:\n"
+        "    payload = {'id': int(args[2]), 'containername': 'Acetone', 'cas': '67-64-1',\n"
+        "               'locationString': 'Shelf 2', 'size': '500', 'unit': 'mL',\n"
+        "               'supplier': 'Sigma', 'molecularformula': 'C3H6O',\n"
+        "               'molecularweight': '58.08', 'cf-1': '2026-12-31',\n"
+        "               'ghs': [{'hazardstatements': 'H225|H319', 'source': 'Sigma'}]}\n"
+        "elif args[:2] == ['location', 'list']:\n"
+        "    payload = [{'id': 1, 'name': 'Room A', 'numbercontainers': 3, 'parent': 0},\n"
+        "               {'id': 2, 'name': 'Shelf 2', 'numbercontainers': 1, 'parent': 1}]\n"
+        "elif args[:2] == ['location', 'containers']:\n"
+        "    payload = {'containers': [{'id': 5, 'name': 'NaOH', 'cas': '1310-73-2',\n"
+        "                               'size': '1', 'unit': 'kg',\n"
+        "                               'locationtext': 'Shelf 2'}], 'orders': []}\n"
+        "else:\n"
+        "    print('error: unknown command', file=sys.stderr)\n"
+        "    sys.exit(2)\n"
+        "print(json.dumps(payload))\n")
+    script.chmod(0o755)
+    return script
+
+
+def test_chem_tools() -> int:
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        fake = _fake_chem(tmp)
+        registry = orun.default_registry(tts=False, chem=True)
+        ctx = orun.ToolContext(cwd=tmp, timeout=10, max_output=4000,
+                               chem_inventory=str(fake))
+        outcome = orun.execute_tool(registry["chem_search"], {"query": "acetone"}, ctx)
+        failures = _check(failures, "chem_search lists matching containers",
+                          outcome.ok and "#13368670" in outcome.text
+                          and "Acetone" in outcome.text and "CAS 67-64-1" in outcome.text
+                          and "500 mL" in outcome.text and "at Shelf 2" in outcome.text
+                          and "1 matching order request(s)" in outcome.text,
+                          outcome.text)
+        outcome = orun.execute_tool(registry["chem_container"], {"id": 13368670}, ctx)
+        failures = _check(failures, "chem_container formats the full record",
+                          outcome.ok and "container #13368670" in outcome.text
+                          and "formula: C3H6O" in outcome.text
+                          and "GHS: H225, H319" in outcome.text
+                          and "custom fields: 1=2026-12-31" in outcome.text,
+                          outcome.text)
+        outcome = orun.execute_tool(registry["chem_locations"], {}, ctx)
+        failures = _check(failures, "chem_locations renders the location tree",
+                          outcome.ok and "Room A (#1, 3)" in outcome.text
+                          and "  Shelf 2 (#2, 1)" in outcome.text, outcome.text)
+        outcome = orun.execute_tool(registry["chem_locations"],
+                                    {"location": "Shelf 2"}, ctx)
+        failures = _check(failures, "chem_locations lists one location's containers",
+                          outcome.ok and "NaOH" in outcome.text
+                          and "1310-73-2" in outcome.text, outcome.text)
+        outcome = orun.execute_tool(registry["chem_search"], {"query": "boom"}, ctx)
+        failures = _check(failures, "chem_search surfaces CLI errors",
+                          not outcome.ok and "error: boom" in outcome.text, outcome.text)
+        missing = orun.execute_tool(registry["chem_container"], {}, ctx)
+        failures = _check(failures, "chem_container requires an id",
+                          not missing.ok and "missing 'id'" in missing.text, missing.text)
+        failures = _check(failures, "the chem tools run unattended (read-only)",
+                          orun.approval_decision(registry["chem_search"], {"query": "x"},
+                                                 policy="allowlist").allowed
+                          and orun.approval_decision(registry["chem_locations"], {},
+                                                     policy="allowlist").allowed)
+        failures = _check(failures, "find_chem_inventory honors the configured path",
+                          orun.find_chem_inventory(ctx) == str(fake))
+        failures = _check(failures, "the chem alias resolves onto chem_search",
+                          orun.resolve_tool_alias("inventory_search") == "chem_search")
+    return failures
+
+
 _MINIMAL_PDF = b"""%PDF-1.4
 1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
 2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
@@ -6284,7 +6382,7 @@ if __name__ == "__main__":
              + test_gpu_layers() + test_slash_completer()
              + test_tools_policy() + test_tool_execution() + test_web_tools()
              + test_file_tools() + test_session_model_tools()
-             + test_system_status_tool()
+             + test_system_status_tool() + test_chem_tools()
              + test_tool_loop() + test_tool_loop_separation()
              + test_tool_commands() + test_approval_rules()
              + test_tool_payloads() + test_tool_cli_flags()
