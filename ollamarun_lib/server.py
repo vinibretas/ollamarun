@@ -30,14 +30,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Optional, Union
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from .constants import VERSION
+from .constants import (VERSION, DEFAULT_SERVE_BODY_LIMIT,
+                        DEFAULT_SERVE_PING_INTERVAL,
+                        DEFAULT_SERVE_REQUEST_TIMEOUT)
 
 #: Cap on one request body, checked before the body is read.
-DEFAULT_BODY_LIMIT = 32 * 1024 * 1024
+DEFAULT_BODY_LIMIT = DEFAULT_SERVE_BODY_LIMIT
 #: How long an SSE stream may stay silent before a `: ping` comment goes out.
-DEFAULT_PING_INTERVAL = 15.0
+DEFAULT_PING_INTERVAL = DEFAULT_SERVE_PING_INTERVAL
 #: Socket timeout for one request (a stalled client is dropped, not queued).
-DEFAULT_REQUEST_TIMEOUT = 30.0
+DEFAULT_REQUEST_TIMEOUT = DEFAULT_SERVE_REQUEST_TIMEOUT
 
 logger = logging.getLogger("ollamarun.server")
 
