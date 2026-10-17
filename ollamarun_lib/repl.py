@@ -1150,17 +1150,20 @@ class Repl:
         if self.headless:
             # A remote turn must not probe/inline local files through `@path`
             # mentions or spend an extra model call on an auto title.
+            expanded = text
             included: list[str] = []
             warnings: list[str] = []
         else:
-            _expanded, included, warnings = expand_file_mentions(
+            expanded, included, warnings = expand_file_mentions(
                 text, max_kb=self.max_file_kb)
         for warning in warnings:
             if not self.headless:
                 console.print(f"[warn]{escape(warning)}[/warn]")
         images = self.pending_images
         self.pending_images = []
-        self.session.add_message("user", text, images=images or None,
+        # The bubble shows what the user typed; the stored (and sent) message
+        # carries the inlined <file> blocks.
+        self.session.add_message("user", expanded, images=images or None,
                                  files=included or None)
         if not self.no_save:
             self.store.save(self.session)

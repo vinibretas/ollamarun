@@ -93,7 +93,8 @@ def run_once(args: argparse.Namespace, config: dict[str, Any], client: OllamaCli
         console.print(f"[warn]{escape(warning)}[/warn]")
     images = list(repl.pending_images)
     repl.pending_images = []
-    session.add_message("user", prompt_text, images=images or None, files=included or None)
+    session.add_message("user", augmented, images=images or None,
+                        files=included or None)
     if not args.no_save:
         store.save(session)
     if not session.title:
