@@ -172,6 +172,7 @@ TOOL_COLORS: dict[str, str] = {
     "list_dir": "magenta",
     "search_sessions": "medium_turquoise",
     "list_models": "wheat1",
+    "system_status": "steel_blue1",
     "fetch_url": "spring_green2",
     "web_search": "hot_pink2",
     "speak": "salmon1",

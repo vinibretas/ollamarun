@@ -45,7 +45,10 @@ import requests
 
 from .constants import DEFS_DIR, DEFS_OVERRIDE_DIR, console
 from .client import OllamaError
-from .helpers import canonical_model_name, diff_preview, human_bytes, now_iso, short_stamp
+from .helpers import (canonical_model_name, diff_preview, host_is_self,
+                      human_bytes, is_local_host, local_free_disk,
+                      local_gpu_probe, local_ram_probe, now_iso, short_stamp,
+                      ssh_free_disk, ssh_gpu_probe, ssh_ram_probe)
 
 FETCH_TIMEOUT = 30.0
 MAX_LIST_ENTRIES = 200
@@ -190,6 +193,10 @@ class ToolContext:
     #: so this module keeps its one-way dependency graph; None outside a REPL.
     client: Any = None
     store: Any = None
+    #: `--remote` details for probing the machine running Ollama: the ssh
+    #: target/user, or None on the local machine.
+    ssh_target: Optional[str] = None
+    ssh_user: Optional[str] = None
     #: URL -> formatted result, so a repeated fetch is answered from the cache
     #: (the model is told instead of silently re-downloading the same page).
     fetched: dict[str, str] = field(default_factory=dict)
@@ -465,6 +472,8 @@ def call_detail(name: str, args: dict[str, Any]) -> str:
         text = str(args.get("query") or "")
     elif name == "list_models":
         text = "loaded only" if args.get("loaded_only") else "installed"
+    elif name == "system_status":
+        text = str(args.get("target") or "ollama")
     elif name == "fetch_url":
         text = str(args.get("url") or "")
     elif name == "web_search":
@@ -1660,6 +1669,59 @@ def _resident_details(entry: dict[str, Any]) -> list[str]:
     return bits
 
 
+def _handler_system_status(args: dict[str, Any], ctx: ToolContext) -> str:
+    target = str(args.get("target") or "ollama").strip().lower()
+    if target not in {"ollama", "local"}:
+        raise ToolError("'target' must be 'ollama' or 'local'")
+    base = str(getattr(ctx.client, "base", "") or "")
+    ssh_target = None
+    if target == "ollama" and base and not (host_is_self(base)
+                                            or is_local_host(base)):
+        if not ctx.ssh_target:
+            raise ToolError(
+                f"the Ollama host {base} is remote; run with --remote NAME so "
+                f"its resources can be probed over ssh, or pass target=\"local\" "
+                f"for this machine")
+        ssh_target = ctx.ssh_target
+    if target == "local":
+        label = "this machine"
+    elif ssh_target:
+        label = f"{ctx.ssh_target} (ollama at {base})"
+    elif base:
+        label = f"this machine (ollama at {base})"
+    else:
+        label = "this machine"
+    lines = [label]
+
+    if ssh_target:
+        ram = ssh_ram_probe(ssh_target, user=ctx.ssh_user)
+        gpu = ssh_gpu_probe(ssh_target, user=ctx.ssh_user)
+        disk = ssh_free_disk(ssh_target, user=ctx.ssh_user)
+    else:
+        ram = local_ram_probe()
+        gpu = local_gpu_probe()
+        disk = local_free_disk()
+    if ram:
+        total, available = ram
+        lines.append(f"RAM: {human_bytes(available)} free of {human_bytes(total)}")
+    else:
+        lines.append("RAM: unknown")
+    devices = gpu[0] if gpu else []
+    if devices:
+        for index, (total_mb, free_mb) in enumerate(devices):
+            lines.append(f"GPU {index}: {human_bytes(free_mb * 1024 * 1024)} free "
+                         f"of {human_bytes(total_mb * 1024 * 1024)}")
+    else:
+        lines.append("GPU: no nvidia-smi data")
+    if disk:
+        free, total, where = disk
+        lines.append(f"disk (models): {human_bytes(free)} free of {human_bytes(total)} "
+                     f"at {where}")
+    else:
+        lines.append("disk (models): unknown")
+    return "\n".join(lines)
+
+
 def _handler_fetch_url(args: dict[str, Any], ctx: ToolContext) -> str:
     url = str(args.get("url") or "").strip()
     parsed = urllib.parse.urlsplit(url)
@@ -1899,6 +1961,7 @@ HANDLERS: dict[str, Callable[[dict[str, Any], ToolContext], str]] = {
     "list_dir": _handler_list_dir,
     "search_sessions": _handler_search_sessions,
     "list_models": _handler_list_models,
+    "system_status": _handler_system_status,
     "web_search": _handler_web_search,
     "fetch_url": _handler_fetch_url,
     "speak": _handler_speak,

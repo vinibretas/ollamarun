@@ -356,10 +356,12 @@ class Repl:
             tool_max_output = int(config.get("tools_max_output") or 4000)
         except (TypeError, ValueError):
             tool_max_output = 4000
-        self.tool_ctx = ToolContext(cwd=os.getcwd(), timeout=tool_timeout,
-                                    max_output=tool_max_output,
-                                    tts_remote=config.get("tts_remote") or None,
-                                    client=client, store=store)
+        self.tool_ctx = ToolContext(
+            cwd=os.getcwd(), timeout=tool_timeout, max_output=tool_max_output,
+            tts_remote=config.get("tts_remote") or None,
+            client=client, store=store,
+            ssh_target=remote_node(session.remote, config) if session.remote else None,
+            ssh_user=config.get("remote_ssh_user"))
         tts_option: Optional[bool]
         if not config.get("tts_tools", True):
             tts_option = False
