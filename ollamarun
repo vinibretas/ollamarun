@@ -2,6 +2,38 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.49
+
+Summary of changes in this version:
+  - The native agent API landed (`ollamarun_lib/agent_api.py`): a client
+    starts a full agent turn (`POST /v1/agent/turns`, 202) and follows it
+    over SSE (`GET /v1/agent/turns/{id}/events`; typed events with
+    `<turn>:<seq>` ids, `?after=`/`Last-Event-ID` replay, `stream.gap`
+    passthrough), checks its snapshot (404 unknown / 410 swept), cancels
+    it explicitly and browses or edits the persistent sessions
+    (`/v1/sessions` CRUD). Turns run through the existing
+    `TurnManager`/`AgentRuntime` with a headless `Repl`, so the CLI's
+    policy engine applies unchanged: `approval: "policy"` (the default)
+    runs allowlisted/rule-covered calls and denies the rest with a note,
+    while `approval: "interactive"` parks undecided calls in
+    `waiting_approval` — `approval.required` carries an `approval_id` for
+    `POST /v1/agent/approvals/{id}` (run/remember/rule/auto/deny; the
+    first decision wins, duplicates are 409, a timeout denies with
+    "approval timed out"). A disconnect only unsubscribes (unless
+    `cancel_on_disconnect`), while cancel/shutdown abort the in-flight
+    generation, kill cancellable subprocesses and resolve waiting
+    approvals as cancelled. One active turn per session (409
+    `session_busy` with the active id), a global cap (429) and an
+    optional `serve_turn_timeout` (reason `timeout`). Also in this
+    version: `policy_check` (the shared non-interactive half of the
+    approval gate, now used by both the CLI and the API), the headless
+    context warning/auto-compaction at turn start (closing Phase 1b item
+    13 through the runtime's `on_started` hook), `CancelToken.reason` so
+    a timeout is distinguishable from a user stop, and turn snapshots
+    with OpenAI-shaped usage plus the detailed stats. Full suite green;
+    live-checked against Ollama 0.40 (policy-mode turn, interactive
+    park/resolve, event replay, session CRUD and cleanup).
+
 Version: 1.48
 
 Summary of changes in this version:
