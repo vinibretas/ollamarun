@@ -41,6 +41,8 @@ from .artifacts import ArtifactStore, require_vision, resolve_content_parts
 from .client import OllamaError
 from .events import TERMINAL_EVENTS, TURN_WARNING, RuntimeEvent
 from .helpers import CancelToken, now_iso
+from .interactive import (model_block_count, model_context_length,
+                          parse_gpu_layers_spec, resolve_gpu_layers)
 from .openai_api import (classify_backend_error, model_listed,
                          translate_error, usage_from)
 from .renderer import GenerationResult, HeadlessRenderer
@@ -64,12 +66,14 @@ _UPLOAD_FIELDS = frozenset({"filename", "media_type", "data_base64"})
 _TURN_FIELDS = frozenset({"session_id", "model", "messages", "persist",
                           "settings"})
 _SETTINGS_FIELDS = frozenset({"tools", "max_rounds", "approval", "system",
-                              "parameters", "cancel_on_disconnect"})
+                              "parameters", "num_ctx", "gpu_layers",
+                              "cancel_on_disconnect"})
 _MESSAGE_ROLES = frozenset({"user", "assistant"})
 _APPROVAL_ACTIONS = frozenset({"run", "remember", "rule", "auto", "deny"})
 
 #: Fields `PATCH /v1/sessions/{id}` accepts.
-_SESSION_PATCH_FIELDS = frozenset({"title", "model", "system", "tags"})
+_SESSION_PATCH_FIELDS = frozenset({"title", "model", "system", "tags",
+                                   "num_ctx", "gpu_layers"})
 
 
 @dataclass
@@ -85,6 +89,10 @@ class AgentTurnRequest:
     approval: str = "policy"            # "policy" | "interactive"
     system: Optional[str] = None
     parameters: dict[str, Any] = field(default_factory=dict)
+    #: Session mutations: an explicit context and placement spec (the fit
+    #: strings from the context-control phase join here later).
+    num_ctx: Optional[int] = None
+    gpu_layers: Optional[str] = None
     cancel_on_disconnect: bool = False
 
 
@@ -128,6 +136,58 @@ def _valid_option(value: Any) -> bool:
     if isinstance(value, list):
         return all(isinstance(item, (bool, int, float, str)) for item in value)
     return False
+
+
+def _show_data(client: Any, model: str) -> Optional[dict[str, Any]]:
+    """`/api/show` for validation; None when it cannot be read."""
+    if not model:
+        return None
+    try:
+        data = client.show(model)
+    except (OllamaError, TypeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _validate_num_ctx(value: Any, *, show_data: Optional[dict[str, Any]],
+                      param: str) -> Optional[int]:
+    """A positive num_ctx, refused past the model's trained maximum.
+
+    The API is strict where the CLI caps with a warning: silently altering a
+    requested value is worse than naming the ceiling.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise _invalid("num_ctx must be a positive integer or null", param=param,
+                       code="unsupported_value")
+    maximum = model_context_length(show_data) if show_data else None
+    if maximum and value > maximum:
+        raise _invalid(
+            f"num_ctx {value} exceeds the model's trained maximum ({maximum})",
+            param=param, code="unsupported_value")
+    return value
+
+
+def _validate_gpu_layers(value: Any, *, show_data: Optional[dict[str, Any]],
+                         param: str) -> Optional[str]:
+    """A gpu-layers spec the payload path can resolve for this model."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise _invalid("gpu_layers must be a spec string or null", param=param,
+                       code="unsupported_value")
+    spec = value.strip()
+    try:
+        parse_gpu_layers_spec(spec)
+    except ValueError as exc:
+        raise _invalid(str(exc), param=param, code="unsupported_value")
+    try:
+        resolve_gpu_layers(spec,
+                           model_block_count(show_data) if show_data else None)
+    except (ValueError, RuntimeError) as exc:
+        raise _invalid(str(exc), param=param, code="unsupported_value")
+    return spec
 
 
 def parse_agent_turn(body: Any, *, default_max_rounds: int = 8
@@ -216,6 +276,16 @@ def parse_agent_turn(body: Any, *, default_max_rounds: int = 8
     if system is not None and not isinstance(system, str):
         raise _invalid("settings.system must be a string or null",
                        param="settings.system")
+    num_ctx = settings.get("num_ctx")
+    if num_ctx is not None and (isinstance(num_ctx, bool)
+                                or not isinstance(num_ctx, int) or num_ctx < 1):
+        raise _invalid("settings.num_ctx must be a positive integer",
+                       param="settings.num_ctx", code="unsupported_value")
+    gpu_layers = settings.get("gpu_layers")
+    if gpu_layers is not None and (not isinstance(gpu_layers, str)
+                                   or not gpu_layers.strip()):
+        raise _invalid("settings.gpu_layers must be a spec string or null",
+                       param="settings.gpu_layers", code="unsupported_value")
     parameters = settings.get("parameters", {})
     if not isinstance(parameters, dict):
         raise _invalid("settings.parameters must be an object",
@@ -235,7 +305,7 @@ def parse_agent_turn(body: Any, *, default_max_rounds: int = 8
         session_id=session_id, model=model, messages=parsed_messages,
         persist=bool(persist), tools=bool(tools), max_rounds=int(max_rounds),
         approval=str(approval), system=system,
-        parameters=dict(parameters),
+        parameters=dict(parameters), num_ctx=num_ctx, gpu_layers=gpu_layers,
         cancel_on_disconnect=bool(cancel_on_disconnect))
 
 
@@ -441,6 +511,20 @@ class AgentApi:
             raise ApiError(404, f"model {model!r} not found",
                            code="model_not_found", param="model")
 
+    def _unload_resident(self, client: Any, model: str) -> None:
+        """Unload a resident model after a placement change (never raises).
+
+        `/gpu-layers` parity: the next request reloads with the new
+        placement instead of the old one silently persisting.
+        """
+        if not model:
+            return
+        try:
+            if client.is_resident(model):
+                client.unload(model)
+        except (OllamaError, TypeError, ValueError):
+            pass
+
     def _session_rules(self, session: Session) -> list[ToolRule]:
         rules: list[ToolRule] = []
         for entry in session.tool_rules or []:
@@ -497,6 +581,20 @@ class AgentApi:
         if spec.parameters:
             session.parameters = {**(session.parameters or {}),
                                   **spec.parameters}
+        if spec.num_ctx is not None or spec.gpu_layers is not None:
+            show = _show_data(client, session.model)
+            if spec.num_ctx is not None:
+                value = _validate_num_ctx(spec.num_ctx, show_data=show,
+                                          param="settings.num_ctx")
+                session.parameters = {**(session.parameters or {})}
+                session.parameters["num_ctx"] = value
+            if spec.gpu_layers is not None:
+                value = _validate_gpu_layers(spec.gpu_layers, show_data=show,
+                                             param="settings.gpu_layers")
+                changed = value != session.gpu_layers
+                session.gpu_layers = value
+                if changed:
+                    self._unload_resident(client, session.model)
 
         # Resolve every message's content parts before the turn is accepted:
         # a missing artifact id, an oversize image and a text/file mapping are
@@ -1050,11 +1148,35 @@ class AgentApi:
                            param=sorted(unknown)[0], code="unknown_field")
         if "title" in body:
             session.title = _optional_string(body["title"], "title")
+        client: Optional[Any] = None
+
+        def _client() -> Any:
+            nonlocal client
+            if client is None:
+                client = self._client_factory()
+            return client
+
         if "model" in body:
             model = _optional_string(body["model"], "model").strip()
             if model:
-                self._ensure_model(self._client_factory(), model)
+                self._ensure_model(_client(), model)
             session.model = model
+        if "num_ctx" in body or "gpu_layers" in body:
+            show = _show_data(_client(), session.model)
+            if "num_ctx" in body:
+                value = _validate_num_ctx(body["num_ctx"], show_data=show,
+                                          param="num_ctx")
+                session.parameters = {**(session.parameters or {})}
+                if value is None:
+                    session.parameters.pop("num_ctx", None)
+                else:
+                    session.parameters["num_ctx"] = value
+            if "gpu_layers" in body:
+                value = _validate_gpu_layers(body["gpu_layers"], show_data=show,
+                                             param="gpu_layers")
+                if value != session.gpu_layers:
+                    session.gpu_layers = value
+                    self._unload_resident(_client(), session.model)
         if "system" in body:
             system = body["system"]
             if system is not None and not isinstance(system, str):
