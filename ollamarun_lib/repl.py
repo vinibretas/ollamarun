@@ -91,7 +91,7 @@ from .interactive import (
     resolve_gpu_layers,
     sort_models,
 )
-from .events import TOOL_CALL, TOOL_RESULT, TURN_ERROR, TURN_WARNING, RuntimeEvent
+from .events import TOOL_CALL, TOOL_RESULT, TURN_ERROR, RuntimeEvent
 from .renderer import (GenerationResult, HeadlessRenderer, Renderer, StreamSink,
                        thinking_panel, tool_call_panel, tool_result_panel,
                        user_message_box)
@@ -469,7 +469,7 @@ class Repl:
         else:
             chem_option = None  # auto-detect the chemInventoryAPI CLI
         self.tool_registry = default_registry(tts=tts_option, chem=chem_option)
-        self._tool_support_checked = False
+        self._tool_support_seen: set[str] = set()
         self._format_tools_warned = False
         if getattr(args, "no_speak", False):
             self.tts_auto = False
@@ -738,21 +738,6 @@ class Repl:
             return []
         return build_tool_schemas(self.tool_registry, set(self.session.tools_disabled))
 
-    def _check_tool_support(self) -> None:
-        if not self.tools_enabled or self._tool_support_checked:
-            return
-        self._tool_support_checked = True
-        try:
-            capabilities = self.client.capabilities(self.session.model)
-        except Exception:  # capability probing must never break a turn
-            return
-        if capabilities and "tools" not in capabilities:
-            message = (f"{self.session.model} does not advertise tool support — "
-                       "tool calls may not work")
-            self._emit_event(RuntimeEvent(TURN_WARNING, {"message": message}))
-            if not self.headless:
-                console.print(f"[warn]{escape(message)}[/warn]")
-
     def _session_rules(self) -> list[ToolRule]:
         rules: list[ToolRule] = []
         for entry in self.session.tool_rules or []:
@@ -1004,7 +989,6 @@ class Repl:
             self._preload_thread.join()
             if console.is_terminal and not self.headless:
                 self._maybe_show_ps()
-        self._check_tool_support()
         self._turn_started = time.monotonic()
         self.set_state("generating")
         self.ui.notify("turn_start")
@@ -1055,11 +1039,13 @@ class Repl:
 
         Built fresh for every turn (and for every direct `_execute_tool_calls`
         call) so a test or front end that swaps `client`/`ui`/`stream_sink`
-        between turns is honoured, and so mid-turn `/tools` changes are still
-        read on the next round through the callables below.
+        between turns is honoured, and so mid-turn `/tools` and `/render`
+        changes are still read through the callables below.
         """
-        quiet = (self.headless or self.render_mode == "raw") \
-            if quiet_tools is None else bool(quiet_tools)
+        if quiet_tools is None:
+            quiet = lambda: self.headless or self.render_mode == "raw"
+        else:
+            quiet = lambda: bool(quiet_tools)
         settings = TurnSettings(
             mode="agent",
             no_save=self.no_save,
@@ -1082,6 +1068,7 @@ class Repl:
             present_round=presenter or self._present_round,
             approver=self._approve_request,
             execute_tools=self._execute_tool_calls,
+            tool_support_checked=self._tool_support_seen,
             on_event=self._event_printer(quiet=quiet),
             on_warning=self._warning_printer(),
             drain_boundary=self.drain_boundary_messages,
@@ -1091,17 +1078,19 @@ class Repl:
             notify=self.ui.notify,
         )
 
-    def _event_printer(self, *, quiet: bool) -> Callable[[RuntimeEvent], None]:
+    def _event_printer(self, *, quiet: Callable[[], bool]
+                       ) -> Callable[[RuntimeEvent], None]:
         """Forward every event to the sink, and print the console panels.
 
         The panels are exactly the ones the pre-runtime loop printed: the
         "running…" line, tool-result panels (skipping the silent
-        interrupted-tool notices), and the one-line error.
+        interrupted-tool notices), and the one-line error. `quiet` is a
+        callable so `/render raw` mid-turn takes effect on the next event.
         """
         def handle(event: RuntimeEvent) -> None:
             if self.event_sink is not None:
                 self.event_sink(event)
-            if quiet:
+            if quiet():
                 return
             data = event.data
             name = str(data.get("name") or "tool")

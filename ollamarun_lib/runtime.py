@@ -45,6 +45,10 @@ def _always_true() -> bool:
     return True
 
 
+def _always_false() -> bool:
+    return False
+
+
 def _default_rounds() -> int:
     return 8
 
@@ -55,14 +59,22 @@ class TurnSettings:
 
     `tools_enabled`/`tools_max_rounds` are callables so a command run while
     the turn streams (`/tools on|off`, an immediate TUI command) is honoured
-    on the next round exactly as it was before the extraction.
+    on the next round exactly as it was before the extraction;
+    `quiet_tools` is a callable for the same reason (`/render raw` while a
+    turn runs must silence the tool panels from the next event on).
+
+    Event ownership: the runtime emits `tool.call` before an approval is
+    requested and `approval.resolved` once the approver answers. The
+    approver implementation owns `approval.required` -- only it knows
+    whether the request actually parks for a human -- and
+    `approval_notice()` builds that event.
     """
 
     mode: str = "agent"                 # "model" | "agent"
     no_save: bool = False
     timeout: float = DEFAULT_TIMEOUT
     allow_prompt: bool = True
-    quiet_tools: bool = False
+    quiet_tools: Callable[[], bool] = _always_false
     tools_enabled: Callable[[], bool] = _always_true
     tools_max_rounds: Callable[[], int] = _default_rounds
 
@@ -134,6 +146,9 @@ class TurnHooks:
     cancel: Optional[CancelToken] = None
     registry: dict[str, Any] = field(default_factory=dict)
     tool_ctx: Optional[ToolContext] = None
+    #: Models the host has already probed for tool support; the runtime warns
+    #: once per model, not once per turn. The host owns the set.
+    tool_support_checked: Optional[set[str]] = None
     execute_tools: Optional[Callable[..., bool]] = None
     on_event: Optional[Callable[[RuntimeEvent], None]] = None
     on_warning: Optional[Callable[[str], None]] = None
@@ -175,6 +190,30 @@ class AgentRuntime:
     def _cancelled(self) -> bool:
         return self.hooks.cancel is not None and self.hooks.cancel.cancelled
 
+    def check_tool_support(self) -> None:
+        """Warn (once per host, per model) when the model cannot call tools.
+
+        The "seen" set lives in `TurnHooks.tool_support_checked` so the
+        probe runs once per model across turns; the event is emitted after
+        `turn.started` so the ordering contract holds.
+        """
+        hooks = self.hooks
+        if not hooks.settings.tools_enabled():
+            return
+        model = hooks.session.model
+        seen = hooks.tool_support_checked
+        if seen is not None and model in seen:
+            return
+        try:
+            capabilities = hooks.client.capabilities(model)
+        except Exception:  # capability probing must never break a turn
+            return
+        if seen is not None:
+            seen.add(model)
+        if capabilities and "tools" not in capabilities:
+            self._warn(f"{model} does not advertise tool support — "
+                       "tool calls may not work")
+
     # ── the turn loop ───────────────────────────────────────────────────────
 
     def run(self) -> GenerationResult:
@@ -185,6 +224,7 @@ class AgentRuntime:
         self._set_tool_round(0)
         self._emit(TURN_STARTED, model=session.model, session_id=session.id,
                    mode=settings.mode)
+        self.check_tool_support()
         result = GenerationResult()
         tool_rounds = 0
         while True:
@@ -241,11 +281,11 @@ class AgentRuntime:
             self._set_tool_round(tool_rounds)
             if hooks.execute_tools is not None:
                 interrupted = hooks.execute_tools(
-                    result.tool_calls, quiet=settings.quiet_tools,
+                    result.tool_calls, quiet=settings.quiet_tools(),
                     allow_prompt=settings.allow_prompt)
             else:
                 interrupted = self.execute_tool_calls(
-                    result.tool_calls, quiet=settings.quiet_tools,
+                    result.tool_calls, quiet=settings.quiet_tools(),
                     allow_prompt=settings.allow_prompt)
             if interrupted:
                 self._warn("tool execution interrupted; stopping this turn")
