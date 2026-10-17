@@ -2705,6 +2705,113 @@ def test_ctxfit() -> int:
     return failures
 
 
+def test_ctxfit_outcome() -> int:
+    """fit_context() returns the structured outcome the API serves."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _CtxFitClient()
+        machine = orun.MachineGpu(devices=[(4096, 3500)], env={}, source="local")
+        req = orun.FitRequest(client=client, model="m1", machine=machine,
+                              config=dict(orun.DEFAULT_CONFIG),
+                              calibration_path=str(Path(tmp) / "c.json"))
+        outcome = orun.fit_context(req, mode="gpu")
+        failures = _fit_check("fit_context returns the structured outcome",
+                              outcome.ok and outcome.num_ctx is not None
+                              and outcome.mode == "gpu"
+                              and outcome.source == "estimate"
+                              and outcome.bound == "max_gpu"
+                              and outcome.num_ctx == outcome.fit.ctx,
+                              repr(outcome.to_dict())[:200])
+        payload = outcome.to_dict()
+        failures = _fit_check("the outcome serializes as data",
+                              payload["num_ctx"] == outcome.num_ctx
+                              and payload["report"]["weights_total"] > 0
+                              and payload["report"]["kv_per_token"] > 0
+                              and isinstance(payload["report"]["devices"], list),
+                              repr(payload)[:300])
+        cpu = orun.fit_context(req, mode="cpu", percent=70)
+        failures = _fit_check("the cpu outcome carries its percentage",
+                              cpu.ok and cpu.percent == 70
+                              and cpu.bound == "max_cpu",
+                              repr(cpu.to_dict())[:200])
+        bad = orun.fit_context(orun.FitRequest(client=client, model="m1",
+                                               machine=machine),
+                               mode="cpu", percent=0)
+        failures = _fit_check("an invalid percentage is data, not a crash",
+                              not bad.ok and bad.error is not None
+                              and "percentage" in bad.error, repr(bad))
+        missing = orun.fit_context(orun.FitRequest(client=client, model="",
+                                                   machine=machine), mode="gpu")
+        failures = _fit_check("a missing model is data, not a crash",
+                              not missing.ok
+                              and missing.error == "no model selected",
+                              repr(missing))
+
+        class _NoTags(_CtxFitClient):
+            def tags(self):
+                return []
+
+            def show(self, model):
+                return {"model_info": {"x.block_count": 4}}
+
+        no_size = orun.fit_context(
+            orun.FitRequest(client=_NoTags(), model="m1", machine=machine),
+            mode="gpu")
+        failures = _fit_check("an unsizeable model reports the tag error",
+                              not no_size.ok and "no entry" in (no_size.error or ""),
+                              repr(no_size))
+    return failures
+
+
+def test_ctxfit_cancel_progress() -> int:
+    """A cancelled fit stops at the next checkpoint; progress is reported."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _CtxFitClient(fail_above=65536)
+        machine = orun.MachineGpu(devices=[(4096, 3500)], env={}, source="local")
+        token = orun.CancelToken()
+        token.cancel()
+        req = orun.FitRequest(client=client, model="m1", machine=machine,
+                              config=dict(orun.DEFAULT_CONFIG), cancel=token,
+                              calibration_path=str(Path(tmp) / "c.json"))
+        try:
+            orun.fit_context(req, mode="gpu", probe=True)
+            raised = None
+        except orun.FitCancelled as exc:
+            raised = exc
+        failures = _fit_check("a pre-cancelled fit raises before any load",
+                              raised is not None and client.load_ctxs == [],
+                              repr(raised))
+
+        token2 = orun.CancelToken()
+        progress: list = []
+        req2 = orun.FitRequest(client=client, model="m1", machine=machine,
+                               config=dict(orun.DEFAULT_CONFIG), cancel=token2,
+                               on_progress=progress.append,
+                               calibration_path=str(Path(tmp) / "c2.json"))
+        original_load = client.load
+
+        def load_then_cancel(model, *, keepalive=None, options=None):
+            original_load(model, keepalive=keepalive, options=options)
+            if len(client.load_ctxs) == 1:
+                token2.cancel()
+
+        client.load = load_then_cancel
+        try:
+            orun.fit_context(req2, mode="gpu", probe=True)
+            raised2 = None
+        except orun.FitCancelled as exc:
+            raised2 = exc
+        failures = _fit_check("a mid-probe cancel stops before the next load",
+                              raised2 is not None and len(client.load_ctxs) == 1,
+                              f"{raised2!r} loads={client.load_ctxs}")
+        stages = [item.get("stage") for item in progress]
+        failures = _fit_check("progress fires for estimate and probe stages",
+                              "estimate" in stages and "probe" in stages,
+                              str(stages))
+    return failures
+
+
 def test_model_profile() -> int:
     """First-principles modelling: GGUF geometry, quant/params and tags facts."""
     failures = 0
@@ -11581,7 +11688,9 @@ if __name__ == "__main__":
              + test_ps_table_and_cmd_ps()
              + test_maybe_show_ps() + test_resolve_num_ctx()
              + test_context_usage()
-             + test_cmd_num_ctx() + test_ctxfit() + test_cmd_num_ctx_max_gpu()
+             + test_cmd_num_ctx() + test_ctxfit()
+             + test_ctxfit_outcome() + test_ctxfit_cancel_progress()
+             + test_cmd_num_ctx_max_gpu()
              + test_ram_helpers() + test_cpu_fit() + test_cmd_num_ctx_max_cpu()
              + test_model_profile()
              + test_emit_and_cli_functions()
