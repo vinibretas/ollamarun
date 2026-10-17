@@ -220,7 +220,9 @@ a module's own docstring for what lives there before editing:
    maps the JSON's `handler` name onto the function, `requires` gates a tool
    on a capability, `tool_aliases()` is built from the `aliases` lists so
    invented names like `search`/`curl` resolve onto the real tools; bad files
-   warn and are skipped). `ToolContext` carries the runtime seams the REPL
+   warn and are skipped). `ToolSpec` keeps each definition's `requires` and
+   `aliases` (`REQUIREMENT_HINTS` words them for the help pages).
+   `ToolContext` carries the runtime seams the REPL
    injects: `client`/`store` (list_models, system_status, search_sessions),
    `ssh_target`/`ssh_user` for remote probes, `chem_inventory` (the CLI
    path override) and `context_report`/`session_report` (the plain dicts
@@ -335,6 +337,15 @@ a module's own docstring for what lives there before editing:
    mirror it). Add a new slash command by adding one function here and
    wiring it into `COMMAND_INFO`/`COMMAND_HANDLERS` (and the hand-maintained
    `build_parser()` epilog in `cli.py`).
+   `/tools` takes a tool name (or alias) as its first token for per-tool
+   control — `NAME on|off|help|call ARGS`: `_find_tool` resolves aliases and
+   falls back to `tool_definitions()` so an uninstalled tool still gets a
+   page, `_print_tool_help` renders state/description/parameters/approval
+   from the definition JSON, and `_cmd_tools_call` runs the tool through the
+   normal approval gate without touching the conversation.
+   `completion_candidates`/`_tools_completion` Tab-complete the whole
+   command (subcommands, names and aliases, per-tool actions, policy modes,
+   rule kinds) in both front ends.
    `ps_table()`/`resolve_num_ctx()` also live here since `cmd_ps`/
    `cmd_num_ctx` are their only callers (`resolve_num_ctx` is reused by
    `main()` in `cli.py` for `--num-ctx`). `ApprovalPicker` and its runners are
