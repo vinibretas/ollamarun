@@ -61,6 +61,7 @@ tools through per-tool alias lists.
 | `make_dir` | `mkdir -p` | — |
 | `move_file` / `copy_file` | Move/copy; refuse an existing destination unless `overwrite=true` | — |
 | `delete_file` | Move to the trash (`trash-put`) — never a permanent unlink | — |
+| `publish_artifact` | Publish a generated file (from `run_shell`/`run_python`) as a downloadable artifact; the file tools publish their own results automatically | `ollamarun serve` artifact store |
 | `fetch_url` | Fetch one exact URL as readable content — HTML to text plus the page's links, JSON pretty-printed, PDFs text-extracted; a URL already fetched in the session is answered from cache, and failures come back as one actionable line | — |
 | `web_search` | Search the web for titles/URLs/snippets (cached; search-engine `q=` URLs are rerouted here) | `ddgs` package |
 | `search_sessions` | Search your saved ollamarun conversations (titles, models, messages, thinking) | — |
@@ -72,10 +73,11 @@ tools through per-tool alias lists.
 | `chem_search` / `chem_container` / `chem_locations` | Read-only chemical-inventory lookups through the `chemInventoryAPI` CLI | chemInventoryAPI |
 
 `web_search` only appears when `ddgs` is installed, the speech tools when
-`tts-remote` is available, and the chem tools when `chemInventoryAPI` resolves
+`tts-remote` is available, the chem tools when `chemInventoryAPI` resolves
 (config `chem_inventory` names a different path, `chem_tools: false` hides
-them). A tool's `requires` capability gates it the same way for user-added
-definitions.
+them), and `publish_artifact` when `ollamarun serve` runs an artifact store
+(the CLI has none). A tool's `requires` capability gates it the same way for
+user-added definitions.
 
 ### Approvals and policy
 
@@ -338,9 +340,15 @@ rather than a silent ignore: unknown fields anywhere (top level, tools,
 and `tool_choice: "required"` are rejected with `400`s; `strict: true` on a
 function tool is rejected because the backend does not enforce
 tool-argument schemas (`strict: false` is a no-op). `image_url` content
-parts must be `data:` URIs of at most 10 MiB, are validated against the
-model's `capabilities` and refused with `model_does_not_support_images`
-when vision is absent. `json_schema` enforcement uses Ollama's grammar
+parts accept `data:` URIs or http(s) URLs (fetched with explicit timeouts, at
+most 3 redirects and a 10 MiB cap — the SSRF caveat is the locked
+trusted-network boundary), are validated against the model's `capabilities`
+and refused with `model_does_not_support_images` when vision is absent. A
+`{"type": "file", "file_id": "art_…"}` part resolves an uploaded artifact
+(see the artifact section under the agent API): text-ish files are inlined
+as a `<file name="…">` block, images go through the same vision gate, and
+other binaries are described but never pretended to be processed.
+`json_schema` enforcement uses Ollama's grammar
 (`format`); only the `schema` object is forwarded. Errors use the OpenAI
 envelope with proper status codes (400/404/405/408/413/502); upstream
 failures surface as stable `model_not_found` / `backend_unreachable` /
@@ -363,6 +371,9 @@ follows it over Server-Sent Events.
 | `GET /v1/agent/turns/{id}/events` | SSE turn events (`id: <turn>:<seq>`, typed `event:` names; replay with `?after=N` or `Last-Event-ID`) |
 | `POST /v1/agent/turns/{id}/cancel` | request cancellation |
 | `POST /v1/agent/approvals/{id}` | resolve a parked tool decision (`run`/`remember`/`rule`/`auto`/`deny`) |
+| `POST /v1/files` | upload one file (`{filename, media_type, data_base64}`) as an artifact |
+| `GET /v1/artifacts/{id}` | download an artifact's bytes (recorded media type) |
+| `GET /v1/artifacts/{id}/meta` | the artifact's `ArtifactRef` |
 | `GET`/`POST /v1/sessions` | list / create sessions |
 | `GET`/`PATCH`/`DELETE /v1/sessions/{id}` | inspect, edit (title/model/system/tags) or trash a session; edits and deletes are refused (409 `session_busy`) while a turn runs |
 
@@ -421,6 +432,37 @@ turn per session (`409 session_busy` with `active_turn_id`; editing or
 deleting the session is the same 409 while the turn runs), a global cap
 (config `serve_max_active_turns`, `429`), and an optional wall-clock limit
 per turn (config `serve_turn_timeout`, `0` = no limit).
+
+**Files and artifacts.** `POST /v1/files` uploads one file as an artifact
+(`{filename, media_type, data_base64}`, strict JSON) and returns the full
+record:
+
+```json
+{"id": "art_…", "media_type": "text/plain", "filename": "report.txt",
+ "size": 1842, "sha256": "…", "source": "user", "turn_id": null,
+ "session_id": null, "created_at": "…", "url": "/v1/artifacts/art_…"}
+```
+
+Messages reference it as `{"type": "file", "file_id": "art_…"}` — in
+agent-turn content arrays and in OpenAI messages alike; a missing or
+expired id is a structured `404 artifact_not_found` before inference.
+Artifacts are **immutable snapshots** (the hash and size come from the
+stored bytes), live under `~/etc/data/ollamarun/artifacts/` (opaque ids,
+index-driven lookup, sanitized display names only) and expire after
+config `serve_artifact_ttl` (default 7 days; the sweep also reaps stale
+reservations and debris at startup). The per-file cap is
+`serve_artifact_max_bytes` (default 16 MiB — the base64-in-JSON request
+must fit the 32 MiB body cap) and `serve_artifact_quota_bytes` (default
+2 GiB) is reserved under a lock so concurrent uploads cannot overshoot a
+`507 artifact_quota_exceeded`. Tool outputs publish automatically
+(`write_file`/`edit_file`/`copy_file`/`move_file` snapshot their result,
+regular files only); scripts publish explicitly through the
+approval-gated `publish_artifact` tool. Every publication emits
+`artifact.created` with the full record before `tool.result`, which
+references the ids; turn results and session metadata list the refs. A
+`persist: false` turn still registers and serves its artifacts — retention
+is TTL-only and shared with session-deleted conversations (deleting a
+session never deletes artifacts early).
 
 ## Prompts and tool definitions
 
@@ -531,7 +573,8 @@ Selected config keys: `render`, `math`, `thinking`, `ui`, `show_stats`,
 `image_storage`, `max_file_kb`, `options`, `unload_on_exit`, `gpu_layers`,
 `tools*`, `tool_colors`, `tts*`, `chem_*`, `remote*`, `max_gpu_*`,
 `max_cpu_*`, `serve_bind`, `serve_port`, `serve_approval_timeout`,
-`serve_turn_timeout`, `timeout`, plus the turn-manager keys
+`serve_turn_timeout`, `serve_artifact_*` (`root`, `max_bytes`,
+`quota_bytes`, `ttl`), `timeout`, plus the turn-manager keys
 (`serve_max_active_turns`, `serve_turn_event_buffer`, `serve_turn_event_ttl`)
 for the agent endpoints. See `DEFAULT_CONFIG` in
 `ollamarun_lib/constants.py` for the full set.

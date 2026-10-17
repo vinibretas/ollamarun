@@ -152,6 +152,7 @@ regressions before the phase was closed:
   against the worker's session saves.
 
 Minor observations were recorded, with no behavior change: session routes
-resolve refs like the CLI (exact id, id prefix or title), the
-"cancelled by user" approval note on timeout/disconnect resolution, and
-`Last-Event-ID` resume having no dedicated test.
+resolve refs like the CLI (exact id, id prefix or title) and the
+"cancelled by user" approval note on timeout/disconnect resolution. The
+`Last-Event-ID` resume path gained its dedicated test in v1.53 (a
+malformed header answers 400), recording this note as resolved.
