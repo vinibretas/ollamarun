@@ -11756,6 +11756,260 @@ def test_native_parameters() -> int:
     return failures
 
 
+def test_workspace_jail() -> int:
+    """The API workspace: relative paths resolve under it, escapes refused."""
+    failures = 0
+    registry = orun.default_registry(tts=False)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "root"
+        outside = Path(tmp) / "outside"
+        root.mkdir()
+        outside.mkdir()
+        (root / "inside.txt").write_text("in\n")
+        (root / "sub").mkdir()
+        (outside / "secret.txt").write_text("out\n")
+        (root / "escape").symlink_to(outside)
+
+        api_ctx = orun.ToolContext(cwd=str(root), workspace=str(root),
+                                   timeout=30, max_output=4000)
+        cli_ctx = orun.ToolContext(cwd=str(root), timeout=30, max_output=4000)
+
+        def read(ctx, path):
+            return orun.execute_tool(registry["read_file"], {"path": path}, ctx)
+
+        outcome = read(api_ctx, "inside.txt")
+        failures = _check(failures, "a relative path resolves under the root",
+                          outcome.ok and "in" in outcome.text, outcome.text)
+        for name, probe in [
+            ("a parent-relative path", "../outside/secret.txt"),
+            ("an absolute path outside", str(outside / "secret.txt")),
+            ("a symlinked directory", "escape/secret.txt"),
+            ("a traversal-shaped absolute",
+             str(root / ".." / "outside" / "secret.txt")),
+        ]:
+            outcome = read(api_ctx, probe)
+            failures = _check(
+                failures, f"{name} is refused",
+                not outcome.ok and "outside the workspace" in outcome.text,
+                outcome.text)
+
+        outcome = read(cli_ctx, str(outside / "secret.txt"))
+        failures = _check(failures, "the CLI context keeps its behavior",
+                          outcome.ok, outcome.text)
+
+        write = orun.execute_tool(registry["write_file"],
+                                  {"path": "sub/new.txt", "content": "x"},
+                                  api_ctx)
+        failures = _check(failures, "a write under the root lands there",
+                          write.ok
+                          and (root / "sub" / "new.txt").read_text() == "x",
+                          write.text)
+        write = orun.execute_tool(registry["write_file"],
+                                  {"path": str(outside / "evil.txt"),
+                                   "content": "x"}, api_ctx)
+        failures = _check(failures, "an absolute write outside is refused",
+                          not write.ok and not (outside / "evil.txt").exists(),
+                          write.text)
+
+        move = orun.execute_tool(registry["move_file"],
+                                 {"source": "inside.txt",
+                                  "destination": str(outside / "moved.txt")},
+                                 api_ctx)
+        failures = _check(failures, "a move destination outside is refused",
+                          not move.ok
+                          and not (outside / "moved.txt").exists()
+                          and (root / "inside.txt").exists(), move.text)
+        copy = orun.execute_tool(registry["copy_file"],
+                                 {"source": str(outside / "secret.txt"),
+                                  "destination": "copied.txt"}, api_ctx)
+        failures = _check(failures, "a copy source outside is refused",
+                          not copy.ok and not (root / "copied.txt").exists(),
+                          copy.text)
+
+        mkdir = orun.execute_tool(registry["make_dir"], {"path": "made"},
+                                  api_ctx)
+        failures = _check(failures, "make_dir resolves under the root",
+                          mkdir.ok and (root / "made").is_dir(), mkdir.text)
+        mkdir = orun.execute_tool(registry["make_dir"],
+                                  {"path": str(outside / "made")}, api_ctx)
+        failures = _check(failures, "make_dir outside is refused",
+                          not mkdir.ok and not (outside / "made").exists(),
+                          mkdir.text)
+
+        delete = orun.execute_tool(registry["delete_file"],
+                                   {"path": str(outside / "secret.txt")},
+                                   api_ctx)
+        failures = _check(failures, "delete_file outside is refused",
+                          not delete.ok and (outside / "secret.txt").exists(),
+                          delete.text)
+
+        shell = orun.execute_tool(registry["run_shell"],
+                                  {"command": "pwd", "cwd": "sub"}, api_ctx)
+        failures = _check(failures, "run_shell resolves a relative cwd",
+                          shell.ok and str(root / "sub") in shell.text,
+                          shell.text)
+        shell = orun.execute_tool(registry["run_shell"],
+                                  {"command": "pwd", "cwd": str(outside)},
+                                  api_ctx)
+        failures = _check(failures, "run_shell refuses an outside cwd",
+                          not shell.ok and "outside the workspace" in shell.text,
+                          shell.text)
+    return failures
+
+
+def test_artifact_root_containment() -> int:
+    """A symlinked dir under the root never redirects a read or a sweep."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "artifacts"
+        outside = Path(tmp) / "outside"
+        (outside / "uploads").mkdir(parents=True)
+        store = orun.ArtifactStore(root, ttl=0.01)
+        ref = store.register(b"payload", filename="a.txt",
+                             media_type="text/plain")
+        stored = store.read(ref.id)
+        failures = _check(failures, "a normal artifact reads back",
+                          stored is not None and stored[1] == b"payload",
+                          repr(stored))
+
+        # Replace the storage directory with a symlink out of the root and
+        # move the stored bytes behind it: the resolved entry escapes.
+        uploads = root / "uploads"
+        target = outside / "uploads"
+        (uploads / ref.id).rename(target / ref.id)
+        uploads.rmdir()
+        uploads.symlink_to(target)
+
+        failures = _check(failures, "resolve refuses the escaping entry",
+                          store.resolve(ref.id) is None,
+                          "resolve returned a ref")
+        failures = _check(failures, "read refuses the escaping entry",
+                          store.read(ref.id) is None,
+                          "read returned bytes")
+        time.sleep(0.03)
+        store.sweep()
+        failures = _check(
+            failures, "the sweep drops the entry without chasing it outside",
+            store.resolve(ref.id) is None and (target / ref.id).exists(),
+            f"outside file present: {(target / ref.id).exists()}")
+    return failures
+
+
+def test_serve_model_gate() -> int:
+    """`serve_models` is one API-wide allowlist with tag-aware matching."""
+    failures = 0
+    patterns = ["m1", "qwen3*"]
+    for model, expected in [("m1", True), ("m1:latest", True),
+                            ("m1:8b", False), ("qwen3", True),
+                            ("qwen3:8b", True), ("other", False), ("", False)]:
+        got = orun.model_allowed(model, patterns)
+        failures = _check(failures, f"model_allowed({model!r}) is {expected}",
+                          got is expected, str(got))
+    failures = _check(failures, "an empty allowlist serves everything",
+                      orun.model_allowed("anything", [])
+                      and orun.model_allowed("anything", None), "")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _ServeClient(models=["m1", "other"],
+                              capabilities=["completion", "tools"])
+        server, api, store, thread = _start_agent_api(
+            tmp, client, config={"serve_models": ["m1"]})
+        try:
+            status, _headers, raw = _http(server, "GET", "/v1/models")
+            listed = [item["id"] for item in json.loads(raw)["data"]]
+            failures = _check(failures, "the list filters to the allowlist",
+                              status == 200 and listed == ["m1"], str(listed))
+
+            for name, method, path, body in [
+                ("lookup", "GET", "/v1/models/other", None),
+                ("chat", "POST", "/v1/chat/completions",
+                 {"model": "other",
+                  "messages": [{"role": "user", "content": "hi"}]}),
+                ("session create", "POST", "/v1/sessions",
+                 {"model": "other"}),
+                ("fit", "POST", "/v1/agent/fit",
+                 {"model": "other", "mode": "gpu"}),
+            ]:
+                status, _headers, raw = _http(server, method, path, body=body)
+                failures = _check(
+                    failures, f"a forbidden model is 404 on {name}",
+                    status == 404
+                    and json.loads(raw)["error"]["code"] == "model_not_found",
+                    f"{status} {raw[:140]}")
+
+            stored = orun.Session.create("other", "")
+            store.save(stored)
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body={"session_id": stored.id,
+                      "messages": [{"role": "user", "content": "hi"}]})
+            failures = _check(
+                failures, "a stored session with a forbidden model is a 404",
+                status == 404
+                and json.loads(raw)["error"]["code"] == "model_not_found",
+                f"{status} {raw[:140]}")
+
+            status, _headers, raw = _http(server, "POST", "/v1/sessions",
+                                          body={"model": "m1"})
+            session_id = json.loads(raw)["id"]
+            status, _headers, raw = _http(
+                server, "PATCH", f"/v1/sessions/{session_id}",
+                body={"model": "other"})
+            failures = _check(
+                failures, "a forbidden model is 404 on model PATCH",
+                status == 404, f"{status} {raw[:140]}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
+def test_serve_agent_switch() -> int:
+    """serve_agent=false keeps inference and artifacts, drops agent routes."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        artifact_store = orun.ArtifactStore(Path(tmp) / "artifacts")
+        client = _ServeClient(models=["m1"], capabilities=["completion"])
+        server, api, store, thread = _start_agent_api(
+            tmp, client, artifacts=artifact_store, agent_routes=False)
+        try:
+            status, _headers, raw = _http(server, "GET", "/v1/models")
+            ok_models = status == 200 \
+                and json.loads(raw)["data"][0]["id"] == "m1"
+            status, _headers, raw = _http(
+                server, "POST", "/v1/chat/completions",
+                body={"model": "m1",
+                      "messages": [{"role": "user", "content": "hi"}]})
+            ok_chat = status == 200
+            data = base64.b64encode(b"hello").decode()
+            status, _headers, raw = _http(
+                server, "POST", "/v1/files",
+                body={"filename": "a.txt", "media_type": "text/plain",
+                      "data_base64": data})
+            ref = json.loads(raw)
+            ok_upload = status == 201
+            status, _headers, raw = _http(server, "GET",
+                                          f"/v1/artifacts/{ref['id']}")
+            ok_download = status == 200 and raw == b"hello"
+            failures = _check(
+                failures, "inference and artifacts stay available",
+                ok_models and ok_chat and ok_upload and ok_download,
+                f"{ok_models} {ok_chat} {ok_upload} {ok_download}")
+
+            for method, path, body in [
+                ("GET", "/v1/sessions", None),
+                ("POST", "/v1/agent/turns",
+                 {"model": "m1",
+                  "messages": [{"role": "user", "content": "hi"}]}),
+                ("POST", "/v1/agent/fit", {"model": "m1", "mode": "gpu"}),
+            ]:
+                status, _headers, raw = _http(server, method, path, body=body)
+                failures = _check(failures, f"{method} {path} is a 404",
+                                  status == 404, f"{status} {raw[:140]}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
 def test_serve_cli() -> int:
     """The `serve` subcommand: parser, config defaults and dispatch."""
     failures = 0
@@ -12013,7 +12267,8 @@ def test_serve_live() -> int:
 
 
 def _start_agent_api(tmp, client, *, config_extra=None, manager=None,
-                     store=None, args_extra=(), config=None, artifacts=None):
+                     store=None, args_extra=(), config=None, artifacts=None,
+                     agent_routes=True):
     """An API server with the native agent routes over a fake backend."""
     if store is None:
         store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
@@ -12025,9 +12280,14 @@ def _start_agent_api(tmp, client, *, config_extra=None, manager=None,
     args = orun.build_parser().parse_args(
         ["m1", "--render", "plain", "--no-save", *args_extra])
     router = orun.build_router(lambda: client, config=settings)
-    api = orun.add_agent_routes(router, args=args, config=settings,
-                                store=store, client_factory=lambda: client,
-                                manager=manager, artifacts=artifacts)
+    api = orun.build_agent_api(args=args, config=settings, store=store,
+                               client_factory=lambda: client,
+                               manager=manager,
+                               cwd=settings.get("serve_workspace"),
+                               artifacts=artifacts)
+    orun.add_artifact_routes(router, api)
+    if agent_routes:
+        orun.add_agent_routes(router, api)
     server = orun.HttpServer(router, bind="127.0.0.1", port=0, ping_interval=0.2)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -13004,6 +13264,10 @@ if __name__ == "__main__":
              + test_chunked_bodies()
              + test_input_limits()
              + test_native_parameters()
+             + test_workspace_jail()
+             + test_artifact_root_containment()
+             + test_serve_model_gate()
+             + test_serve_agent_switch()
              + test_serve_cli()
              + test_openai_sdk()
              + test_agent_turn_lifecycle() + test_agent_turn_controls()
