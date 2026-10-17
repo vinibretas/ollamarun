@@ -314,8 +314,15 @@ a module's own docstring for what lives there before editing:
    fit leaves on the CPU, `max_cpu_overhead_mb` reserved); the
    `/api/ps`-verified `probe_max_gpu_ctx()`/`probe_max_cpu_ctx()` that solve
    each next candidate from the measured affine footprint line instead of
-   bisecting (`FitRequest`/`GpuFit`/`CpuFit`/`ProbeResult`), the rich
-   reports and `max_gpu_context()`/`max_cpu_context()`, which the REPL
+   bisecting, plus `ModelProfile`/`model_profile()` (the
+   parameters/quantization cross-check, per-layer KV geometry with sliding
+   windows and MLA, `ssm.*`/shortconv recurrent state and the
+   embedding/output/block weight split behind every estimate) and
+   `CtxCalibrationStore` (bounded, host/model/placement-scoped measured
+   samples that calibrate later estimates and seed probe search;
+   stale/incompatible data falls back to the profile)
+   (`FitRequest`/`GpuFit`/`CpuFit`/`ProbeResult`), the rich reports and
+   `max_gpu_context()`/`max_cpu_context()`, which the REPL
    command and the CLI `--num-ctx max-gpu` / `--num-ctx --max-cpu N` flags
    both call. The probes themselves live in `helpers.py` (`local_gpu_probe`,
    `ssh_gpu_probe`, `local_ram_probe`, `ssh_ram_probe`, `host_is_self`).

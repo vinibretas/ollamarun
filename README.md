@@ -27,7 +27,8 @@ Tailscale machine.
   `guri` while sessions, files and tools stay local.
 - **Context and placement fitting.** `/num-ctx --max-gpu` finds the largest
   window that stays fully on the GPU, `/num-ctx --max-cpu N` fills DRAM to N%,
-  `--probe` verifies by loading, and `/gpu-layers` pins layer counts.
+  `--probe` verifies by loading and calibrates later estimates, and
+  `/gpu-layers` pins layer counts.
 - **Model-facing text is data.** Tool definitions and prompts live as
   JSON/Markdown under `ollamarun_lib/defs/`, overridable per user without
   touching Python.
@@ -224,28 +225,45 @@ reloads with the new placement.
 
 - `N` sets it (capped to the model's max with a warning).
 - `--max-gpu` picks the largest context that still keeps the model fully on
-  the GPU: KV bytes per token come from `/api/show`'s GGUF metadata (hybrid
-  per-layer attention included), the model size from `/api/tags`, and free
-  VRAM from nvidia-smi — locally or over one ssh probe for `--remote`
-  machines — minus llama.cpp's fit margin and an overhead allowance. Resident
-  models' VRAM is credited back (it returns when they reload at the new
-  context), and a pinned `/gpu-layers` is honoured. `--probe` then verifies
-  by loading candidates and reading each real GPU split back from `/api/ps`,
-  solving the measured bytes-per-token line for the capacity, and leaves the
-  model warm at the largest 100%-GPU context.
+  the GPU. The model is profiled first: `/api/show`'s GGUF metadata supplies
+  the per-layer KV geometry (hybrid attention, sliding windows and their
+  per-layer key/value dims, MLA's compressed latent, recurrent `ssm.*` state)
+  and the parameter count, `/api/tags` supplies the on-disk size and
+  quantization, and the two are cross-checked (`params × bytes/param`; the
+  model row in the report names all of it). Free VRAM (nvidia-smi, locally or
+  over one ssh probe for `--remote` machines) is then reduced by llama.cpp's
+  fit margin (`max_gpu_margin_mb`, 1 GiB by default); the separate
+  `max_gpu_overhead_mb` reserve defaults to 0 because the fit margin already
+  covers the buffers llama.cpp projects. Resident models' VRAM is credited
+  back (it returns when they reload at the new context), and a pinned
+  `/gpu-layers` is honoured: the output layer and the topmost blocks are
+  counted as the offloaded share, and the non-block weights (token
+  embeddings, output layer, vision projector) are estimated rather than
+  split evenly. `--probe` then verifies by loading candidates and reading
+  each real GPU split back from `/api/ps`, solving the measured
+  bytes-per-token line for the capacity, and leaves the model warm at the
+  largest 100%-GPU context. Resident and probe measurements calibrate future
+  estimates using a conservative per-token slope and fixed overhead; the
+  profile formula remains the fallback. The bounded cache is scoped to model
+  digest, host, hardware, placement and KV settings, expires after 180 days,
+  and is stored at `~/etc/data/ollamarun/ctxfit-calibration.json`.
 - `--max-cpu N` fills DRAM instead: it raises the context until the model's
   host RAM reaches N% (1-100) of the DRAM available to it —
   `/proc/meminfo`'s MemAvailable on the Ollama machine (one ssh probe for
   `--remote` hosts) plus the RAM the loaded model already holds (`/api/ps`
   `size - size_vram`, back when it reloads), less a `max_cpu_overhead_mb`
-  allowance. Some layers may stay on the GPU unless `/gpu-layers` is `cpu`; a
-  pinned layer count is honoured and only the host side counts. `--probe`
-  solves the measured footprint line the same way and never chooses a context
-  above the target.
+  allowance. The same per-layer KV, sliding-window, recurrent-state and
+  weight-split profile decides the placement: some layers may stay on the GPU
+  unless `/gpu-layers` is `cpu`; a pinned layer count is honoured and only the
+  host side counts. `--probe` solves the measured footprint line the same way
+  and never chooses a context above the target. Compatible probe/resident data
+  calibrates future CPU estimates as well; automatic GPU placement is checked
+  before a cached slope is applied.
 
 CLI forms: `--num-ctx N | max-gpu`, plus `--probe` and `--max-cpu N`. Config
-knobs: `max_gpu_margin_mb`, `max_gpu_overhead_mb`, `max_gpu_probes`,
-`max_cpu_overhead_mb`, `max_cpu_probes`.
+knobs: `max_gpu_margin_mb` (1 GiB), `max_gpu_overhead_mb` (0; the fit margin
+already covers llama.cpp's projected buffers), `max_gpu_probes` (10),
+`max_cpu_overhead_mb` (256 MiB) and `max_cpu_probes` (10).
 
 ## Remote
 

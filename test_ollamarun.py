@@ -2206,6 +2206,54 @@ CPU_SHOW = {"model_info": {
     "qwen2.context_length": 32768,
 }}
 
+# Real gemma3-270m metadata: 18 blocks, 3 full-attention layers and 15 sliding
+# ones (every 6th full), the window is 512 tokens.
+SWA_SHOW = {"model_info": {
+    "gemma3.block_count": 18,
+    "gemma3.attention.head_count": 4,
+    "gemma3.attention.head_count_kv": 1,
+    "gemma3.attention.key_length": 256,
+    "gemma3.attention.value_length": 256,
+    "gemma3.attention.sliding_window": 512,
+    "gemma3.embedding_length": 640,
+    "gemma3.context_length": 32768,
+    "general.parameter_count": 268098176,
+    "general.file_type": 7,
+}}
+
+# A qwen35-style hybrid: KV every 4th block, SSM state on the rest.
+HYBRID_SHOW = {"model_info": dict(CTX_SHOW["model_info"], **{
+    "qwen35.ssm.inner_size": 2048,
+    "qwen35.ssm.state_size": 128,
+    "qwen35.ssm.conv_kernel": 4,
+})}
+
+# DeepSeek-style MLA: one compressed latent plus a rope tail per layer.
+MLA_SHOW = {"model_info": {
+    "deepseek2.block_count": 61,
+    "deepseek2.attention.head_count": 128,
+    "deepseek2.attention.head_count_kv": 128,
+    "deepseek2.attention.kv_lora_rank": 512,
+    "deepseek2.attention.qk_rope_head_dim": 64,
+    "deepseek2.embedding_length": 7168,
+    "deepseek2.context_length": 163840,
+}}
+
+# A quantized model whose tag carries params and quant but no usable size.
+PROFILE_SHOW = {"model_info": {
+    "qwen2.block_count": 24,
+    "qwen2.attention.head_count": 14,
+    "qwen2.attention.head_count_kv": 2,
+    "qwen2.embedding_length": 896,
+    "qwen2.context_length": 32768,
+    "qwen2.vocab_size": 151936,
+    "general.parameter_count": 494032768,
+    "general.file_type": 15,
+}}
+PROFILE_ENTRY = {"name": "m1", "size": 0,
+                 "details": {"parameter_size": "494.03M",
+                             "quantization_level": "Q4_K_M"}}
+
 
 class _CtxFitClient(_FakeClient):
     """Fake Ollama whose loaded footprint scales with num_ctx (for --probe).
@@ -2261,6 +2309,9 @@ class _CtxFitClient(_FakeClient):
 
 def test_ctxfit() -> int:
     failures = 0
+    old_calibration_path = orun.ctxfit.CTXFIT_CALIBRATION_PATH
+    calibration_tmp = tempfile.TemporaryDirectory()
+    orun.ctxfit.CTXFIT_CALIBRATION_PATH = Path(calibration_tmp.name) / "ctxfit.json"
 
     devices = orun.parse_gpu_memory("4096, 3100\n24576, 12000\nnot-a-device\n")
     failures += _fit_check("parse_gpu_memory reads nvidia-smi CSV", devices == [(4096, 3100), (24576, 12000)],
@@ -2320,23 +2371,86 @@ def test_ctxfit() -> int:
                        orun.trained_context_length(CTX_SHOW) == 262144
                        and orun.model_total_layers(CTX_SHOW) == 25)
     failures += _fit_check("_kv_fraction_on_gpu follows the attention blocks in the tail",
-                       orun.ctxfit._kv_fraction_on_gpu(CTX_SHOW, 13) == 0.5
-                       and orun.ctxfit._kv_fraction_on_gpu(CTX_SHOW, 25) == 1.0,
-                       f"{orun.ctxfit._kv_fraction_on_gpu(CTX_SHOW, 13)}")
+                        orun.ctxfit._kv_fraction_on_gpu(CTX_SHOW, 13) == 0.5
+                        and orun.ctxfit._kv_fraction_on_gpu(CTX_SHOW, 25) == 1.0,
+                        f"{orun.ctxfit._kv_fraction_on_gpu(CTX_SHOW, 13)}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.CtxCalibrationStore(Path(tmp) / "calibration.json")
+        store.add("scope", 4096, 1_000_000)
+        store.add("scope", 8192, 2_000_000)
+        store.add("scope", 4096, 1_100_000)  # replace, don't duplicate a context
+        samples = store.points("scope")
+        line = orun.ctxfit._measured_memory_line(samples, 100, 200_000)
+        failures += _fit_check("context calibration persists bounded measured points",
+                               samples == [(4096, 1_100_000), (8192, 2_000_000)]
+                               and line is not None and line[0] == 220
+                               and line[1] == 200_000,
+                               f"samples={samples} line={line}")
+        for ctx in range(1, orun.ctxfit.CALIBRATION_MAX_SAMPLES + 5):
+            store.add("bounded", ctx, ctx * 1000)
+        bounded = store.points("bounded")
+        store.add("stale", 4096, 1_000_000)
+        cache_data = json.loads((Path(tmp) / "calibration.json").read_text())
+        cache_data["entries"]["stale"]["samples"][0]["ts"] = (
+            time.time() - orun.ctxfit.CALIBRATION_MAX_AGE - 1)
+        (Path(tmp) / "calibration.json").write_text(json.dumps(cache_data))
+        failures += _fit_check("calibration cache caps samples and expires stale points",
+                               len(bounded) == orun.ctxfit.CALIBRATION_MAX_SAMPLES
+                               and store.points("stale") == [],
+                               f"bounded={len(bounded)} stale={store.points('stale')}")
 
     # ── estimate ────────────────────────────────────────────────────────────
     machine = orun.MachineGpu(devices=[(16384, 12000)], env={}, source="local")
     weights = 10_000_000_000
     fit = orun.estimate_max_gpu_ctx(CTX_SHOW, weights, machine)
     usable = (12000 - 1024) * 2 ** 20
-    budget = usable - weights - 256 * 2 ** 20
+    budget = usable - weights
     expected = ((budget // 12288) // 1024) * 1024
     failures += _fit_check("estimate_max_gpu_ctx computes the full-offload context",
                        fit.feasible and fit.ctx == expected and fit.kv_gpu_per_token == 12288,
                        f"ctx={fit.ctx} expected={expected}")
     failures += _fit_check("estimate reserves the fit margin per device",
-                       fit.margin_bytes == 1024 * 2 ** 20
-                       and fit.usable_bytes == (12000 - 1024) * 2 ** 20)
+                        fit.margin_bytes == 1024 * 2 ** 20
+                        and fit.usable_bytes == (12000 - 1024) * 2 ** 20)
+
+    empirical_gpu_points = [
+        (ctx, weights + 256 * 2 ** 20 + 24576 * ctx)
+        for ctx in (4096, 16384, 32768)
+    ]
+    calibrated_gpu = orun.estimate_max_gpu_ctx(CTX_SHOW, weights, machine,
+                                               empirical_points=empirical_gpu_points)
+    failures += _fit_check("GPU estimate uses the conservative measured byte slope",
+                           calibrated_gpu.kv_gpu_per_token == 24576
+                           and calibrated_gpu.ctx < fit.ctx
+                           and any("calibrated from" in note for note in calibrated_gpu.notes),
+                           f"slope={calibrated_gpu.kv_gpu_per_token} "
+                           f"ctx={calibrated_gpu.ctx} baseline={fit.ctx}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cache_path = Path(tmp) / "ctxfit.json"
+        cached_client = _CtxFitClient()
+        cached_machine = orun.MachineGpu(devices=[(4096, 3500)], env={}, source="local")
+        cached_baseline = orun.estimate_max_gpu_ctx(
+            cached_client.show_data, cached_client.weights, cached_machine)
+        cached_req = orun.FitRequest(client=cached_client, model="m1",
+                                     machine=cached_machine,
+                                     calibration_path=str(cache_path))
+        cache_key = orun.ctxfit._calibration_scope(
+            cached_req, mode="gpu", model_digest="", weight_bytes=cached_client.weights,
+            show_data=cached_client.show_data, machine=cached_machine,
+            pinned_layers=None)
+        cache = orun.CtxCalibrationStore(cache_path)
+        for ctx in (4096, 16384):
+            cache.add(cache_key, ctx, cached_client.weights + 256 * 2 ** 20 + 24576 * ctx)
+        with orun.console.capture() as cap:
+            chosen = orun.max_gpu_context(cached_req)
+        failures += _fit_check("estimate-only GPU fit reuses stored measurements without loading",
+                               chosen is not None and chosen < cached_baseline.ctx
+                               and "calibrated from" in _plain(cap.get())
+                               and not cached_client.load_ctxs,
+                               f"chosen={chosen} baseline={cached_baseline.ctx} "
+                               f"out={_plain(cap.get())[-180:]}")
 
     fit_env = orun.estimate_max_gpu_ctx(
         CTX_SHOW, weights, orun.MachineGpu(
@@ -2344,7 +2458,7 @@ def test_ctxfit() -> int:
             env={"LLAMA_ARG_FIT_TARGET": "512", "OLLAMA_NUM_PARALLEL": "2",
                  "OLLAMA_KV_CACHE_TYPE": "q8_0"}))
     env_usable = (12000 - 512) * 2 ** 20
-    env_budget = env_usable - weights - 256 * 2 ** 20
+    env_budget = env_usable - weights
     env_kv = orun.kv_bytes_per_token(CTX_SHOW, parallel=2,
                                      element_bytes=orun.kv_element_bytes("q8_0"))
     env_expected = ((env_budget // env_kv) // 1024) * 1024
@@ -2354,7 +2468,7 @@ def test_ctxfit() -> int:
                        f"ctx={fit_env.ctx} expected={env_expected}")
 
     pinned = orun.estimate_max_gpu_ctx(CTX_SHOW, 20_000_000_000, machine, pinned_layers=13)
-    pinned_budget = usable - int(20_000_000_000 * 13 / 25) - 256 * 2 ** 20
+    pinned_budget = usable - int(20_000_000_000 * 13 / 25)
     pinned_expected = ((pinned_budget // 6144) // 1024) * 1024
     failures += _fit_check("estimate scales weights and KV for pinned gpu-layers",
                        pinned.ctx == pinned_expected and pinned.kv_gpu_per_token == 6144
@@ -2400,7 +2514,7 @@ def test_ctxfit() -> int:
 
     margin_only = orun.estimate_max_gpu_ctx(CTX_SHOW, 20_000_000,
                                             orun.MachineGpu(devices=[(4096, 1000)]))
-    unc_budget = 1000 * 2 ** 20 - 20_000_000 - 256 * 2 ** 20
+    unc_budget = 1000 * 2 ** 20 - 20_000_000
     unc_expected = ((unc_budget // 12288) // 1024) * 1024
     failures += _fit_check("estimate reports the no-margin context as a hint",
                            not margin_only.feasible
@@ -2410,19 +2524,26 @@ def test_ctxfit() -> int:
 
     # ── probe loop ──────────────────────────────────────────────────────────
     def run_probe(client, free_mb=3500, **request_kwargs):
+        previous_path = orun.ctxfit.CTXFIT_CALIBRATION_PATH
+        probe_tmp = tempfile.TemporaryDirectory()
+        orun.ctxfit.CTXFIT_CALIBRATION_PATH = Path(probe_tmp.name) / "ctxfit.json"
         req_machine = orun.MachineGpu(devices=[(4096, free_mb)], env={}, source="local")
         request = orun.FitRequest(client=client, model="m1",
-                                  config={"max_gpu_probes": 8}, machine=req_machine,
+                                  config={"max_gpu_probes": 10}, machine=req_machine,
                                   **request_kwargs)
-        with orun.console.capture() as cap:
-            chosen = orun.max_gpu_context(request, probe=True)
-        return chosen, _plain(cap.get())
+        try:
+            with orun.console.capture() as cap:
+                chosen = orun.max_gpu_context(request, probe=True)
+            return chosen, _plain(cap.get())
+        finally:
+            orun.ctxfit.CTXFIT_CALIBRATION_PATH = previous_path
+            probe_tmp.cleanup()
 
     client = _CtxFitClient()
     chosen, out = run_probe(client)
     failures += _fit_check("--probe finds the true boundary exactly",
                        chosen == client.truth() == 48384 and len(client.load_ctxs) == 2
-                       and client.load_ctxs[0] == 26624 and "100% GPU" in out,
+                       and client.load_ctxs[0] == 48128 and "100% GPU" in out,
                        f"chosen={chosen} truth={client.truth()} probes={client.load_ctxs}")
 
     resident_probe = _CtxFitClient(capacity=6_000_000_000)
@@ -2430,13 +2551,13 @@ def test_ctxfit() -> int:
     chosen, out = run_probe(resident_probe)
     failures += _fit_check("--probe starts from the estimate, not 4,096",
                            resident_probe.load_ctxs
-                           and resident_probe.load_ctxs[0] == 253952,
+                           and resident_probe.load_ctxs[0] == 262144,
                            f"probes={resident_probe.load_ctxs}")
 
     hidden = _CtxFitClient(capacity=int((3500 - 1024) * 2 ** 20) - 300 * 2 ** 20)
     chosen, _ = run_probe(hidden)
     failures += _fit_check("--probe corrects an optimistic estimate downward",
-                           chosen == hidden.truth() and len(hidden.load_ctxs) <= 8,
+                           chosen == hidden.truth() and len(hidden.load_ctxs) <= 10,
                            f"chosen={chosen} truth={hidden.truth()} probes={hidden.load_ctxs}")
 
     tight = _CtxFitClient(capacity=int((3500 - 1024) * 2 ** 20) - 300 * 2 ** 20, kv=12288,
@@ -2474,7 +2595,7 @@ def test_ctxfit() -> int:
     failures += _fit_check("max_gpu_context estimates without loading",
                            chosen == expected and "estimate only" in out
                            and request.client.load_ctxs == [],
-                           f"chosen={chosen}")
+                           f"chosen={chosen} expected={expected}")
 
     resident = _CtxFitClient()
     resident.current = (65536, 2_800_000_000, 2_800_000_000)
@@ -2483,7 +2604,7 @@ def test_ctxfit() -> int:
     with orun.console.capture() as cap:
         chosen = orun.max_gpu_context(request)
     out = _plain(cap.get())
-    credited_budget = 2_800_000_000 - 2_000_000_000 - 256 * 2 ** 20
+    credited_budget = 2_800_000_000 - 2_000_000_000
     credited_expected = ((credited_budget // 12288) // 1024) * 1024
     failures += _fit_check("max_gpu_context credits a resident model's VRAM",
                            chosen == credited_expected and "resident" in out
@@ -2561,11 +2682,163 @@ def test_ctxfit() -> int:
                        and orun.parse_num_ctx_arg("--MAX-GPU") == ("max-gpu", None)
                        and orun.parse_num_ctx_arg("8192") == ("value", 8192)
                        and orun.parse_num_ctx_arg("nope") == ("error", None))
+    orun.ctxfit.CTXFIT_CALIBRATION_PATH = old_calibration_path
+    calibration_tmp.cleanup()
+    return failures
+
+
+def test_model_profile() -> int:
+    """First-principles modelling: GGUF geometry, quant/params and tags facts."""
+    failures = 0
+    old_path = orun.ctxfit.CTXFIT_CALIBRATION_PATH
+    calibration_tmp = tempfile.TemporaryDirectory()
+    orun.ctxfit.CTXFIT_CALIBRATION_PATH = Path(calibration_tmp.name) / "ctxfit.json"
+    try:
+        profile = orun.model_profile(SWA_SHOW)
+        failures += _fit_check("model_profile reads the GGUF facts and file-type quant",
+                               profile.params == 268098176
+                               and profile.quantization == "Q8_0"
+                               and profile.blocks == 18
+                               and profile.embedding_length == 640
+                               and profile.context_length == 32768,
+                               f"params={profile.params} quant={profile.quantization} "
+                               f"blocks={profile.blocks}")
+        failures += _fit_check("sliding-window KV saturates past window + batch",
+                               orun.kv_bytes_per_token(SWA_SHOW) == 18432
+                               and profile.kv_slope() == 3072
+                               and profile.kv_bytes(32768) == 124256256
+                               and profile.kv_bytes(2048) == 29884416,
+                               f"full={orun.kv_bytes_per_token(SWA_SHOW)} "
+                               f"slope={profile.kv_slope()} "
+                               f"@2048={profile.kv_bytes(2048)} "
+                               f"@32768={profile.kv_bytes(32768)}")
+
+        swa_list = {"model_info": {
+            "gemma4.block_count": 6,
+            "gemma4.attention.head_count": 16,
+            "gemma4.attention.head_count_kv": [8, 8, 8, 8, 8, 2],
+            "gemma4.attention.key_length": 512,
+            "gemma4.attention.value_length": 512,
+            "gemma4.attention.key_length_swa": 256,
+            "gemma4.attention.value_length_swa": 256,
+            "gemma4.attention.sliding_window": 1024,
+            "gemma4.attention.sliding_window_pattern": [True, True, True, True,
+                                                         True, False],
+            "gemma4.embedding_length": 2816,
+            "gemma4.context_length": 262144,
+        }}
+        gemma4 = orun.model_profile(swa_list)
+        failures += _fit_check("a per-layer SWA pattern keeps its own key/value dims",
+                               gemma4.kv_slope() == 4096
+                               and gemma4.kv_bytes(8192) == 117440512,
+                               f"slope={gemma4.kv_slope()} "
+                               f"@8192={gemma4.kv_bytes(8192)}")
+
+        mla = orun.model_profile(MLA_SHOW)
+        expected_mla = 61 * (512 + 64) * 2
+        failures += _fit_check("MLA KV uses the compressed latent plus rope tail",
+                               orun.kv_bytes_per_token(MLA_SHOW) == expected_mla
+                               and mla.kv_slope() == expected_mla,
+                               f"kv={orun.kv_bytes_per_token(MLA_SHOW)} "
+                               f"expected={expected_mla}")
+
+        hybrid = orun.model_profile(HYBRID_SHOW)
+        expected_ssm = 18 * ((2048 * 128 * 4) + (2048 * 4 * 4))
+        failures += _fit_check("SSM state is sized from ssm.* per recurrent layer",
+                               hybrid.recurrent_layers == 18
+                               and hybrid.recurrent_bytes == expected_ssm
+                               and "SSM state" in hybrid.recurrent_note,
+                               f"layers={hybrid.recurrent_layers} "
+                               f"bytes={hybrid.recurrent_bytes} expected={expected_ssm}")
+        hybrid_fit = orun.estimate_max_gpu_ctx(
+            HYBRID_SHOW, 2_000_000_000,
+            orun.MachineGpu(devices=[(16384, 16000)], env={}))
+        failures += _fit_check("the GPU estimate reserves the offloaded recurrent state",
+                               hybrid_fit.recurrent_gpu_bytes == expected_ssm
+                               and hybrid_fit.ctx > 0,
+                               f"gpu_state={hybrid_fit.recurrent_gpu_bytes} "
+                               f"ctx={hybrid_fit.ctx}")
+
+        profiled = orun.model_profile(PROFILE_SHOW, PROFILE_ENTRY)
+        expected_weights = int(494032768
+                               * orun.quantization_bytes_per_param("Q4_K_M"))
+        failures += _fit_check("weights fall back to params × quantization",
+                               profiled.weights_bytes == expected_weights
+                               and "params" in profiled.weights_source
+                               and profiled.split_estimate,
+                               f"weights={profiled.weights_bytes} "
+                               f"expected={expected_weights} "
+                               f"source={profiled.weights_source}")
+        failures += _fit_check("weights split puts output first, embeddings host-side",
+                               profiled.gpu_weight_share(1)[0] == profiled.output_bytes
+                               and profiled.gpu_weight_share(
+                                   profiled.total_layers)[0] == profiled.weights_bytes
+                               and profiled.output_bytes > 0
+                               and profiled.embedding_bytes > 0
+                               and profiled.block_bytes > 0,
+                               f"layer1={profiled.gpu_weight_share(1)} "
+                               f"full={profiled.gpu_weight_share(profiled.total_layers)}")
+
+        details = PROFILE_ENTRY["details"]
+        tiny = orun.model_profile(PROFILE_SHOW, {"size": expected_weights // 4,
+                                                 "details": details})
+        huge = orun.model_profile(PROFILE_SHOW, {"size": expected_weights * 2,
+                                                 "details": details})
+        failures += _fit_check("params/quant cross-checks a suspicious tags size",
+                               tiny.weights_bytes == expected_weights
+                               and any("under" in note for note in tiny.notes)
+                               and huge.weights_bytes == expected_weights * 2
+                               and any("above" in note for note in huge.notes),
+                               f"tiny={tiny.weights_bytes} huge={huge.weights_bytes}")
+        cloud = orun.model_profile(PROFILE_SHOW, {
+            "size": 317, "remote_model": "m1", "remote_host": "https://ollama.com",
+            "details": details})
+        failures += _fit_check("a remote/cloud tag is not sized from params",
+                               cloud.weights_bytes == 0
+                               and any("remote" in note for note in cloud.notes),
+                               f"weights={cloud.weights_bytes} notes={cloud.notes}")
+
+        vocab_show = {"model_info": {
+            "qwen2.block_count": 24,
+            "qwen2.attention.head_count": 14,
+            "qwen2.attention.head_count_kv": 2,
+            "qwen2.embedding_length": 896,
+            "tokenizer.ggml.eos_token_id": 151645,
+            "tokenizer.ggml.bos_token_id": 151643,
+        }}
+        failures += _fit_check("vocabulary falls back to the largest token id",
+                               orun.model_profile(vocab_show).vocab_size == 151646,
+                               str(orun.model_profile(vocab_show).vocab_size))
+        sp_show = {"model_info": {
+            "gemma3.block_count": 2,
+            "gemma3.attention.head_count_kv": 1,
+            "gemma3.embedding_length": 64,
+            "tokenizer.ggml.bos_token_id": 2,
+            "tokenizer.ggml.eos_token_id": 1,
+        }}
+        failures += _fit_check("tiny sentencepiece ids do not fake a vocabulary",
+                               orun.model_profile(sp_show).vocab_size is None)
+
+        bert = orun.model_profile({"model_info": {
+            "nomic-bert.block_count": 12,
+            "nomic-bert.attention.head_count": 12,
+            "nomic-bert.attention.causal": False,
+            "nomic-bert.embedding_length": 768,
+        }})
+        failures += _fit_check("non-causal models report no KV cache",
+                               not bert.kv_layers and "causal" in bert.error,
+                               f"layers={bert.kv_layers} error={bert.error}")
+    finally:
+        orun.ctxfit.CTXFIT_CALIBRATION_PATH = old_path
+        calibration_tmp.cleanup()
     return failures
 
 
 def test_cmd_num_ctx_max_gpu() -> int:
     failures = 0
+    old_calibration_path = orun.ctxfit.CTXFIT_CALIBRATION_PATH
+    calibration_tmp = tempfile.TemporaryDirectory()
+    orun.ctxfit.CTXFIT_CALIBRATION_PATH = Path(calibration_tmp.name) / "ctxfit.json"
     with tempfile.TemporaryDirectory() as tmp:
         store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
         args = orun.build_parser().parse_args(["m1", "--render", "plain"])
@@ -2611,6 +2884,8 @@ def test_cmd_num_ctx_max_gpu() -> int:
                                "--max-gpu" in cap.get())
         finally:
             orun.ctxfit.probe_machine_gpu = original
+            orun.ctxfit.CTXFIT_CALIBRATION_PATH = old_calibration_path
+            calibration_tmp.cleanup()
     return failures
 
 
@@ -2715,6 +2990,9 @@ class _CpuFitClient(_FakeClient):
 
 def test_cpu_fit() -> int:
     failures = 0
+    old_calibration_path = orun.ctxfit.CTXFIT_CALIBRATION_PATH
+    calibration_tmp = tempfile.TemporaryDirectory()
+    orun.ctxfit.CTXFIT_CALIBRATION_PATH = Path(calibration_tmp.name) / "ctxfit.json"
     GIB = 2 ** 30
     weights = 4_000_000_000
     ram = orun.MachineRam(total_bytes=16 * GIB, available_bytes=16 * GIB, source="local")
@@ -2732,8 +3010,8 @@ def test_cpu_fit() -> int:
 
     fit = orun.estimate_max_cpu_ctx(CPU_SHOW, weights, ram, percent=30, machine=machine)
     failures += _fit_check("estimate_max_cpu_ctx fits the GPU tail when unpinned",
-                           fit.gpu_layers == 10 and fit.cpu_weights == 2620689655
-                           and fit.cpu_kv_per_token == 38912 and fit.capped_by_model,
+                           fit.gpu_layers == 11 and fit.cpu_weights == 2482758620
+                           and fit.cpu_kv_per_token == 36864 and fit.capped_by_model,
                            f"layers={fit.gpu_layers} cpu_w={fit.cpu_weights} "
                            f"kv={fit.cpu_kv_per_token}")
 
@@ -2744,6 +3022,48 @@ def test_cpu_fit() -> int:
                            and fit.footprint_bytes <= fit.target_bytes
                            and any("no GPU memory data" in note for note in fit.notes),
                            f"ctx={fit.ctx} fp={fit.footprint_bytes} target={fit.target_bytes}")
+
+    empirical_cpu_points = [
+        (ctx, weights + 256 * 2 ** 20 + 100000 * ctx)
+        for ctx in (4096, 16384)
+    ]
+    calibrated_cpu = orun.estimate_max_cpu_ctx(
+        CPU_SHOW, weights, ram, percent=30, machine=None,
+        empirical_points=empirical_cpu_points)
+    failures += _fit_check("CPU estimate uses the conservative measured byte slope",
+                           calibrated_cpu.cpu_kv_per_token == 100000
+                           and calibrated_cpu.ctx < fit.ctx
+                           and any("calibrated from" in note for note in calibrated_cpu.notes),
+                           f"slope={calibrated_cpu.cpu_kv_per_token} "
+                           f"ctx={calibrated_cpu.ctx} baseline={fit.ctx}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cache_path = Path(tmp) / "ctxfit.json"
+        cached_client = _CpuFitClient()
+        cached_machine = orun.MachineGpu()
+        cached_ram = orun.MachineRam(total_bytes=16 * GIB, available_bytes=16 * GIB,
+                                     source="local")
+        base_cpu = orun.estimate_max_cpu_ctx(cached_client.show_data,
+                                             cached_client.weights, cached_ram,
+                                             percent=30, machine=cached_machine)
+        cached_req = orun.FitRequest(client=cached_client, model="m1", config={},
+                                     machine=cached_machine, ram=cached_ram,
+                                     calibration_path=str(cache_path))
+        cache_key = orun.ctxfit._calibration_scope(
+            cached_req, mode="cpu", model_digest="", weight_bytes=cached_client.weights,
+            show_data=cached_client.show_data, machine=cached_machine,
+            pinned_layers=None, gpu_layers=base_cpu.gpu_layers)
+        cache = orun.CtxCalibrationStore(cache_path)
+        for ctx in (4096, 16384):
+            cache.add(cache_key, ctx, 2_000_000_000 + 256 * 2 ** 20 + 80000 * ctx)
+        with orun.console.capture() as cap:
+            chosen = orun.max_cpu_context(cached_req, percent=30)
+        failures += _fit_check("estimate-only CPU fit reuses stored measurements without loading",
+                               chosen is not None and chosen < base_cpu.ctx
+                               and "calibrated from" in _plain(cap.get())
+                               and not cached_client.load_ctxs,
+                               f"chosen={chosen} baseline={base_cpu.ctx} "
+                               f"out={_plain(cap.get())[-180:]}")
 
     fit = orun.estimate_max_cpu_ctx(CPU_SHOW, weights, ram, percent=30,
                                     machine=machine, pinned_layers=29)
@@ -2767,25 +3087,63 @@ def test_cpu_fit() -> int:
 
     # ── probe loop ──────────────────────────────────────────────────────────
     def run_cpu_probe(client, *, available=16 * GIB, percent=30, **request_kwargs):
+        previous_path = orun.ctxfit.CTXFIT_CALIBRATION_PATH
+        probe_tmp = tempfile.TemporaryDirectory()
+        orun.ctxfit.CTXFIT_CALIBRATION_PATH = Path(probe_tmp.name) / "ctxfit.json"
         request = orun.FitRequest(
-            client=client, model="m1", config={"max_cpu_probes": 8},
+            client=client, model="m1", config={"max_cpu_probes": 10},
             ram=orun.MachineRam(total_bytes=16 * GIB, available_bytes=available,
                                 source="local"),
             machine=orun.MachineGpu(devices=[(4096, 3300)], env={}),
             **request_kwargs)
-        with orun.console.capture() as cap:
-            chosen = orun.max_cpu_context(request, percent=percent, probe=True)
-        return chosen, _plain(cap.get())
+        try:
+            with orun.console.capture() as cap:
+                chosen = orun.max_cpu_context(request, percent=percent, probe=True)
+            return chosen, _plain(cap.get())
+        finally:
+            orun.ctxfit.CTXFIT_CALIBRATION_PATH = previous_path
+            probe_tmp.cleanup()
 
     target = 16 * GIB * 30 // 100
     client = _CpuFitClient()
     chosen, out = run_cpu_probe(client)
     failures += _fit_check("--max-cpu --probe lands on the simulated boundary",
                            chosen == client.truth(target) == 78848
-                           and client.load_ctxs == [51200, 78080, 78848]
+                           and client.load_ctxs == [54272, 79360, 78848, 79104]
                            and "host RAM" in out,
                            f"chosen={chosen} truth={client.truth(target)} "
                            f"probes={client.load_ctxs}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cache_path = Path(tmp) / "ctxfit.json"
+        cached_client = _CpuFitClient()
+        cached_machine = orun.MachineGpu(devices=[(4096, 3300)], env={}, source="local")
+        cached_ram = orun.MachineRam(total_bytes=16 * GIB, available_bytes=16 * GIB,
+                                     source="local")
+        baseline = orun.estimate_max_cpu_ctx(
+            cached_client.show_data, cached_client.weights, cached_ram,
+            percent=30, machine=cached_machine)
+        cached_client.cpu_weights = baseline.cpu_weights
+        cached_client.cpu_kv = baseline.cpu_kv_per_token
+        cached_req = orun.FitRequest(
+            client=cached_client, model="m1", config={"max_cpu_probes": 8},
+            ram=cached_ram, machine=cached_machine, num_gpu=baseline.gpu_layers,
+            calibration_path=str(cache_path))
+        cache_key = orun.ctxfit._calibration_scope(
+            cached_req, mode="cpu", model_digest="", weight_bytes=cached_client.weights,
+            show_data=cached_client.show_data, machine=cached_machine,
+            pinned_layers=baseline.gpu_layers, gpu_layers=baseline.gpu_layers)
+        cache = orun.CtxCalibrationStore(cache_path)
+        for ctx in (4096, 16384):
+            cache.add(cache_key, ctx, cached_client.cpu_weights + cached_client.cpu_kv * ctx)
+        with orun.console.capture() as cap:
+            chosen = orun.max_cpu_context(cached_req, percent=30, probe=True)
+        failures += _fit_check("cached CPU slope solves the probe boundary in fewer loads",
+                               chosen == cached_client.truth(target)
+                               and len(cached_client.load_ctxs) <= 2
+                               and "calibrated from" in _plain(cap.get()),
+                               f"chosen={chosen} truth={cached_client.truth(target)} "
+                               f"probes={cached_client.load_ctxs}")
 
     capped = _CpuFitClient(model_max=4096)
     chosen, out = run_cpu_probe(capped)
@@ -2875,11 +3233,16 @@ def test_cpu_fit() -> int:
             percent=30)
     failures += _fit_check("max_cpu_context needs the model in /api/tags",
                            chosen is None and "/api/tags" in cap.get())
+    orun.ctxfit.CTXFIT_CALIBRATION_PATH = old_calibration_path
+    calibration_tmp.cleanup()
     return failures
 
 
 def test_cmd_num_ctx_max_cpu() -> int:
     failures = 0
+    old_calibration_path = orun.ctxfit.CTXFIT_CALIBRATION_PATH
+    calibration_tmp = tempfile.TemporaryDirectory()
+    orun.ctxfit.CTXFIT_CALIBRATION_PATH = Path(calibration_tmp.name) / "ctxfit.json"
     with tempfile.TemporaryDirectory() as tmp:
         store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
         args = orun.build_parser().parse_args(["m1", "--render", "plain"])
@@ -2946,6 +3309,8 @@ def test_cmd_num_ctx_max_cpu() -> int:
         finally:
             orun.ctxfit.probe_machine_gpu = original_gpu
             orun.ctxfit.probe_machine_ram = original_ram
+            orun.ctxfit.CTXFIT_CALIBRATION_PATH = old_calibration_path
+            calibration_tmp.cleanup()
     return failures
 
 
@@ -10213,6 +10578,7 @@ if __name__ == "__main__":
              + test_context_usage()
              + test_cmd_num_ctx() + test_ctxfit() + test_cmd_num_ctx_max_gpu()
              + test_ram_helpers() + test_cpu_fit() + test_cmd_num_ctx_max_cpu()
+             + test_model_profile()
              + test_emit_and_cli_functions()
              + test_build_parser_flags() + test_remote_hosts()
              + test_pull_and_disk_helpers() + test_ensure_model()
