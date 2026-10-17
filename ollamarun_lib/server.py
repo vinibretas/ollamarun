@@ -244,6 +244,18 @@ class _Handler(BaseHTTPRequestHandler):
     def version_string(self) -> str:
         return self.server_version  # no trailing space from the empty sys_version
 
+    def setup(self) -> None:
+        # Apply the server's configured per-operation socket timeout before
+        # the stdlib setup reads `self.timeout` (the class default would
+        # otherwise ignore `HttpServer(request_timeout=…)`). It is a
+        # per-operation timeout, not a total deadline: an SSE stream that
+        # keeps writing (heartbeats included) is never cut off, a stalled
+        # client's write fails and fires `on_disconnect`.
+        configured = getattr(self.server, "request_timeout", None)
+        if configured and float(configured) > 0:
+            self.timeout = float(configured)
+        super().setup()
+
     # ── verbs ───────────────────────────────────────────────────────────────
 
     def do_GET(self) -> None:  # noqa: N802 - http.server naming

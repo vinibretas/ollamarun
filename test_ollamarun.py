@@ -8335,10 +8335,12 @@ class _ServeClient(_FakeClient):
         return super().chat(payload, timeout=timeout, cancel=cancel)
 
 
-def _start_api(client=None, *, router_kwargs=None, server_kwargs=None):
+def _start_api(client=None, *, factory=None, router_kwargs=None,
+               server_kwargs=None):
     """An API server on an ephemeral loopback port with a fake backend."""
     client = client if client is not None else _ServeClient(models=["m1"])
-    router = orun.build_router(lambda: client, **(router_kwargs or {}))
+    make_client = factory if factory is not None else (lambda: client)
+    router = orun.build_router(make_client, **(router_kwargs or {}))
     server = orun.HttpServer(router, bind="127.0.0.1", port=0, ping_interval=0.2,
                              **(server_kwargs or {}))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -8411,6 +8413,8 @@ def test_openai_mapping() -> int:
     for name, body in (
         ("an unknown field", {"model": "m1", "messages": user, "foo": 1}),
         ("n > 1", {"model": "m1", "messages": user, "n": 2}),
+        ("a boolean n", {"model": "m1", "messages": user, "n": True}),
+        ("a float n", {"model": "m1", "messages": user, "n": 1.0}),
         ("logprobs", {"model": "m1", "messages": user, "logprobs": True}),
         ("logit_bias", {"model": "m1", "messages": user,
                         "logit_bias": {"1": 2}}),
@@ -8421,8 +8425,34 @@ def test_openai_mapping() -> int:
         ("an out-of-range temperature", {"model": "m1", "messages": user,
                                          "temperature": 5}),
         ("empty messages", {"model": "m1", "messages": []}),
+        ("a malformed message element", {"model": "m1", "messages": [None]}),
+        ("a string message element", {"model": "m1", "messages": ["oops"]}),
+        ("a numeric message element", {"model": "m1", "messages": [42]}),
         ("tool_choice required", {"model": "m1", "messages": user,
                                   "tools": [tool], "tool_choice": "required"}),
+        ("tool_choice without tools", {"model": "m1", "messages": user,
+                                       "tool_choice": "auto"}),
+        ("required without tools", {"model": "m1", "messages": user,
+                                    "tool_choice": "required"}),
+        ("string include_usage", {"model": "m1", "messages": user,
+                                  "stream_options": {"include_usage": "false"}}),
+        ("numeric include_usage", {"model": "m1", "messages": user,
+                                   "stream_options": {"include_usage": 1}}),
+        ("strict tool schemas", {"model": "m1", "messages": user, "tools": [
+            {"type": "function",
+             "function": {"name": "f", "strict": True}}]}),
+        ("an unknown tool field", {"model": "m1", "messages": user, "tools": [
+            {"type": "function", "function": {"name": "f"}, "bogus": 1}]}),
+        ("an unknown function field", {"model": "m1", "messages": user,
+                                       "tools": [
+            {"type": "function",
+             "function": {"name": "f", "bogus": 1}}]}),
+        ("a malformed json_schema wrapper", {"model": "m1", "messages": user,
+            "response_format": {"type": "json_schema", "json_schema": {
+                "name": "n", "schema": {"type": "object"}, "bogus": 1}}}),
+        ("a non-boolean json_schema strict", {"model": "m1", "messages": user,
+            "response_format": {"type": "json_schema", "json_schema": {
+                "name": "n", "strict": "yes", "schema": {"type": "object"}}}}),
         ("an unknown role", {"model": "m1", "messages": [
             {"role": "wizard", "content": "x"}]}),
     ):
@@ -8434,6 +8464,19 @@ def test_openai_mapping() -> int:
     failures = _check(failures, "an unknown field names itself",
                       exc is not None and exc.param == "foo"
                       and exc.code == "unknown_field", repr(exc))
+    exc = _api_error(orun.parse_chat_request,
+                     {"model": "m1", "system": "auto", "messages": ["oops"]})
+    failures = _check(failures, "system + a malformed first message is a 400",
+                      exc is not None and exc.status == 400
+                      and exc.param == "messages[0]", repr(exc))
+    accepted = orun.parse_chat_request({
+        "model": "m1", "n": 1, "messages": user,
+        "stream_options": {"include_usage": False},
+        "tools": [{"type": "function",
+                   "function": {"name": "f", "strict": False}}]})
+    failures = _check(failures, "the strict forms of n/strict still pass",
+                      accepted.include_usage is False
+                      and bool(accepted.tools), str(accepted))
 
     plain = orun.parse_chat_request({"model": "m1", "messages": user})
     auto = orun.parse_chat_request({"model": "m1", "system": "auto",
@@ -8526,6 +8569,36 @@ def test_openai_mapping() -> int:
                       remote is not None and remote.status == 400,
                       repr(remote))
 
+    import ollamarun_lib.openai_api as api_module
+    wrapper = orun.parse_chat_request({
+        "model": "m1", "messages": user,
+        "response_format": {"type": "json_schema", "json_schema": {
+            "name": "weather", "description": "d", "strict": True,
+            "schema": {"type": "object"}}}})
+    failures = _check(failures, "a full json_schema wrapper maps to its schema",
+                      wrapper.fmt == {"type": "object"}, str(wrapper.fmt))
+    original_cap = api_module.MAX_IMAGE_BYTES
+    try:
+        api_module.MAX_IMAGE_BYTES = 8
+        small_b64 = base64.b64encode(b"1234").decode()
+        small = orun.parse_chat_request({
+            "model": "m1",
+            "messages": [{"role": "user", "content": [
+                {"type": "image_url",
+                 "image_url": {"url": f"data:image/png;base64,{small_b64}"}}]}]})
+        big_b64 = base64.b64encode(b"x" * 64).decode()
+        big = _api_error(orun.parse_chat_request, {
+            "model": "m1",
+            "messages": [{"role": "user", "content": [
+                {"type": "image_url",
+                 "image_url": {"url": f"data:image/png;base64,{big_b64}"}}]}]})
+        failures = _check(failures, "an oversized image is a 413",
+                          small.has_images and big is not None
+                          and big.status == 413
+                          and big.code == "image_too_large", repr(big))
+    finally:
+        api_module.MAX_IMAGE_BYTES = original_cap
+
     plan = orun.parse_chat_request({"model": "m1", "messages": user})
     body = orun.completion_body(plan, {
         "message": {"content": "", "tool_calls": [
@@ -8561,7 +8634,6 @@ def test_openai_mapping() -> int:
                       and isinstance(model["created"], int)
                       and model["created"] > 0, str(model))
 
-    import ollamarun_lib.openai_api as api_module
     leaked = [name for name in ("AgentRuntime", "ToolRunner", "Session",
                                 "TurnManager")
               if hasattr(api_module, name)]
@@ -8817,6 +8889,215 @@ def test_serve_disconnect() -> int:
     return failures
 
 
+def test_serve_sockets() -> int:
+    """Socket lifecycle: request timeout, long streams, shutdown, isolation."""
+    failures = 0
+
+    # A stalled request body hits the wired request timeout with a 408.
+    server, _client, thread = _start_api(
+        _ServeClient(models=["m1"]),
+        server_kwargs={"request_timeout": 0.4})
+    try:
+        sock = socket.create_connection(("127.0.0.1", server.address[1]),
+                                        timeout=8)
+        try:
+            sock.sendall(b"POST /v1/chat/completions HTTP/1.1\r\n"
+                         b"Host: 127.0.0.1\r\n"
+                         b"Content-Type: application/json\r\n"
+                         b"Content-Length: 100\r\n\r\n")
+            data = b""
+            while True:
+                piece = sock.recv(4096)
+                if not piece:
+                    break
+                data += piece
+        finally:
+            sock.close()
+        status_line = data.split(b"\r\n", 1)[0].decode(errors="replace")
+        body = data.split(b"\r\n\r\n", 1)[1] if b"\r\n\r\n" in data else b""
+        try:
+            envelope = json.loads(body or b"{}")
+        except ValueError:
+            envelope = {}
+        failures = _check(failures, "a stalled body times out with a 408 envelope",
+                          "408" in status_line
+                          and envelope.get("error", {}).get("code") == "timeout",
+                          f"{status_line!r} {data[:160]!r}")
+    finally:
+        _stop_api(server, thread)
+
+    # A stream that outlives request_timeout still completes: the timeout is
+    # per socket operation, not a deadline on the response.
+    slow_stream = _ServeClient(models=["m1"], chunk_count=8, chunk_delay=0.1)
+    server, _client, thread = _start_api(
+        slow_stream, server_kwargs={"request_timeout": 0.3})
+    try:
+        status, _headers, raw = _http(
+            server, "POST", "/v1/chat/completions",
+            body={"model": "m1", "stream": True,
+                  "messages": [{"role": "user", "content": "hi"}]},
+            timeout=15)
+        events = _sse_events(raw)
+        content = [chunk for chunk in (json.loads(item) for item in events
+                                       if item != "[DONE]")
+                   if chunk["choices"]
+                   and chunk["choices"][0]["delta"].get("content")]
+        failures = _check(failures, "a stream longer than request_timeout completes",
+                          status == 200 and events and events[-1] == "[DONE]"
+                          and len(content) == 8,
+                          f"{status} {len(events)} {len(content)}")
+    finally:
+        _stop_api(server, thread)
+
+    # Shutdown while a stream is in flight cannot hang the accept loop.
+    busy = _ServeClient(models=["m1"], chunk_count=150, chunk_delay=0.01)
+    server, _client, thread = _start_api(busy)
+    result: dict = {}
+
+    def read_stream() -> None:
+        result["out"] = _http(
+            server, "POST", "/v1/chat/completions",
+            body={"model": "m1", "stream": True,
+                  "messages": [{"role": "user", "content": "hi"}]},
+            timeout=20)
+
+    reader = threading.Thread(target=read_stream)
+    reader.start()
+    time.sleep(0.25)
+    started = time.monotonic()
+    server.shutdown()
+    elapsed = time.monotonic() - started
+    server.close()
+    thread.join(timeout=5)
+    failures = _check(failures, "shutdown during a stream returns promptly",
+                      elapsed < 2.0 and not thread.is_alive(), f"{elapsed:.2f}s")
+    reader.join(timeout=10)
+    failures = _check(failures, "the in-flight stream never deadlocks the turn",
+                      not reader.is_alive(), "reader still alive")
+
+    # Two concurrent streams: a hard client abort cancels only its own client.
+    clients = []
+
+    def factory():
+        fresh = _ServeClient(models=["m1"], chunk_count=30, chunk_delay=0.02)
+        clients.append(fresh)
+        return fresh
+
+    server, _client, thread = _start_api(factory=factory)
+    try:
+        body = json.dumps({"model": "m1", "stream": True,
+                           "messages": [{"role": "user",
+                                         "content": "hi"}]}).encode()
+        sock = socket.create_connection(("127.0.0.1", server.address[1]),
+                                        timeout=8)
+        sock.sendall(b"POST /v1/chat/completions HTTP/1.1\r\n"
+                     b"Host: 127.0.0.1\r\nContent-Type: application/json\r\n"
+                     b"Content-Length: " + str(len(body)).encode()
+                     + b"\r\n\r\n" + body)
+        sock.recv(256)  # the first stream is live
+
+        second: dict = {}
+
+        def read_second() -> None:
+            second["out"] = _http(
+                server, "POST", "/v1/chat/completions",
+                body={"model": "m1", "stream": True,
+                      "messages": [{"role": "user", "content": "hi"}]},
+                timeout=20)
+
+        reader = threading.Thread(target=read_second)
+        reader.start()
+        time.sleep(0.1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
+                        struct.pack("ii", 1, 0))
+        sock.close()  # hard-abort the first stream
+        reader.join(timeout=15)
+        events = _sse_events(second["out"][2]) if second.get("out") else []
+        content = [chunk for chunk in (json.loads(item) for item in events
+                                       if item != "[DONE]")
+                   if chunk["choices"]
+                   and chunk["choices"][0]["delta"].get("content")]
+        failures = _check(failures, "aborting one stream leaves the other intact",
+                          bool(second.get("out")) and bool(events)
+                          and events[-1] == "[DONE]" and len(content) == 30,
+                          f"{len(events)} {len(content)}")
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not any(c.abort_calls for c in clients):
+            time.sleep(0.02)
+        aborted = [c for c in clients if c.abort_calls]
+        untouched = [c for c in clients if c not in aborted]
+        failures = _check(failures, "only the aborted stream's client is cancelled",
+                          len(aborted) == 1
+                          and all(c.abort_calls == 0 for c in untouched),
+                          str([c.abort_calls for c in clients]))
+    finally:
+        _stop_api(server, thread)
+    return failures
+
+
+def test_serve_cache_concurrency() -> int:
+    """Concurrent cold requests share one upstream model/capability fetch."""
+    failures = 0
+
+    class _CountingClient(_ServeClient):
+        def __init__(self):
+            super().__init__(models=["m1", "m2"],
+                             capabilities=["completion", "vision"])
+            self.tags_calls = 0
+            self.capability_calls = 0
+
+        def tags(self):
+            self.tags_calls += 1
+            time.sleep(0.05)
+            return super().tags()
+
+        def capabilities(self, model):
+            self.capability_calls += 1
+            time.sleep(0.05)
+            return super().capabilities(model)
+
+    client = _CountingClient()
+    server, _client, thread = _start_api(factory=lambda: client)
+    try:
+        statuses: list = []
+
+        def hit_models() -> None:
+            statuses.append(_http(server, "GET", "/v1/models")[0])
+
+        threads = [threading.Thread(target=hit_models) for _ in range(8)]
+        for thread_ in threads:
+            thread_.start()
+        for thread_ in threads:
+            thread_.join()
+        failures = _check(failures, "concurrent model lists are all served",
+                          statuses == [200] * 8 and client.tags_calls == 1,
+                          f"{statuses} tags={client.tags_calls}")
+
+        image = base64.b64encode(b"png").decode()
+        image_part = [{"type": "image_url",
+                       "image_url": {"url": f"data:image/png;base64,{image}"}}]
+        statuses.clear()
+
+        def hit_image() -> None:
+            statuses.append(_http(
+                server, "POST", "/v1/chat/completions",
+                body={"model": "m2", "messages": [
+                    {"role": "user", "content": image_part}]})[0])
+
+        threads = [threading.Thread(target=hit_image) for _ in range(4)]
+        for thread_ in threads:
+            thread_.start()
+        for thread_ in threads:
+            thread_.join()
+        failures = _check(failures, "concurrent vision checks share one probe",
+                          statuses == [200] * 4
+                          and client.capability_calls == 1,
+                          f"{statuses} capabilities={client.capability_calls}")
+    finally:
+        _stop_api(server, thread)
+    return failures
+
+
 def test_serve_cli() -> int:
     """The `serve` subcommand: parser, config defaults and dispatch."""
     failures = 0
@@ -8922,12 +9203,161 @@ def test_openai_sdk() -> int:
                           and json.loads(call.function.arguments)
                           == {"city": "SP"},
                           str(tool_response)[:200])
+
+        def sdk_failure(callable_):
+            try:
+                callable_()
+                return None
+            except Exception as exc:  # the test wants the SDK's own type
+                return exc
+
+        raised = sdk_failure(lambda: api.chat.completions.create(
+            model="m1", n=2, messages=[{"role": "user", "content": "hi"}]))
+        failures = _check(failures, "the SDK surfaces rejected fields as 400s",
+                          raised is not None
+                          and type(raised).__name__ == "BadRequestError"
+                          and getattr(raised, "status_code", None) == 400
+                          and "only the integer 1" in str(raised),
+                          repr(raised)[:200])
+
+        raised = sdk_failure(lambda: api.chat.completions.create(
+            model="m1", messages=[{"role": "user", "content": "hi"}],
+            extra_body={"bogus": True}))
+        failures = _check(failures, "the SDK surfaces unknown fields as 400s",
+                          raised is not None
+                          and type(raised).__name__ == "BadRequestError"
+                          and "unknown field: bogus" in str(raised),
+                          repr(raised)[:200])
+
+        client.chat_script = [[{"error": "boom"}]]
+        client.chat_calls = 0
+
+        def drain() -> None:
+            with api.chat.completions.create(
+                    model="m1", stream=True,
+                    messages=[{"role": "user", "content": "hi"}]) as stream:
+                for _chunk in stream:
+                    pass
+
+        raised = sdk_failure(drain)
+        failures = _check(failures, "a mid-stream backend failure raises APIError",
+                          raised is not None
+                          and type(raised).__name__ == "APIError"
+                          and "the model backend failed" in str(raised),
+                          repr(raised)[:200])
+    finally:
+        _stop_api(server, thread)
+    return failures
+
+
+def _smallest_chat_model(client, entries) -> str:
+    """The smallest installed local model that advertises chat completion.
+
+    Cloud-proxied models (`name:cloud`, ~zero on-disk size) are skipped
+    unless nothing local exists: they can require paid usage and are not a
+    meaningful smoke target.
+    """
+    def pick(candidates) -> str:
+        for entry in candidates:
+            name = entry.get("name") or entry.get("model") or ""
+            if name and "completion" in client.capabilities(name):
+                return str(name)
+        return ""
+
+    ordered = sorted((entry for entry in entries if isinstance(entry, dict)),
+                     key=lambda entry: entry.get("size") or 0)
+    local = [entry for entry in ordered
+             if (entry.get("size") or 0) > 1024 * 1024
+             and not str(entry.get("name") or "").endswith(":cloud")]
+    return pick(local) or pick(ordered)
+
+
+def test_serve_live() -> int:
+    """Real-backend smoke test: only runs with `--live`."""
+    failures = 0
+    host = os.environ.get("OLLAMA_HOST") or orun.DEFAULT_HOST
+    client = orun.OllamaClient(host, timeout=600)
+    try:
+        entries = client.tags()
+    except orun.OllamaError as exc:
+        print(f"FAIL  --live: Ollama at {host} is unreachable: {exc}")
+        return 1
+    model = os.environ.get("OLLAMARUN_TEST_MODEL") \
+        or _smallest_chat_model(client, entries)
+    if not model:
+        print("FAIL  --live: no chat-capable model found on the backend")
+        return 1
+    print(f"      --live: using {model} on {host}")
+    server, _client, thread = _start_api(
+        factory=lambda: orun.OllamaClient(host, timeout=600))
+    try:
+        status, _headers, raw = _http(server, "GET", "/v1/models", timeout=30)
+        listed = {entry.get("id") for entry in json.loads(raw).get("data", [])}
+        failures = _check(failures, "live: the model list includes the model",
+                          status == 200 and model in listed, raw[:160])
+
+        status, _headers, raw = _http(
+            server, "POST", "/v1/chat/completions",
+            body={"model": model, "temperature": 0, "max_tokens": 16,
+                  "messages": [{"role": "user",
+                                "content": "Reply with exactly: ok"}]},
+            timeout=600)
+        body = json.loads(raw)
+        choices = body.get("choices") or []
+        content = (choices[0]["message"].get("content") or "") if choices else ""
+        usage = body.get("usage") or {}
+        failures = _check(failures, "live: a completion returns content and usage",
+                          status == 200 and bool(content.strip())
+                          and (usage.get("total_tokens") or 0) > 0, raw[:300])
+
+        status, _headers, raw = _http(
+            server, "POST", "/v1/chat/completions",
+            body={"model": model, "temperature": 0, "max_tokens": 16,
+                  "stream": True,
+                  "messages": [{"role": "user",
+                                "content": "Reply with exactly: ok"}]},
+            timeout=600)
+        events = _sse_events(raw)
+        streamed = [chunk for chunk in (json.loads(item) for item in events
+                                        if item != "[DONE]")
+                    if chunk.get("choices")
+                    and chunk["choices"][0]["delta"].get("content")]
+        failures = _check(failures, "live: streaming ends with [DONE]",
+                          status == 200 and bool(events)
+                          and events[-1] == "[DONE]" and bool(streamed),
+                          str(events[-2:])[:200])
+
+        if os.environ.get("OLLAMARUN_TEST_MODEL"):
+            status, _headers, raw = _http(
+                server, "POST", "/v1/chat/completions",
+                body={"model": model, "temperature": 0,
+                      "messages": [{"role": "user", "content":
+                          "What is the weather in Sao Paulo? "
+                          "Use the get_weather tool."}],
+                      "tools": [{"type": "function", "function": {
+                          "name": "get_weather", "description": "weather",
+                          "parameters": {"type": "object", "properties": {
+                              "city": {"type": "string"}},
+                              "required": ["city"]}}}]},
+                timeout=600)
+            body = json.loads(raw)
+            choices = body.get("choices") or []
+            calls = (choices[0]["message"].get("tool_calls") or []) if choices else []
+            failures = _check(failures, "live: the tool call round-trips",
+                              status == 200 and bool(choices)
+                              and choices[0].get("finish_reason") == "tool_calls"
+                              and bool(calls)
+                              and calls[0]["function"]["name"] == "get_weather",
+                              raw[:300])
     finally:
         _stop_api(server, thread)
     return failures
 
 
 if __name__ == "__main__":
+    live = "--live" in sys.argv[1:]
+    if live:
+        print("--live: also running the real-backend smoke test")
     total = (test_math() + test_parsing_helpers() + test_stats_helpers()
              + test_resolve_show_stats()
              + test_file_mentions() + test_images() + test_session_store()
@@ -8997,8 +9427,11 @@ if __name__ == "__main__":
              + test_turn_manager_shutdown()
              + test_turn_manager_context() + test_turn_manager_headless_turn()
              + test_openai_mapping() + test_serve_http()
-             + test_serve_disconnect() + test_serve_cli()
-             + test_openai_sdk())
+             + test_serve_disconnect() + test_serve_sockets()
+             + test_serve_cache_concurrency()
+             + test_serve_cli()
+             + test_openai_sdk()
+             + (test_serve_live() if live else 0))
     if total:
         print(f"\n{total} failure(s)")
         sys.exit(1)
