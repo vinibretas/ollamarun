@@ -258,6 +258,69 @@ local — there is no separate remote code path. Names resolve through
 tailscale node state when the machine is down, and resuming a session
 reconnects to the machine it last ran on.
 
+## OpenAI-compatible API (`ollamarun serve`)
+
+`ollamarun serve` runs a local HTTP API in front of Ollama, so any OpenAI
+client can use the local models. The listener is LAN-accessible by default
+(`0.0.0.0:11440`); `--bind IP` / `--port N` narrow or change it and are
+separate from the upstream `--host` / `--remote`, which pick the Ollama
+machine:
+
+```console
+$ ollamarun serve [--bind IP] [--port N] [--host HOST | --remote NAME]
+```
+
+| Endpoint | What it does |
+| --- | --- |
+| `GET /v1/models` | installed models as OpenAI model objects |
+| `GET /v1/models/{id}` | one model (404 + error envelope when unknown) |
+| `POST /v1/chat/completions` | one model turn, streaming (`stream: true`) or not |
+
+> **Trusted-network-only.** The service has no authentication; the bind
+> address is its only boundary. Keep it on the LAN/tailnet and never expose
+> the port to the public internet.
+
+Model turns are a translation proxy: one request is one `/api/chat` call.
+Client `tools` are passed to the backend and returned as standard
+`tool_calls` with `finish_reason: "tool_calls"` — they are never executed
+here, so this endpoint cannot trigger the agent harness (full agent turns
+arrive with the native `/v1/agent/*` endpoints in a later phase). Streaming
+emits OpenAI SSE only: a role chunk, content deltas, the finish chunk, an
+optional usage chunk (`stream_options.include_usage`) and `data: [DONE]`;
+thinking models surface their reasoning as the non-standard
+`delta.reasoning_content`, which normal clients ignore. A dropped streaming
+client cancels its own upstream generation.
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://localhost:11440/v1", api_key="unused")
+print(client.chat.completions.create(
+    model="qwen3:8b",
+    messages=[{"role": "user", "content": "hello"}]).choices[0].message.content)
+```
+
+Supported fields: `temperature`, `top_p`, `max_tokens` /
+`max_completion_tokens` (→ `num_predict`), `stop`, `seed`,
+`presence_penalty`, `frequency_penalty`, `response_format` (`json_object` /
+`json_schema` → Ollama `format`), `reasoning_effort` (low/medium/high →
+Ollama `think`), `tools`, `tool_choice` (`auto`, `none`, or a specific
+function), `stream`, `stream_options.include_usage`, and the extension
+`system` (`"auto"` = the built-in default prompt, text = replace it, absent
+= none; a client-sent system message always wins).
+
+Compatibility gaps are rejected explicitly with structured `400`s instead
+of being silently ignored: `n > 1`, `logprobs` / `top_logprobs`,
+`logit_bias`, `audio`, non-text `modalities`, unknown fields and
+`tool_choice: "required"` (the backend cannot force a call). `image_url`
+content parts must be `data:` URIs for now (remote image URLs land with the
+artifacts phase), are validated against the model's `capabilities` and
+refused with `model_does_not_support_images` when vision is absent.
+`response_format` schema support is Ollama-dependent. Errors use the OpenAI
+envelope with proper status codes (400/404/405/413/502); oversized bodies
+are rejected before parsing, and responses never carry tracebacks or
+internal paths (`--debug` logs requests and tracebacks to
+`~/etc/logs/ollamarun.log`).
+
 ## Prompts and tool definitions
 
 The model-facing text lives in files, not code:
@@ -366,9 +429,9 @@ Selected config keys: `render`, `math`, `thinking`, `ui`, `show_stats`,
 `tps_footer`, `max_render_chars`, `pager`, `auto_title`, `auto_compact`,
 `image_storage`, `max_file_kb`, `options`, `unload_on_exit`, `gpu_layers`,
 `tools*`, `tool_colors`, `tts*`, `chem_*`, `remote*`, `max_gpu_*`,
-`max_cpu_*`, `timeout`. The turn-manager keys
+`max_cpu_*`, `serve_bind`, `serve_port`, `timeout`. The turn-manager keys
 (`serve_max_active_turns`, `serve_turn_event_buffer`, `serve_turn_event_ttl`)
-are read by the planned serve front end. See `DEFAULT_CONFIG` in
+belong to the agent endpoints of the upcoming phase. See `DEFAULT_CONFIG` in
 `ollamarun_lib/constants.py` for the full set.
 
 ## Layout
