@@ -366,8 +366,10 @@ Selected config keys: `render`, `math`, `thinking`, `ui`, `show_stats`,
 `tps_footer`, `max_render_chars`, `pager`, `auto_title`, `auto_compact`,
 `image_storage`, `max_file_kb`, `options`, `unload_on_exit`, `gpu_layers`,
 `tools*`, `tool_colors`, `tts*`, `chem_*`, `remote*`, `max_gpu_*`,
-`max_cpu_*`, `timeout`. See `DEFAULT_CONFIG` in `ollamarun_lib/constants.py`
-for the full set.
+`max_cpu_*`, `timeout`. The turn-manager keys
+(`serve_max_active_turns`, `serve_turn_event_buffer`, `serve_turn_event_ttl`)
+are read by the planned serve front end. See `DEFAULT_CONFIG` in
+`ollamarun_lib/constants.py` for the full set.
 
 ## Layout
 
