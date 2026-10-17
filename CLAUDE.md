@@ -507,14 +507,22 @@ a module's own docstring for what lives there before editing:
    API's `on_success` hook, so this module never touches the store.
 24. **`openai_api.py`** — the OpenAI-compatible `/v1` surface
    (`build_router()` registers `GET /v1/models`, `GET /v1/models/{id}`,
-   `POST /v1/chat/completions`). Model turns only: `parse_chat_request()`
-   validates the OpenAI schema (explicit 400s for unknown fields, `n>1`,
-   `logprobs`, `logit_bias`, `audio`, non-text modalities,
+   `POST /v1/embeddings`, `POST /v1/chat/completions`). Model turns only:
+   `parse_chat_request()` validates the OpenAI schema (explicit 400s for
+   unknown fields, `n` outside 1..8 or non-integer, `logprobs`,
+   `logit_bias`, `audio`, non-text modalities,
    `tool_choice: "required"`), converts messages verbatim (assistant
    `tool_calls`, `role: tool` + `tool_call_id`→`tool_name` history,
-   data-URI images) and `ollama_payload()` builds the one `/api/chat`
-   call; client `tools` pass through and never execute (the agent loop,
-   tools registry and sessions are not reachable from this module).
+   data-URI images) and `ollama_payload()` builds the `/api/chat` call; an
+   `n > 1` request emulates the fan-out as `n` sequential generations
+   (indexed choices, summed usage, per-choice streaming indexes, capped at
+   `MAX_N = 8`), and `parallel_tool_calls: false` is honored by truncating
+   to the first returned call. `parse_embeddings_request()`/
+   `embeddings_body()` map `POST /v1/embeddings` onto `/api/embed` (string
+   or string-array inputs, float/base64 encodings, `dimensions` forwarded,
+   an `embedding` capability gate). Client `tools` pass through and never
+   execute (the agent loop, tools registry and sessions are not reachable
+   from this module).
    `completion_body()`/`_stream_completion()`/`stream_chunk()` shape the
    OpenAI response and SSE (role chunk, deltas, thinking as
    `delta.reasoning_content`, the tool calls as one indexed array chunk,
@@ -680,10 +688,13 @@ and the destructive-tool refusal after a stop. The Phase 2 tests
 `test_turn_manager_context`, `test_turn_manager_headless_turn`) cover
 envelopes, lifecycle, replay/gap/truncation, session exclusivity, the
 active cap, cancellation, overflow and shutdown. The Phase 3 serve tests
-(`test_openai_mapping`, `test_serve_http`, `test_serve_disconnect`,
+(`test_openai_mapping`, `test_embeddings_api`, `test_serve_http`,
+`test_serve_disconnect`,
 `test_serve_sockets`, `test_serve_cache_concurrency`, `test_serve_cli`,
 `test_openai_sdk`) pin request validation and message/tool mapping (strict
-types, exact error envelopes), the live HTTP surface over a fake backend
+types, exact error envelopes), the embeddings schema and gates, `n > 1`
+and `parallel_tool_calls` behavior, the live HTTP surface over a fake
+backend
 (models, non-stream and SSE chat, tool calls, the vision gate, body and
 image caps), client-disconnect cancellation with stream isolation, the
 wired request timeout (stalled body 408, streams outliving it),
@@ -705,8 +716,9 @@ completion, a SIGTERM mid-stream drain, a clean exit, the tracked unload),
 `test_turn_mode_isolation` pins the model-turn-vs-agent-turn contrast, and
 `test_pyflakes_clean` is the lint gate. `python3 test_ollamarun.py --live`
 additionally runs a real-backend smoke test (models, completion with
-usage, streaming, one full agent turn; tool round-trip with
-`OLLAMARUN_TEST_MODEL` set). The
+usage, streaming, embeddings — `OLLAMARUN_TEST_EMBED_MODEL` overrides the
+first embedding-capable pick — and one full agent turn; tool round-trip
+with `OLLAMARUN_TEST_MODEL` set). The
 Phase 4 agent tests (`test_agent_turn_lifecycle`, `test_agent_turn_controls`,
 `test_agent_approvals`, `test_agent_approval_edge`, `test_agent_policy_mode`,
 `test_agent_disconnect_policy`, `test_agent_turn_timeout`,

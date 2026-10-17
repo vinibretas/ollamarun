@@ -295,14 +295,17 @@ $ ollamarun serve [--bind IP] [--port N] [--host HOST | --remote NAME] [--keep-l
 | --- | --- |
 | `GET /v1/models` | installed models as OpenAI model objects |
 | `GET /v1/models/{id}` | one model (404 + error envelope when unknown) |
+| `POST /v1/embeddings` | one embeddings request (`input` as a string or an array of strings) |
 | `POST /v1/chat/completions` | one model turn, streaming (`stream: true`) or not |
 
 > **Trusted-network-only.** The service has no authentication; the bind
 > address is its only boundary. Keep it on the LAN/tailnet and never expose
 > the port to the public internet.
 
-Model turns are a translation proxy: one request is one `/api/chat` call.
-Client `tools` are passed to the backend and returned as standard
+Model turns are a translation proxy: one request is one `/api/chat` call
+(an `n > 1` request is emulated with that many sequential generations), and
+one embeddings request is one `/api/embed` call. Client `tools` are passed
+to the backend and returned as standard
 `tool_calls` with `finish_reason: "tool_calls"` — they are never executed
 here, so this endpoint cannot trigger the agent harness (full agent turns
 live under the native `/v1/agent/*` endpoints). Streaming
@@ -328,15 +331,31 @@ Ollama `think`), `tools`, `tool_choice` (`auto`, `none`, or a specific
 function), `stream`, `stream_options.include_usage`, and the extension
 `system` (`"auto"` = the built-in default prompt, text = replace it, absent
 = none; a client-sent system message always wins). `user` and `metadata`
-are accepted and ignored (tracking hints), and `parallel_tool_calls` is
-accepted but ignored for now — it must be a boolean, and a `false` still
-passes through until the compatibility phase honors it by returning a
-single call.
+are accepted and ignored (tracking hints); `n` runs that many generations
+(1..8, emulated sequentially, with the counters summed — see the limits
+note); `parallel_tool_calls` is honored: a `false` returns only the first
+tool call the backend produced (the backend cannot be told to emit a single
+call, so this is a truncation, not model steering).
+
+**Embeddings.** `POST /v1/embeddings` maps to `/api/embed`:
+`{model, input, encoding_format, dimensions, user}` with `input` a
+non-empty string or array of non-empty strings (a client's token arrays are
+rejected explicitly), `encoding_format` `"float"` (default) or `"base64"`
+(the little-endian float32 packing the official SDK sends by default), and
+`dimensions` forwarded to the backend for models that support truncated
+vectors. The response is the OpenAI list shape — `{object: "list", data:
+[{object: "embedding", index, embedding}], model, usage: {prompt_tokens,
+total_tokens}}` — with the token counts read from the backend. The model
+must advertise the `embedding` capability (`model_does_not_support_embeddings`
+otherwise; an unverifiable empty capability list passes), the `serve_models`
+allowlist applies, and the resolved-input budget bounds the inputs exactly
+like chat content.
 
 Request validation is strict, and every rejection is a structured error
 rather than a silent ignore: unknown fields anywhere (top level, tools,
-`tool_choice`, `response_format` wrappers), `n` other than the integer `1`,
-`logprobs`/`top_logprobs`, `logit_bias`, `audio`, non-text `modalities`
+`tool_choice`, `response_format` wrappers), `n` outside 1..8 or non-integer
+(each emulated choice is a full generation), `logprobs`/`top_logprobs`,
+`logit_bias`, `audio`, non-text `modalities`
 and `tool_choice: "required"` are rejected with `400`s; `strict: true` on a
 function tool is rejected because the backend does not enforce
 tool-argument schemas (`strict: false` is a no-op). `image_url` content
@@ -367,8 +386,9 @@ Resolving content parts is bounded separately, because a small body can
 name many large inputs: `serve_max_messages`, `serve_max_content_parts`,
 `serve_max_message_bytes`, `serve_max_text_bytes`, `serve_max_images` and
 `serve_max_image_bytes` (cumulative after resolving data URIs, remote
-fetches and file inlines; counts fail before any fetch). Violations are
-`413 input_too_large` naming the limit.
+fetches and file inlines; counts fail before any fetch). Embeddings inputs
+are charged to the same budget (input count, per-input bytes, total text).
+Violations are `413 input_too_large` naming the limit.
 `serve_request_timeout` (default 30 s) is a per-operation socket timeout —
 a streaming response that keeps writing (heartbeats included) is never cut
 off by it — and `serve_sse_ping_interval` (default 15 s) is the SSE
@@ -386,14 +406,20 @@ one (`404 model_not_found`).
 
 **Compatibility testing.** The surface is pinned by the project's test
 suite, which a client can trust as the compatibility contract: a required
-round-trip through the official `openai` SDK (completions, streaming with
-usage, typed tool calls, the 400 mappings, a mid-stream failure) plus the
-deterministic request/response matrix and a real-process smoke of
-`ollamarun serve` — `python3 test_ollamarun.py`, with `--live` adding a
-real-backend pass. There is no claim of complete OpenAI compatibility:
-everything accepted is listed above, everything rejected fails with a
-structured 400 (never a silent ignore), and behavior beyond that matrix is
-undefined until the compatibility phase closes it.
+round-trip through the official `openai` SDK (models, embeddings in both
+encodings, completions with `n > 1`, streaming with usage, typed tool
+calls, the 400 mappings, a mid-stream failure) plus the deterministic
+request/response matrix and a real-process smoke of `ollamarun serve` —
+`python3 test_ollamarun.py`, with `--live` adding a real-backend pass
+(models, completions, embeddings, one agent turn). Everything accepted is
+listed above, and everything the backend cannot do is rejected with a
+structured 400 rather than silently ignored — permanently, for
+`logprobs`/`top_logprobs` (Ollama exposes no token probabilities),
+`logit_bias` (no backend equivalent), `audio` and non-text modalities
+(Ollama has no audio modality), `tool_choice: "required"` (the backend
+cannot force a call) and `strict: true` tool schemas (tool-argument schemas
+are not enforced; `response_format` schemas are, through Ollama's `format`
+grammar).
 
 ## Agent API (turns, events, approvals, sessions)
 
