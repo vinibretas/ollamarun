@@ -179,8 +179,11 @@ a module's own docstring for what lives there before editing:
    progress events). `build_chat_payload()` assembles
    the request body from CLI args + session history.
 8. **`tools.py`** — the tool harness: `ToolSpec`/`default_registry()` (shell,
-   python, files, `web_search` when `ddgs` is installed, `fetch_url`, tts-remote
-   speak/list_voices), the allowlist policy
+   python, files — read/write/list plus `edit_file` and the
+   `make_dir`/`move_file`/`copy_file`/`delete_file` chores — `web_search`
+   when `ddgs` is installed, `fetch_url`, `search_sessions`, `list_models`,
+   `system_status`, tts-remote speak/list_voices, and the chemInventoryAPI
+   lookup tools when that CLI is present), the allowlist policy
    (`shell_safety`, `python_safety`, `approval_decision`), the approval-rule
    engine (`ToolRule`, `suggest_rules`, `rule_matches`, `dangerous_command`),
    argument normalization, output truncation and `execute_tool()`. The tool
@@ -189,7 +192,10 @@ a module's own docstring for what lives there before editing:
    maps the JSON's `handler` name onto the function, `requires` gates a tool
    on a capability, `tool_aliases()` is built from the `aliases` lists so
    invented names like `search`/`curl` resolve onto the real tools; bad files
-   warn and are skipped). The web half
+   warn and are skipped). `ToolContext` carries the runtime seams the REPL
+   injects: `client`/`store` (list_models, system_status, search_sessions),
+   `ssh_target`/`ssh_user` for remote probes and `chem_inventory` (the CLI
+   path override). The web half
    is self-contained: `_HTMLTextExtractor`/`extract_html_text` turn pages into
    readable text plus links, `extract_pdf_text` uses pypdf or pdftotext,
    `format_fetch_response` maps a response onto model-readable text (never the
