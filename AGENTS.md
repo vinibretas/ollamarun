@@ -102,7 +102,7 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"1.49"` — keep this
+  constant in `ollamarun_lib/constants.py`, currently `"1.50"` — keep this
   line current when you bump it) and prepend a new bullet list under
   `Summary of changes in this version:` in the top-level `ollamarun` entry
   script's module docstring — read the existing entries there before adding
@@ -336,8 +336,12 @@ a module's own docstring for what lives there before editing:
 17. **`turns.py`** — the turn manager: `TurnEvent` envelopes (turn id,
    1-based `seq`, ISO timestamp, deterministic `id`), `TurnManager`
    (a worker thread per turn, one active turn per session, a global
-   cap, per-turn buffers, replay with `stream.gap`, TTL retention,
-   cancellation, shutdown), `TurnHandle`/`Subscription`/
+   cap, per-turn buffers, replay with `stream.gap`, TTL retention swept
+   on every entry point (`subscribe()` included), cancellation,
+   shutdown, and synthesized error terminals that carry the stable
+   `INTERNAL_ERROR_MESSAGE` while the raw crash text goes to the
+   `--debug` log and stays on the internal `TurnResult`),
+   `TurnHandle`/`Subscription`/
    `TurnSnapshot`, and the typed errors (`SessionBusy`/`TooManyTurns`/
    `UnknownTurn`/`TurnExpired`) the HTTP layer maps to 409/429/404/410.
    It imports no front end: a host closure runs the runtime and
@@ -462,6 +466,8 @@ a module's own docstring for what lives there before editing:
    `?after=`/`Last-Event-ID` replay, `stream.gap` passthrough) and treats a
    disconnect as an unsubscribe unless `cancel_on_disconnect`; the status
    endpoint distinguishes 404 from 410 through `TurnManager.expired()`;
+   session routes go through the store and refuse edits to a session with
+   an active turn (409 `session_busy`, same as delete);
    `serve_turn_timeout` is a watchdog that cancels with reason `timeout`.
    The context warning/auto-compaction step runs headlessly at turn start
    through the runtime's `on_started` hook.
