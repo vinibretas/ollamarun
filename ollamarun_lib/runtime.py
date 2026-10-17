@@ -68,9 +68,12 @@ class TurnSettings:
     approver implementation owns `approval.required` -- only it knows
     whether the request actually parks for a human -- and
     `approval_notice()` builds that event.
+
+    This is the *agent* turn only: stateless model turns (the OpenAI
+    `/v1/chat/completions` surface) are a translation proxy that never
+    reaches the agent loop, so there is no mode switch here.
     """
 
-    mode: str = "agent"                 # "model" | "agent"
     no_save: bool = False
     timeout: float = DEFAULT_TIMEOUT
     allow_prompt: bool = True
@@ -86,7 +89,6 @@ class TurnRequest:
     messages: list[dict[str, Any]] = field(default_factory=list)
     model: str = ""
     session_id: Optional[str] = None
-    mode: str = "agent"
     persist: bool = True
     parameters: dict[str, Any] = field(default_factory=dict)
     system: Optional[str] = None
@@ -222,8 +224,7 @@ class AgentRuntime:
         session = hooks.session
         settings = hooks.settings
         self._set_tool_round(0)
-        self._emit(TURN_STARTED, model=session.model, session_id=session.id,
-                   mode=settings.mode)
+        self._emit(TURN_STARTED, model=session.model, session_id=session.id)
         self.check_tool_support()
         result = GenerationResult()
         tool_rounds = 0

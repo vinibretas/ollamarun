@@ -4,12 +4,14 @@ Run: python3 test_ollamarun.py
 """
 import base64
 import contextlib
+import http.client
 import inspect
 import io
 import json
 import os
 import re
 import shutil
+import socket
 import struct
 import sys
 import tempfile
@@ -7183,7 +7185,7 @@ def test_turn_result_mapping() -> int:
     request = orun.TurnRequest(messages=[{"role": "user", "content": "hi"}],
                                model="m1", session_id="s1")
     failures = _check(failures, "TurnRequest defaults match the API plan",
-                      request.mode == "agent" and request.persist is True
+                      request.persist is True
                       and request.messages[0]["role"] == "user",
                       str(request))
     return failures
@@ -7766,10 +7768,10 @@ def test_runtime_event_contract() -> int:
                           bool(types) and types[0] == "turn.started", str(types[:3]))
 
         started = events[0].data
-        failures = _check(failures, "turn.started identifies the session and mode",
+        failures = _check(failures, "turn.started identifies the session and model",
                           started.get("model") == "m1"
-                          and started.get("session_id") == session.id
-                          and started.get("mode") == "agent", str(started))
+                          and started.get("session_id") == session.id,
+                          str(started))
 
         completed = [event.data for event in events
                      if event.type == "message.completed"]
@@ -8296,6 +8298,635 @@ def test_run_once_json() -> int:
     return failures
 
 
+class _ServeClient(_FakeClient):
+    """`_FakeClient` plus what the API server needs: abort and slow streams."""
+
+    def __init__(self, *args, chat_once_data=None, chunk_count=0,
+                 chunk_delay=0.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.chat_once_data = chat_once_data
+        self.chunk_count = chunk_count
+        self.chunk_delay = chunk_delay
+        self.abort_calls = 0
+
+    def abort_stream(self):
+        self.abort_calls += 1
+        return True
+
+    def chat_once(self, payload, timeout=None):
+        self.chat_once_payloads.append(payload)
+        if self.chat_once_data is not None:
+            return dict(self.chat_once_data)
+        return {"message": {"content": self.chat_once_reply}, "done": True,
+                "prompt_eval_count": 4, "eval_count": 2, "done_reason": "stop"}
+
+    def chat(self, payload, timeout=None, cancel=None):
+        self.chat_payloads.append(payload)
+        if self.chunk_count:
+            def gen():
+                for _ in range(self.chunk_count):
+                    if cancel is not None and cancel.cancelled:
+                        return
+                    yield {"message": {"content": "x"}, "done": False}
+                    time.sleep(self.chunk_delay)
+                yield {"message": {"content": ""}, "done": True,
+                       "prompt_eval_count": 1, "eval_count": self.chunk_count}
+            return gen()
+        return super().chat(payload, timeout=timeout, cancel=cancel)
+
+
+def _start_api(client=None, *, router_kwargs=None, server_kwargs=None):
+    """An API server on an ephemeral loopback port with a fake backend."""
+    client = client if client is not None else _ServeClient(models=["m1"])
+    router = orun.build_router(lambda: client, **(router_kwargs or {}))
+    server = orun.HttpServer(router, bind="127.0.0.1", port=0, ping_interval=0.2,
+                             **(server_kwargs or {}))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, client, thread
+
+
+def _stop_api(server, thread):
+    server.shutdown()
+    server.close()
+    thread.join(timeout=5)
+
+
+def _http(server, method, path, *, body=None, raw=None, headers=None,
+          timeout=10.0):
+    conn = http.client.HTTPConnection("127.0.0.1", server.address[1],
+                                      timeout=timeout)
+    try:
+        payload = raw if raw is not None else (
+            json.dumps(body) if body is not None else None)
+        if payload is not None and headers is None:
+            headers = {"Content-Type": "application/json"}
+        conn.request(method, path, body=payload, headers=headers or {})
+        response = conn.getresponse()
+        return response.status, dict(response.getheaders()), response.read()
+    finally:
+        conn.close()
+
+
+def _api_error(callable_, *args, **kwargs):
+    try:
+        callable_(*args, **kwargs)
+        return None
+    except orun.ApiError as exc:
+        return exc
+
+
+def _sse_events(raw: bytes) -> list:
+    """Parse an SSE body into its data payloads (comments are dropped)."""
+    events = []
+    for line in raw.decode("utf-8").splitlines():
+        if line.startswith("data: "):
+            events.append(line[6:])
+    return events
+
+
+def test_openai_mapping() -> int:
+    """Validation/mapping and response shaping of the OpenAI surface."""
+    failures = 0
+    user = [{"role": "user", "content": "x"}]
+    plan = orun.parse_chat_request({
+        "model": " m1 ",
+        "messages": [{"role": "user", "content": "hi"}],
+        "temperature": 0.5, "top_p": 0.9, "max_tokens": 64, "seed": 7,
+        "stop": ["x", "y"], "presence_penalty": 0.25,
+        "frequency_penalty": -0.5,
+        "response_format": {"type": "json_object"},
+    })
+    failures = _check(failures, "options and format map onto the backend",
+                      plan.model == "m1"
+                      and plan.options == {"temperature": 0.5, "top_p": 0.9,
+                                           "num_predict": 64, "seed": 7,
+                                           "stop": ["x", "y"],
+                                           "presence_penalty": 0.25,
+                                           "frequency_penalty": -0.5}
+                      and plan.fmt == "json" and plan.stream is False,
+                      f"{plan.model} {plan.options} {plan.fmt}")
+
+    tool = {"type": "function", "function": {"name": "get_weather"}}
+    for name, body in (
+        ("an unknown field", {"model": "m1", "messages": user, "foo": 1}),
+        ("n > 1", {"model": "m1", "messages": user, "n": 2}),
+        ("logprobs", {"model": "m1", "messages": user, "logprobs": True}),
+        ("logit_bias", {"model": "m1", "messages": user,
+                        "logit_bias": {"1": 2}}),
+        ("audio", {"model": "m1", "messages": user,
+                   "audio": {"format": "wav"}}),
+        ("a non-text modality", {"model": "m1", "messages": user,
+                                 "modalities": ["image"]}),
+        ("an out-of-range temperature", {"model": "m1", "messages": user,
+                                         "temperature": 5}),
+        ("empty messages", {"model": "m1", "messages": []}),
+        ("tool_choice required", {"model": "m1", "messages": user,
+                                  "tools": [tool], "tool_choice": "required"}),
+        ("an unknown role", {"model": "m1", "messages": [
+            {"role": "wizard", "content": "x"}]}),
+    ):
+        exc = _api_error(orun.parse_chat_request, body)
+        failures = _check(failures, f"rejects {name}",
+                          exc is not None and exc.status == 400, repr(exc))
+    exc = _api_error(orun.parse_chat_request,
+                     {"model": "m1", "messages": user, "foo": 1})
+    failures = _check(failures, "an unknown field names itself",
+                      exc is not None and exc.param == "foo"
+                      and exc.code == "unknown_field", repr(exc))
+
+    plain = orun.parse_chat_request({"model": "m1", "messages": user})
+    auto = orun.parse_chat_request({"model": "m1", "system": "auto",
+                                    "messages": user})
+    custom = orun.parse_chat_request({"model": "m1", "system": "be terse",
+                                      "messages": user})
+    first_wins = orun.parse_chat_request({
+        "model": "m1", "system": "ignored",
+        "messages": [{"role": "system", "content": "kept"}] + user})
+    failures = _check(failures, "system: absent means none",
+                      [message["role"] for message in plain.messages] == ["user"],
+                      str(plain.messages))
+    failures = _check(failures, 'system: "auto" injects the built-in default',
+                      auto.messages[0]["role"] == "system"
+                      and bool(auto.messages[0]["content"])
+                      and auto.messages[1]["role"] == "user",
+                      str(auto.messages)[:160])
+    failures = _check(failures, "system: text replaces it",
+                      custom.messages[0] == {"role": "system",
+                                             "content": "be terse"})
+    failures = _check(failures, "a client system message wins over the extension",
+                      first_wins.messages[0]["content"] == "kept"
+                      and len(first_wins.messages) == 2,
+                      str(first_wins.messages))
+
+    history = orun.parse_chat_request({
+        "model": "m1",
+        "messages": [
+            {"role": "user", "content": "weather?"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "get_weather",
+                              "arguments": '{"city": "SP"}'}}]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "sunny"},
+            {"role": "assistant", "content": "It is sunny."},
+        ],
+    })
+    roles = [message["role"] for message in history.messages]
+    tool_message = [message for message in history.messages
+                    if message["role"] == "tool"][0]
+    assistant_call = [message for message in history.messages
+                      if message.get("tool_calls")][0]
+    failures = _check(failures, "tool history round-trips by name",
+                      roles == ["user", "assistant", "tool", "assistant"]
+                      and tool_message["tool_name"] == "get_weather"
+                      and assistant_call["tool_calls"][0]["function"]["arguments"]
+                      == {"city": "SP"},
+                      str(history.messages)[:240])
+    bad_ref = _api_error(orun.parse_chat_request, {
+        "model": "m1",
+        "messages": [{"role": "tool", "tool_call_id": "nope",
+                      "content": "x"}]})
+    failures = _check(failures, "an unknown tool_call_id is rejected",
+                      bad_ref is not None and bad_ref.status == 400,
+                      repr(bad_ref))
+
+    chosen = orun.parse_chat_request({
+        "model": "m1", "tools": [tool],
+        "tool_choice": {"type": "function",
+                        "function": {"name": "get_weather"}},
+        "messages": user})
+    dropped = orun.parse_chat_request({"model": "m1", "tools": [tool],
+                                       "tool_choice": "none",
+                                       "messages": user})
+    failures = _check(failures, "tools pass through; tool_choice selects or drops",
+                      bool(chosen.tools)
+                      and chosen.tools[0]["function"]["name"] == "get_weather"
+                      and dropped.tools is None,
+                      f"{chosen.tools} {dropped.tools}")
+
+    image = base64.b64encode(b"png-bytes").decode()
+    with_image = orun.parse_chat_request({
+        "model": "m1",
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "what is this"},
+            {"type": "image_url",
+             "image_url": {"url": f"data:image/png;base64,{image}"}},
+        ]}]})
+    failures = _check(failures, "data-uri images map to Ollama images",
+                      with_image.has_images
+                      and with_image.messages[0]["images"] == [image]
+                      and with_image.messages[0]["content"] == "what is this",
+                      str(with_image.messages)[:200])
+    remote = _api_error(orun.parse_chat_request, {
+        "model": "m1",
+        "messages": [{"role": "user", "content": [
+            {"type": "image_url",
+             "image_url": {"url": "https://example/x.png"}}]}]})
+    failures = _check(failures, "remote image URLs are rejected for now",
+                      remote is not None and remote.status == 400,
+                      repr(remote))
+
+    plan = orun.parse_chat_request({"model": "m1", "messages": user})
+    body = orun.completion_body(plan, {
+        "message": {"content": "", "tool_calls": [
+            {"function": {"name": "get_weather",
+                          "arguments": {"city": "SP"}}}]},
+        "done": True, "prompt_eval_count": 9, "eval_count": 3,
+        "done_reason": "stop"})
+    choice = body["choices"][0]
+    call = choice["message"]["tool_calls"][0]
+    failures = _check(failures, "a tool-call completion maps with ids and usage",
+                      body["object"] == "chat.completion"
+                      and choice["finish_reason"] == "tool_calls"
+                      and choice["message"]["content"] is None
+                      and call["id"].startswith("call_")
+                      and call["type"] == "function"
+                      and json.loads(call["function"]["arguments"])
+                      == {"city": "SP"}
+                      and body["usage"] == {"prompt_tokens": 9,
+                                            "completion_tokens": 3,
+                                            "total_tokens": 12},
+                      str(body)[:240])
+    length = orun.completion_body(plan, {"message": {"content": "cut"},
+                                         "done": True, "eval_count": 5,
+                                         "done_reason": "length"})
+    failures = _check(failures, "done_reason length becomes finish_reason length",
+                      length["choices"][0]["finish_reason"] == "length",
+                      str(length)[:160])
+    model = orun.model_object(
+        {"name": "m1:latest",
+         "modified_at": "2026-10-17T10:00:00.123456789-03:00"})
+    failures = _check(failures, "model objects carry a parsed timestamp",
+                      model["id"] == "m1:latest" and model["object"] == "model"
+                      and isinstance(model["created"], int)
+                      and model["created"] > 0, str(model))
+
+    import ollamarun_lib.openai_api as api_module
+    leaked = [name for name in ("AgentRuntime", "ToolRunner", "Session",
+                                "TurnManager")
+              if hasattr(api_module, name)]
+    failures = _check(failures, "the OpenAI layer never reaches the agent loop",
+                      not leaked, str(leaked))
+    return failures
+
+
+def test_serve_http() -> int:
+    """The OpenAI HTTP surface over a live loopback server, fake backend."""
+    failures = 0
+    script = [[
+        {"message": {"thinking": "hmm", "content": "Hello"}, "done": False},
+        {"message": {"content": " world"}, "done": False},
+        {"message": {"content": ""}, "done": True, "prompt_eval_count": 3,
+         "eval_count": 2, "done_reason": "stop"},
+    ]]
+    client = _ServeClient(models=["m1", "m2"],
+                          capabilities=["completion", "tools"],
+                          chat_script=script)
+    server, client, thread = _start_api(client)
+    try:
+        status, _headers, raw = _http(server, "GET", "/v1/models")
+        payload = json.loads(raw)
+        failures = _check(failures, "GET /v1/models lists the backend models",
+                          status == 200 and payload["object"] == "list"
+                          and payload["data"][0]["id"] == "m1"
+                          and payload["data"][0]["object"] == "model"
+                          and payload["data"][0]["owned_by"] == "ollamarun",
+                          raw[:160])
+        status, _headers, raw = _http(server, "GET", "/v1/models/m1")
+        failures = _check(failures, "GET /v1/models/{id} finds the model",
+                          status == 200 and json.loads(raw)["id"] == "m1",
+                          raw[:120])
+        status, _headers, raw = _http(server, "GET", "/v1/models/nope")
+        error = json.loads(raw)["error"]
+        failures = _check(failures, "an unknown model 404s in the envelope",
+                          status == 404 and error["code"] == "model_not_found"
+                          and error["type"] == "invalid_request_error",
+                          raw[:160])
+        status, _headers, raw = _http(server, "POST", "/v1/models")
+        failures = _check(failures, "a wrong method is a 405 envelope",
+                          status == 405
+                          and json.loads(raw)["error"]["code"] == "method_not_allowed",
+                          raw[:160])
+        status, _headers, raw = _http(server, "GET", "/v1/nope")
+        failures = _check(failures, "an unknown endpoint is a 404 envelope",
+                          status == 404 and "error" in json.loads(raw),
+                          raw[:160])
+        status, _headers, raw = _http(server, "POST", "/v1/chat/completions",
+                                      raw="{not json")
+        failures = _check(failures, "an invalid JSON body is a 400",
+                          status == 400
+                          and json.loads(raw)["error"]["code"] == "invalid_json",
+                          raw[:160])
+        status, _headers, raw = _http(server, "POST", "/v1/chat/completions",
+                                      body={"model": "m1",
+                                            "messages": [{"role": "user",
+                                                          "content": "x"}],
+                                            "foo": 1})
+        body = json.loads(raw)
+        failures = _check(failures, "an unknown request field is explicit",
+                          status == 400 and body["error"]["param"] == "foo"
+                          and body["error"]["code"] == "unknown_field",
+                          raw[:160])
+        status, _headers, raw = _http(server, "POST", "/v1/chat/completions",
+                                      body={"model": "missing",
+                                            "messages": [{"role": "user",
+                                                          "content": "x"}]})
+        failures = _check(failures, "an unknown model 404s before inference",
+                          status == 404 and not client.chat_payloads
+                          and not client.chat_once_payloads, raw[:160])
+
+        status, _headers, raw = _http(server, "POST", "/v1/chat/completions",
+                                      body={"model": "m1", "temperature": 0.2,
+                                            "messages": [{"role": "user",
+                                                          "content": "hi"}]})
+        completion = json.loads(raw)
+        choice = completion["choices"][0]
+        failures = _check(failures, "a non-streaming completion is OpenAI-shaped",
+                          status == 200
+                          and completion["object"] == "chat.completion"
+                          and completion["model"] == "m1"
+                          and choice["message"]["content"] == "ok"
+                          and choice["finish_reason"] == "stop"
+                          and completion["usage"] == {"prompt_tokens": 4,
+                                                      "completion_tokens": 2,
+                                                      "total_tokens": 6},
+                          raw[:200])
+        sent = client.chat_once_payloads[-1]
+        failures = _check(failures, "mapped options reach the backend",
+                          sent["options"] == {"temperature": 0.2}
+                          and sent["stream"] is False
+                          and sent["messages"][-1]["content"] == "hi",
+                          str(sent)[:200])
+
+        client.chat_once_data = {
+            "message": {"content": "", "tool_calls": [
+                {"function": {"name": "get_weather",
+                              "arguments": {"city": "SP"}}}]},
+            "done": True, "prompt_eval_count": 8, "eval_count": 4,
+            "done_reason": "stop"}
+        status, _headers, raw = _http(server, "POST", "/v1/chat/completions",
+            body={"model": "m1",
+                  "messages": [{"role": "user", "content": "weather?"}],
+                  "tools": [{"type": "function", "function": {
+                      "name": "get_weather", "description": "w",
+                      "parameters": {"type": "object"}}}]})
+        body = json.loads(raw)
+        call = body["choices"][0]["message"]["tool_calls"][0]
+        sent = client.chat_once_payloads[-1]
+        failures = _check(failures, "client tools pass through as tool_calls",
+                          body["choices"][0]["finish_reason"] == "tool_calls"
+                          and call["function"]["name"] == "get_weather"
+                          and json.loads(call["function"]["arguments"])
+                          == {"city": "SP"}
+                          and sent["tools"][0]["function"]["name"]
+                          == "get_weather", raw[:200])
+
+        status, headers, raw = _http(server, "POST", "/v1/chat/completions",
+            body={"model": "m1",
+                  "messages": [{"role": "user", "content": "hi"}],
+                  "stream": True,
+                  "stream_options": {"include_usage": True}})
+        events = _sse_events(raw)
+        chunks = [json.loads(item) for item in events if item != "[DONE]"]
+        failures = _check(failures, "the SSE stream ends with [DONE]",
+                          status == 200 and bool(events)
+                          and events[-1] == "[DONE]"
+                          and headers.get("Content-Type") == "text/event-stream",
+                          f"{status} {events[-2:]}")
+        failures = _check(failures, "the first chunk opens with the role",
+                          chunks[0]["object"] == "chat.completion.chunk"
+                          and chunks[0]["choices"][0]["delta"]
+                          == {"role": "assistant", "content": ""},
+                          str(chunks[0])[:160])
+        data_chunks = [chunk for chunk in chunks if chunk["choices"]]
+        deltas = [chunk["choices"][0]["delta"] for chunk in data_chunks]
+        failures = _check(failures, "thinking and content stream as deltas",
+                          deltas[1] == {"reasoning_content": "hmm"}
+                          and deltas[2] == {"content": "Hello"}
+                          and deltas[3] == {"content": " world"},
+                          str(deltas))
+        failures = _check(failures, "the finish chunk carries the reason",
+                          data_chunks[-1]["choices"][0]["finish_reason"] == "stop",
+                          str(data_chunks[-1])[:160])
+        failures = _check(failures, "include_usage adds a final usage chunk",
+                          chunks[-1]["choices"] == []
+                          and chunks[-1]["usage"] == {"prompt_tokens": 3,
+                                                      "completion_tokens": 2,
+                                                      "total_tokens": 5},
+                          str(chunks[-1])[:160])
+
+        client.chat_script = [[
+            {"message": {"content": "", "tool_calls": [
+                {"function": {"name": "get_weather",
+                              "arguments": {"city": "SP"}}}]}},
+            {"message": {"content": ""}, "done": True, "prompt_eval_count": 5,
+             "eval_count": 3, "done_reason": "stop"},
+        ]]
+        client.chat_calls = 0
+        status, _headers, raw = _http(server, "POST", "/v1/chat/completions",
+            body={"model": "m1", "stream": True,
+                  "messages": [{"role": "user", "content": "w"}]})
+        events = _sse_events(raw)
+        chunks = [json.loads(item) for item in events if item != "[DONE]"]
+        tool_delta = [chunk for chunk in chunks
+                      if chunk["choices"][0]["delta"].get("tool_calls")]
+        failures = _check(failures, "tool calls stream as one indexed delta array",
+                          len(tool_delta) == 1
+                          and tool_delta[0]["choices"][0]["delta"]["tool_calls"][0]["index"] == 0
+                          and tool_delta[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] == "get_weather"
+                          and chunks[-1]["choices"][0]["finish_reason"] == "tool_calls",
+                          str(chunks)[:240])
+        failures = _check(failures, "no usage chunk unless requested",
+                          all("usage" not in json.loads(item)
+                              for item in events if item != "[DONE]"),
+                          str(events)[:200])
+
+        image = base64.b64encode(b"png").decode()
+        image_part = [{"type": "text", "text": "?"},
+                      {"type": "image_url",
+                       "image_url": {"url": f"data:image/png;base64,{image}"}}]
+        status, _headers, raw = _http(server, "POST", "/v1/chat/completions",
+            body={"model": "m1",
+                  "messages": [{"role": "user", "content": image_part}]})
+        failures = _check(failures, "images are refused without vision support",
+                          status == 400
+                          and json.loads(raw)["error"]["code"]
+                          == "model_does_not_support_images", raw[:160])
+        client.capability_list = ["completion", "vision"]
+        status, _headers, raw = _http(server, "POST", "/v1/chat/completions",
+            body={"model": "m2",
+                  "messages": [{"role": "user", "content": image_part}]})
+        failures = _check(failures, "a vision model receives the image",
+                          status == 200
+                          and client.chat_once_payloads[-1]["messages"][-1]["images"]
+                          == [image], raw[:160])
+
+        big_server, _big, big_thread = _start_api(
+            _ServeClient(models=["m1"]),
+            server_kwargs={"body_limit": 1024})
+        try:
+            status, _headers, raw = _http(big_server, "POST",
+                                          "/v1/chat/completions",
+                                          raw="x" * 2048)
+            failures = _check(failures, "oversized bodies are rejected before parsing",
+                              status == 413
+                              and json.loads(raw)["error"]["code"] == "body_too_large",
+                              raw[:160])
+        finally:
+            _stop_api(big_server, big_thread)
+    finally:
+        _stop_api(server, thread)
+    return failures
+
+
+def test_serve_disconnect() -> int:
+    """A disconnecting SSE client cancels only its own upstream generation."""
+    failures = 0
+    client = _ServeClient(models=["m1"], chunk_count=400, chunk_delay=0.005)
+    server, client, thread = _start_api(client)
+    try:
+        body = json.dumps({"model": "m1", "stream": True,
+                           "messages": [{"role": "user", "content": "hi"}]}).encode()
+        sock = socket.create_connection(("127.0.0.1", server.address[1]),
+                                        timeout=10)
+        head = (b"POST /v1/chat/completions HTTP/1.1\r\n"
+                b"Host: 127.0.0.1\r\nContent-Type: application/json\r\n"
+                b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n")
+        sock.sendall(head + body)
+        first = b""
+        deadline = time.monotonic() + 5.0
+        while b"data: " not in first and time.monotonic() < deadline:
+            piece = sock.recv(4096)
+            if not piece:
+                break
+            first += piece
+        # Hard-close (RST): the server's next write must fail immediately.
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
+                        struct.pack("ii", 1, 0))
+        sock.close()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and client.abort_calls == 0:
+            time.sleep(0.02)
+        failures = _check(failures, "a dropped client cancels upstream generation",
+                          client.abort_calls >= 1,
+                          f"abort_calls={client.abort_calls}")
+        failures = _check(failures, "chunks streamed before the drop",
+                          b"data: " in first, repr(first[:80]))
+    finally:
+        _stop_api(server, thread)
+    return failures
+
+
+def test_serve_cli() -> int:
+    """The `serve` subcommand: parser, config defaults and dispatch."""
+    failures = 0
+    parser = orun.build_serve_parser()
+    args = parser.parse_args(["--bind", "127.0.0.1", "--port", "1234",
+                              "--host", "example:1234"])
+    failures = _check(failures, "the serve parser takes listener and upstream",
+                      args.bind == "127.0.0.1" and args.port == 1234
+                      and args.host == "example:1234",
+                      str(args))
+    config = orun.DEFAULT_CONFIG
+    failures = _check(failures, "the LAN defaults are the locked contract",
+                      config.get("serve_bind") == "0.0.0.0"
+                      and config.get("serve_port") == 11440,
+                      f"{config.get('serve_bind')} {config.get('serve_port')}")
+    with contextlib.redirect_stdout(io.StringIO()):
+        try:
+            orun.main(["serve", "--help"])
+            raised = None
+        except SystemExit as exc:
+            raised = exc
+    failures = _check(failures, "`serve --help` exits 0",
+                      raised is not None and raised.code == 0, repr(raised))
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Path(tmp) / "config.json"
+        cfg.write_text(json.dumps({"host": "127.0.0.1:1"}), encoding="utf-8")
+        with orun.console.capture():
+            code = orun.main(["serve", "--config", str(cfg),
+                              "--port", "999999"])
+        failures = _check(failures, "main() dispatches the serve subcommand",
+                          code == 2, str(code))
+    return failures
+
+
+def test_openai_sdk() -> int:
+    """The official OpenAI SDK against the local API (skipped when absent)."""
+    try:
+        from openai import OpenAI
+    except ImportError:
+        print("SKIP  the openai SDK is not installed")
+        return 0
+    failures = 0
+    script = [[
+        {"message": {"content": "Hello"}, "done": False},
+        {"message": {"content": " SDK"}, "done": False},
+        {"message": {"content": ""}, "done": True, "prompt_eval_count": 6,
+         "eval_count": 3, "done_reason": "stop"},
+    ]]
+    client = _ServeClient(models=["m1"], capabilities=["completion", "tools"],
+                          chat_script=script)
+    server, client, thread = _start_api(client)
+    api = OpenAI(base_url=f"http://127.0.0.1:{server.address[1]}/v1",
+                 api_key="test-key", timeout=10.0)
+    try:
+        models = api.models.list()
+        failures = _check(failures, "the SDK lists models",
+                          [model.id for model in models.data] == ["m1"],
+                          str(models)[:160])
+
+        response = api.chat.completions.create(
+            model="m1", temperature=0,
+            messages=[{"role": "user", "content": "hi"}])
+        failures = _check(failures, "the SDK gets a typed completion",
+                          response.choices[0].message.content == "ok"
+                          and response.choices[0].finish_reason == "stop"
+                          and response.usage.total_tokens == 6,
+                          str(response)[:200])
+
+        parts = []
+        usage = None
+        with api.chat.completions.create(
+                model="m1", stream=True,
+                messages=[{"role": "user", "content": "hi"}],
+                extra_body={"stream_options": {"include_usage": True}}) as stream:
+            for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    parts.append(chunk.choices[0].delta.content)
+                if chunk.usage is not None:
+                    usage = chunk.usage
+        failures = _check(failures, "the SDK streams deltas and usage",
+                          "".join(parts) == "Hello SDK" and usage is not None
+                          and usage.prompt_tokens == 6
+                          and usage.completion_tokens == 3,
+                          f"{parts!r} {usage}")
+
+        client.chat_once_data = {
+            "message": {"content": "", "tool_calls": [
+                {"function": {"name": "get_weather",
+                              "arguments": {"city": "SP"}}}]},
+            "done": True, "prompt_eval_count": 8, "eval_count": 4,
+            "done_reason": "stop"}
+        tool_response = api.chat.completions.create(
+            model="m1", temperature=0,
+            messages=[{"role": "user", "content": "weather?"}],
+            tools=[{"type": "function", "function": {
+                "name": "get_weather", "description": "w",
+                "parameters": {"type": "object"}}}])
+        call = tool_response.choices[0].message.tool_calls[0]
+        failures = _check(failures, "the SDK receives typed tool calls",
+                          tool_response.choices[0].finish_reason == "tool_calls"
+                          and call.type == "function"
+                          and call.function.name == "get_weather"
+                          and json.loads(call.function.arguments)
+                          == {"city": "SP"},
+                          str(tool_response)[:200])
+    finally:
+        _stop_api(server, thread)
+    return failures
+
+
 if __name__ == "__main__":
     total = (test_math() + test_parsing_helpers() + test_stats_helpers()
              + test_resolve_show_stats()
@@ -8364,7 +8995,10 @@ if __name__ == "__main__":
              + test_turn_manager_session_busy() + test_turn_manager_max_active()
              + test_turn_manager_cancel() + test_turn_subscriber_overflow()
              + test_turn_manager_shutdown()
-             + test_turn_manager_context() + test_turn_manager_headless_turn())
+             + test_turn_manager_context() + test_turn_manager_headless_turn()
+             + test_openai_mapping() + test_serve_http()
+             + test_serve_disconnect() + test_serve_cli()
+             + test_openai_sdk())
     if total:
         print(f"\n{total} failure(s)")
         sys.exit(1)
