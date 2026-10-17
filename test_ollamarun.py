@@ -435,6 +435,12 @@ def test_tool_definitions() -> int:
     failures = _check(failures, "web_search declares its capability and aliases",
                       web is not None and web.read_only
                       and web.requires == "search" and "google" in web.aliases)
+    run_python = next((definition for definition in defs
+                       if definition.name == "run_python"), None)
+    failures = _check(failures, "run_python prefers code over mental math",
+                      run_python is not None
+                      and "instead of doing math mentally" in run_python.description,
+                      str(run_python))
     with_search = orun.default_registry(tts=False, search=True)
     without_search = orun.default_registry(tts=False, search=False)
     failures = _check(failures, "requires gates web_search and the speech tools",
@@ -498,6 +504,10 @@ def test_prompts() -> int:
     failures = _check(failures, "the tool rules are appended only with tools on",
                       with_tools.startswith(base) and "Web search" in with_tools
                       and with_tools != base, with_tools[:80])
+    failures = _check(failures, "the tool rules push math into code",
+                      "run_python" in with_tools
+                      and "never work arithmetic out in your head" in with_tools
+                      and "run_python" not in base, with_tools)
     title = orun.title_prompt("the first message")
     failures = _check(failures, "the title prompt substitutes its content",
                       title is not None and "the first message" in title
