@@ -33,6 +33,8 @@ if HAS_TEXTUAL:
     # though the inline REPL is the documented fallback (`wants_tui()`).
     from .tui import *  # noqa: F401,F403
 from .run import *  # noqa: F401,F403
+from .server import *  # noqa: F401,F403
+from .openai_api import *  # noqa: F401,F403
 from .cli import *  # noqa: F401,F403
 
 from .repl import _switch_session  # noqa: F401

@@ -20,6 +20,8 @@ from .client import OllamaClient, OllamaError
 from .constants import (
     CONFIG_PATH,
     DEFAULT_HOST,
+    DEFAULT_SERVE_BIND,
+    DEFAULT_SERVE_PORT,
     DEFAULT_TIMEOUT,
     EMBED_MODEL_HINTS,
     HAS_TEXTUAL,
@@ -46,6 +48,8 @@ from .helpers import (
     tailscale_peer_state,
 )
 from .images import encode_image
+from .openai_api import build_router
+from .server import HttpServer, run_forever
 from .ctxfit import (
     FitRequest,
     machine_state_for,
@@ -147,6 +151,16 @@ model housekeeping:
   /model and /load unload the previous model before switching; leaving the
   REPL unloads the session model (--keep-loaded to keep it, --unload to also
   unload after a one-shot run).
+
+serve:
+  ollamarun serve [--bind IP] [--port N] [--host HOST|--remote NAME]
+                        OpenAI-compatible HTTP API in front of Ollama:
+                        GET /v1/models, GET /v1/models/{id} and
+                        POST /v1/chat/completions (stream or not). Model
+                        turns only — client tools are passed through and
+                        returned, never executed. LAN access without
+                        authentication: trusted-network-only, never expose
+                        the port to the internet. See `ollamarun serve --help`.
 
 environment:
   OLLAMA_HOST           server address (default 127.0.0.1:11434)
@@ -338,6 +352,132 @@ sessions live in ~/etc/data/ollamarun; config in ~/etc/config_files/ollamarun.js
     return parser
 
 
+def build_serve_parser() -> argparse.ArgumentParser:
+    epilog = """\
+endpoints:
+  GET  /v1/models           installed models (OpenAI model objects)
+  GET  /v1/models/{id}      one model, 404 when unknown
+  POST /v1/chat/completions OpenAI-compatible model turn, streaming or not
+
+  Model turns go through one inference call: client `tools` are passed to
+  the backend and returned as standard `tool_calls` (`finish_reason:
+  "tool_calls"`) but never executed here — full agent turns arrive with the
+  native /v1/agent endpoints in a later phase. A top-level "system" field
+  is accepted: "auto" uses the built-in default prompt, text replaces it,
+  absent means none. Unsupported features (n>1, logprobs, logit_bias,
+  audio, non-text modalities, unknown fields) fail with a structured 400.
+
+security:
+  the API is trusted-network-only. It has no authentication and its bind
+  address is the only boundary: keep it on the LAN/tailnet and never expose
+  the port to the public internet. The listener (--bind/--port) is separate
+  from the upstream Ollama address (--host/--remote).
+
+config: ~/etc/config_files/ollamarun.json (serve_bind, serve_port); the
+        startup banner prints the bound address, upstream and the warning.
+"""
+    parser = argparse.ArgumentParser(
+        prog="ollamarun serve",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Serve the OpenAI-compatible HTTP API in front of Ollama "
+                    "(model turns only; LAN access, no authentication)",
+        epilog=epilog)
+    host_group = parser.add_mutually_exclusive_group()
+    host_group.add_argument("--host", metavar="HOST",
+                            help=f"upstream ollama server, e.g. 127.0.0.1:11434 "
+                                 f"(default: OLLAMA_HOST or {DEFAULT_HOST})")
+    host_group.add_argument("--remote", metavar="NAME",
+                            help="run inference on a tailnet machine (pi, kiddo, "
+                                 "g3, optiplex7070 or optiplex, guri) or any "
+                                 "host[:port]")
+    parser.add_argument("--bind", metavar="IP",
+                        help=f"API listener address (default: {DEFAULT_SERVE_BIND}, "
+                             f"all interfaces)")
+    parser.add_argument("--port", type=int, metavar="N",
+                        help=f"API listener port (default: {DEFAULT_SERVE_PORT})")
+    parser.add_argument("--timeout", type=float, metavar="SECONDS",
+                        help=f"upstream request timeout (default: {DEFAULT_TIMEOUT})")
+    parser.add_argument("--insecure", action="store_true",
+                        help="skip TLS verification for the upstream")
+    parser.add_argument("--config", metavar="FILE",
+                        help=f"config file (default: {CONFIG_PATH})")
+    parser.add_argument("--debug", action="store_true",
+                        help=f"log requests and tracebacks to {LOG_PATH}")
+    parser.add_argument("--version", action="version",
+                        version=f"%(prog)s {VERSION}")
+    return parser
+
+
+def serve_main(argv: Optional[list[str]] = None) -> int:
+    """`ollamarun serve`: run the OpenAI-compatible API until a signal."""
+    parser = build_serve_parser()
+    args = parser.parse_args(argv)
+    config = load_config(Path(args.config) if args.config else None)
+    setup_logging(args.debug)
+    timeout = args.timeout or config.get("timeout") or DEFAULT_TIMEOUT
+
+    remote_name: Optional[str] = None
+    try:
+        if args.remote:
+            remote_name = args.remote
+            host = resolve_remote(remote_name, config)
+        elif args.host:
+            host = args.host
+        elif config.get("remote"):
+            remote_name = str(config["remote"])
+            host = resolve_remote(remote_name, config)
+        else:
+            host = config.get("host") or os.environ.get("OLLAMA_HOST") or DEFAULT_HOST
+        client = OllamaClient(host, insecure=args.insecure, timeout=timeout)
+    except ValueError as exc:
+        console.print(f"[err]{escape(str(exc))}[/err]")
+        return 2
+    if remote_name and not remote_preflight(client, remote_name, config,
+                                            quiet=not console.is_terminal):
+        return 1
+
+    bind = str(args.bind or config.get("serve_bind") or DEFAULT_SERVE_BIND)
+    try:
+        port = args.port if args.port is not None else int(config.get("serve_port")
+                                                           or DEFAULT_SERVE_PORT)
+    except (TypeError, ValueError):
+        console.print("[err]serve_port in the config must be a number[/err]")
+        return 2
+    if not 0 <= port <= 65535:
+        console.print("[err]--port must be between 0 and 65535[/err]")
+        return 2
+
+    def client_factory() -> OllamaClient:
+        return OllamaClient(host, insecure=args.insecure, timeout=timeout)
+
+    router = build_router(client_factory, config=config, timeout=timeout,
+                          keepalive=config.get("keepalive"))
+    try:
+        server = HttpServer(router, bind=bind, port=port)
+    except OSError as exc:
+        console.print(f"[err]cannot listen on {escape(bind)}:{port}: "
+                      f"{escape(str(exc))}[/err]")
+        return 1
+
+    bound_host, bound_port = server.address
+    scope = " (all interfaces)" if bound_host == "0.0.0.0" else ""
+    console.print()
+    console.print(f"[key]ollamarun serve[/key] [dim]· {VERSION} · "
+                  f"OpenAI-compatible API[/dim]")
+    console.print(f"  listening [ok]http://{escape(bound_host)}:{bound_port}[/ok]"
+                  f"[dim]{scope}[/dim]")
+    console.print(f"  upstream  [dim]{escape(client.base)}[/dim]")
+    console.print("[warn]trusted-network-only: no authentication — never expose "
+                  "this port to the internet[/warn]")
+    console.print("[dim]Ctrl-C stops the server[/dim]")
+    try:
+        run_forever(server)
+    finally:
+        server.close()
+    console.print("[dim]stopped[/dim]")
+    return 0
+
+
 def resolve_model(args: argparse.Namespace, config: dict[str, Any],
                   client: OllamaClient, session: Optional[Session]) -> Optional[str]:
     explicit = args.model_flag or args.model
@@ -499,6 +639,9 @@ def session_reconnect(args: argparse.Namespace, config: dict[str, Any],
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "serve":
+        return serve_main(argv[1:])
     parser = build_parser()
     store = SessionStore()
     args = parser.parse_args(normalize_argv(argv, store))

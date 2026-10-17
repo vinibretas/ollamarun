@@ -124,7 +124,7 @@ except ImportError:  # pragma: no cover - fallback path
     TEXTUAL_VERSION = ""
     TextualApp = None
 
-VERSION = "1.46"
+VERSION = "1.47"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -145,6 +145,10 @@ DEFS_OVERRIDE_DIR = HOME / "etc/config_files/ollamarun-defs"
 DEFAULT_HOST = "127.0.0.1:11434"
 DEFAULT_PORT = 11434
 DEFAULT_TIMEOUT = 600
+#: `ollamarun serve`: the API listener. LAN-accessible without
+#: authentication is the locked contract; `--bind` narrows it.
+DEFAULT_SERVE_BIND = "0.0.0.0"
+DEFAULT_SERVE_PORT = 11440
 
 # `--remote NAME` names for the tailnet machines: alias -> tailscale hostname
 # (resolved to its tailnet IP at run time; `remote_hosts` in the config file
@@ -309,6 +313,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "serve_max_active_turns": 4,
     "serve_turn_event_buffer": 10000,
     "serve_turn_event_ttl": 86400,
+    # `ollamarun serve`: the API listener (LAN, no authentication; the
+    # trusted-network boundary is the bind address).
+    "serve_bind": DEFAULT_SERVE_BIND,
+    "serve_port": DEFAULT_SERVE_PORT,
 }
 
 THINKING_MODES = {"collapsed", "expanded", "hidden"}

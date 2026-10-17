@@ -1051,7 +1051,6 @@ class Repl:
         else:
             quiet = lambda: bool(quiet_tools)
         settings = TurnSettings(
-            mode="agent",
             no_save=self.no_save,
             timeout=self.timeout,
             allow_prompt=allow_prompt,
