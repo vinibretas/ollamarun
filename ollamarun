@@ -2,6 +2,31 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.43
+
+Summary of changes in this version:
+  - The agent turn loop moved out of `repl.py` into a new `runtime.py`
+    (`AgentRuntime`) driven by typed events (`events.py`): the CLI keeps
+    `_generate`/`_execute_tool_calls`/`_payload`/`context_report`/`session_report`
+    as thin wrappers and renders exactly as before, while a host can now run
+    a turn with no terminal at all. A `HeadlessRenderer` consumes the same
+    streams and emits `message.delta` events instead of printing, so the
+    planned serve front end shares the one loop rather than duplicating it
+    (`run.py --json` already does). The preliminary events vocabulary is
+    `turn.started`, `message.delta`, `message.completed`, `tool.call`,
+    `tool.result`, `approval.required`, `approval.resolved`, `turn.error`,
+    `turn.completed`, `turn.cancelled` (plus `turn.warning`), with
+    `artifact.created` reserved for the artifact phase.
+  - Stopping a turn now reaches the tools: `run_shell`/`run_python` run in
+    their own process group and are killed on cancel, network tools
+    (`fetch_url`, `web_search`) are abandoned — the result is discarded
+    instead of the stop waiting for a slow page — and the runtime marks the
+    cancelled calls explicitly. The approval gate asks the front end
+    (`Ui.interactive`) rather than reading the terminal, sessions save under
+    a store-wide lock (safe for the parallel turns serve will run), `send()`
+    owns the cancel-token reset, and a headless turn no longer inlines
+    `@file` mentions or spends an extra call on auto titles.
+
 Version: 1.42
 
 Summary of changes in this version:
