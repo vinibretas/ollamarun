@@ -285,7 +285,7 @@ Model turns are a translation proxy: one request is one `/api/chat` call.
 Client `tools` are passed to the backend and returned as standard
 `tool_calls` with `finish_reason: "tool_calls"` — they are never executed
 here, so this endpoint cannot trigger the agent harness (full agent turns
-arrive with the native `/v1/agent/*` endpoints in a later phase). Streaming
+live under the native `/v1/agent/*` endpoints). Streaming
 emits OpenAI SSE only: a role chunk, content deltas, the finish chunk, an
 optional usage chunk (`stream_options.include_usage`) and `data: [DONE]`;
 thinking models surface their reasoning as the non-standard
@@ -308,7 +308,9 @@ Ollama `think`), `tools`, `tool_choice` (`auto`, `none`, or a specific
 function), `stream`, `stream_options.include_usage`, and the extension
 `system` (`"auto"` = the built-in default prompt, text = replace it, absent
 = none; a client-sent system message always wins). `user` and `metadata`
-are accepted and ignored (tracking hints).
+are accepted and ignored (tracking hints), and `parallel_tool_calls` is
+accepted but ignored for now — a `false` still passes through until the
+compatibility phase honors it by returning a single call.
 
 Request validation is strict, and every rejection is a structured error
 rather than a silent ignore: unknown fields anywhere (top level, tools,
