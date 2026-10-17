@@ -9153,6 +9153,242 @@ def test_artifact_session_persistence() -> int:
     return failures
 
 
+def test_artifact_content_parts() -> int:
+    """One resolver: file refs, text inlining, binary notes, vision parity."""
+    failures = 0
+
+    def _raises(call):
+        try:
+            call()
+            return None
+        except Exception as exc:
+            return exc
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        store = orun.ArtifactStore(tmp / "artifacts")
+        text_ref = store.register(b"# Title\nhello", filename="notes.md",
+                                  media_type="text/markdown", source="user")
+        json_ref = store.register(b'{"a": 1}', filename="data.json",
+                                  media_type="application/json", source="user")
+        bin_ref = store.register(b"%PDF-\x00\x01", filename="report.pdf",
+                                 media_type="application/pdf", source="user")
+        img_bytes = b"\x89PNG\r\n\x1a\nimage-bytes"
+        img_ref = store.register(img_bytes, filename="pic.png",
+                                 media_type="image/png", source="user")
+        big_ref = store.register(b"x" * (orun.INLINE_TEXT_BYTES + 100),
+                                 filename="big.txt", media_type="text/plain",
+                                 source="user")
+
+        resolved = orun.resolve_content_parts(
+            [{"type": "text", "text": "look"},
+             {"type": "file", "file_id": text_ref.id}],
+            where="messages[0].content", store=store)
+        failures = _check(failures, "a text file part inlines as a <file> block",
+                          resolved.text.startswith("look")
+                          and '<file name="notes.md">' in resolved.text
+                          and "# Title\nhello" in resolved.text
+                          and resolved.images == []
+                          and [ref.id for ref in resolved.artifacts]
+                          == [text_ref.id],
+                          resolved.text[:200])
+        resolved_json = orun.resolve_content_parts(
+            [{"type": "file", "file_id": json_ref.id}],
+            where="messages[0].content", store=store)
+        failures = _check(failures, "application/json counts as text",
+                          '{"a": 1}' in resolved_json.text,
+                          resolved_json.text[:200])
+        resolved_bin = orun.resolve_content_parts(
+            [{"type": "file", "file_id": bin_ref.id}],
+            where="messages[0].content", store=store)
+        failures = _check(failures, "a binary part is noted, never faked",
+                          "contents were not extracted" in resolved_bin.text
+                          and "report.pdf" in resolved_bin.text,
+                          resolved_bin.text[:200])
+        resolved_img = orun.resolve_content_parts(
+            [{"type": "file", "file_id": img_ref.id}],
+            where="messages[0].content", store=store)
+        failures = _check(failures, "an image file part becomes an image payload",
+                          len(resolved_img.images) == 1
+                          and resolved_img.images[0].b64
+                          == base64.b64encode(img_bytes).decode()
+                          and resolved_img.images[0].artifact_id == img_ref.id,
+                          str(resolved_img.images))
+        resolved_big = orun.resolve_content_parts(
+            [{"type": "file", "file_id": big_ref.id}],
+            where="messages[0].content", store=store)
+        failures = _check(failures, "an oversized text part is truncated, not dropped",
+                          "truncated" in resolved_big.text
+                          and resolved_big.text.count("x") >= orun.INLINE_TEXT_BYTES,
+                          resolved_big.text[-120:])
+
+        missing = _raises(lambda: orun.resolve_content_parts(
+            [{"type": "file", "file_id": "art_" + "0" * 32}],
+            where="messages[0].content", store=store))
+        failures = _check(failures, "a missing artifact id is a structured 404",
+                          isinstance(missing, orun.ApiError)
+                          and missing.status == 404
+                          and missing.code == "artifact_not_found"
+                          and missing.param == "messages[0].content[0].file_id",
+                          repr(missing))
+        unknown = _raises(lambda: orun.resolve_content_parts(
+            [{"type": "video", "url": "x"}],
+            where="messages[0].content", store=store))
+        failures = _check(failures, "an unknown part type is a 400",
+                          isinstance(unknown, orun.ApiError)
+                          and unknown.status == 400
+                          and unknown.code == "unsupported_value",
+                          repr(unknown))
+
+        plan = orun.parse_chat_request({
+            "model": "m1",
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "check"},
+                {"type": "file", "file_id": text_ref.id},
+                {"type": "image_url", "image_url": {"url":
+                    "data:image/png;base64,"
+                    + base64.b64encode(b"png").decode()}}]}]}, store=store)
+        failures = _check(failures, "the OpenAI surface resolves file parts",
+                          plan.has_images
+                          and '<file name="notes.md">' in plan.messages[0]["content"]
+                          and plan.messages[0]["images"]
+                          == [base64.b64encode(b"png").decode()],
+                          str(plan.messages)[:200])
+
+        client = _ServeClient(models=["m1"],
+                              capabilities=["completion", "tools", "vision"],
+                              chat_script=[[{"message": {"content": "ok"},
+                                             "done": True}]])
+        server, api, sessions, thread = _start_agent_api(tmp, client,
+                                                         artifacts=store)
+        try:
+            body = {"model": "m1", "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "see"},
+                {"type": "file", "file_id": text_ref.id}]}]}
+            status, _headers, raw = _http(server, "POST", "/v1/agent/turns",
+                                          body=body)
+            turn = json.loads(raw)
+            _poll_turn(server, turn["id"])
+            session = sessions.load(turn["session_id"])
+            user = session.messages[0]
+            failures = _check(failures, "the native surface resolves file parts",
+                              status == 202
+                              and '<file name="notes.md">' in user["content"]
+                              and user.get("artifacts", [{}])[0].get("id")
+                              == text_ref.id
+                              and session.artifacts
+                              and session.artifacts[0]["id"] == text_ref.id,
+                              str(user))
+        finally:
+            _stop_api(server, thread)
+
+        blind = _ServeClient(models=["m1"], capabilities=["completion", "tools"],
+                             chat_script=[[{"message": {"content": "ok"},
+                                            "done": True}]])
+        server, api, sessions, thread = _start_agent_api(tmp, blind,
+                                                         artifacts=store)
+        try:
+            status, _headers, raw = _http(server, "POST", "/v1/agent/turns",
+                                          body={"model": "m1", "messages": [
+                                              {"role": "user", "content": [
+                                                  {"type": "file",
+                                                   "file_id": img_ref.id}]}]})
+            error = json.loads(raw).get("error", {})
+            failures = _check(failures,
+                              "the native surface refuses images without vision",
+                              status == 400
+                              and error.get("code")
+                              == "model_does_not_support_images",
+                              f"{status} {error}")
+        finally:
+            _stop_api(server, thread)
+    return failures
+
+
+def test_artifact_remote_fetch() -> int:
+    """The shared fetch enforces scheme, redirect, size and timeout rules."""
+    failures = 0
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):  # keep the test output clean
+            pass
+
+        def _send(self, status, body=b"", content_type=None, location=None):
+            self.send_response(status)
+            if content_type:
+                self.send_header("Content-Type", content_type)
+            if location:
+                self.send_header("Location", location)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if body:
+                self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == "/small.png":
+                self._send(200, b"\x89PNG\r\n\x1a\nbody", "image/png")
+            elif self.path == "/redirect":
+                self._send(302, location="/small.png")
+            elif self.path == "/loop":
+                self._send(302, location="/loop")
+            elif self.path == "/noctype":
+                self._send(200, b"GIF89a raw")
+            elif self.path == "/slow":
+                time.sleep(0.6)
+                self._send(200, b"late", "text/plain")
+            else:
+                self._send(404)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        data, media = orun.fetch_remote_media(f"{base}/small.png", max_bytes=1024)
+        failures = _check(failures, "a remote image comes back with its type",
+                          data == b"\x89PNG\r\n\x1a\nbody"
+                          and media == "image/png", f"{data!r} {media}")
+        data, media = orun.fetch_remote_media(f"{base}/redirect", max_bytes=1024)
+        failures = _check(failures, "a bounded redirect is followed",
+                          data.startswith(b"\x89PNG") and media == "image/png",
+                          f"{data!r} {media}")
+        _data, media = orun.fetch_remote_media(f"{base}/noctype", max_bytes=1024)
+        failures = _check(failures, "a missing content type is sniffed",
+                          media == "image/gif", media)
+
+        loop = orun.ApiError
+        for name, call, code in (
+            ("a redirect loop fails", lambda: orun.fetch_remote_media(
+                f"{base}/loop", max_bytes=1024), "remote_fetch_failed"),
+            ("an HTTP error fails", lambda: orun.fetch_remote_media(
+                f"{base}/missing", max_bytes=1024), "remote_fetch_failed"),
+            ("an unreachable host fails", lambda: orun.fetch_remote_media(
+                "http://127.0.0.1:1/x", max_bytes=1024, timeout=0.5),
+             "remote_fetch_failed"),
+            ("a stalled fetch times out", lambda: orun.fetch_remote_media(
+                f"{base}/slow", max_bytes=1024, timeout=0.2),
+             "remote_fetch_failed"),
+            ("an oversize body is a 413", lambda: orun.fetch_remote_media(
+                f"{base}/small.png", max_bytes=3), "image_too_large"),
+            ("a non-http scheme is refused", lambda: orun.fetch_remote_media(
+                "ftp://example/x", max_bytes=1024), "unsupported_value"),
+        ):
+            try:
+                call()
+                error = None
+            except orun.ApiError as exc:
+                error = exc
+            failures = _check(failures, name,
+                              error is not None and error.status in (400, 413)
+                              and error.code == code, repr(error))
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    return failures
+
+
 def test_cancellation_destructive_guard() -> int:
     """A stopped turn must not trash anything, even inside the handler."""
     failures = 0
@@ -9507,9 +9743,10 @@ def test_openai_mapping() -> int:
         "model": "m1",
         "messages": [{"role": "user", "content": [
             {"type": "image_url",
-             "image_url": {"url": "https://example/x.png"}}]}]})
-    failures = _check(failures, "remote image URLs are rejected for now",
-                      remote is not None and remote.status == 400,
+             "image_url": {"url": "ftp://example/x.png"}}]}]})
+    failures = _check(failures, "a non-http image URL is rejected",
+                      remote is not None and remote.status == 400
+                      and remote.code == "unsupported_value",
                       repr(remote))
 
     import ollamarun_lib.openai_api as api_module
@@ -10298,7 +10535,7 @@ def test_serve_live() -> int:
 
 
 def _start_agent_api(tmp, client, *, config_extra=None, manager=None,
-                     store=None, args_extra=(), config=None):
+                     store=None, args_extra=(), config=None, artifacts=None):
     """An API server with the native agent routes over a fake backend."""
     if store is None:
         store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
@@ -10312,7 +10549,7 @@ def _start_agent_api(tmp, client, *, config_extra=None, manager=None,
     router = orun.build_router(lambda: client, config=settings)
     api = orun.add_agent_routes(router, args=args, config=settings,
                                 store=store, client_factory=lambda: client,
-                                manager=manager)
+                                manager=manager, artifacts=artifacts)
     server = orun.HttpServer(router, bind="127.0.0.1", port=0, ping_interval=0.2)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -11052,8 +11289,12 @@ def test_agent_turn_validation() -> int:
         ("empty messages", {**base, "messages": []}),
         ("a tool role", {**base, "messages": [{"role": "tool", "content": "x"}]}),
         ("empty content", {**base, "messages": [{"role": "user", "content": " "}]}),
-        ("a non-string content", {**base, "messages": [
-            {"role": "user", "content": [{"type": "text", "text": "x"}]}]}),
+        ("a numeric content", {**base, "messages": [
+            {"role": "user", "content": 123}]}),
+        ("an empty parts array", {**base, "messages": [
+            {"role": "user", "content": []}]}),
+        ("a malformed part", {**base, "messages": [
+            {"role": "user", "content": [42]}]}),
         ("a boolean max_rounds", {**base, "settings": {"max_rounds": True}}),
         ("max_rounds 0", {**base, "settings": {"max_rounds": 0}}),
         ("a bad approval mode", {**base, "settings": {"approval": "auto"}}),
@@ -11262,6 +11503,7 @@ if __name__ == "__main__":
              + test_artifact_store() + test_artifact_quota_and_ttl()
              + test_tool_artifact_registration()
              + test_artifact_events() + test_artifact_session_persistence()
+             + test_artifact_content_parts() + test_artifact_remote_fetch()
              + test_python310_syntax() + test_turn_result_mapping()
              + test_turn_event_envelope()
              + test_turn_manager_lifecycle()
