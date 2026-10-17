@@ -12,7 +12,8 @@ what a server needs:
 * interactive approvals parked on the API -- `approval.required` carries an
   `approval_id`, `POST /v1/agent/approvals/{id}` resolves it (the first
   decision wins; a timeout is a denial, never an approval),
-* session routes over the existing `SessionStore`,
+* session routes over the existing `SessionStore` (a session with an
+  active turn cannot be edited or deleted: 409 `session_busy`),
 * the serve policy boundary: the request's `settings.tools` and
   `settings.approval` decide behavior, the configured tool policy is never
   `auto` here, and approvals stay runtime-owned decisions.
@@ -47,8 +48,9 @@ from .runtime import (AgentRuntime, ApprovalDecision, ApprovalRequest,
 from .server import ApiError, Request, Response, Router, SseWriter, StreamResponse
 from .session import Session, SessionStore
 from .tools import (DEFAULT_SHELL_ALLOW, ToolRule, policy_check, suggest_rules)
-from .turns import (TERMINAL_STATUSES, ManagerClosed, SessionBusy, TooManyTurns,
-                    TurnExpired, TurnManager, UnknownTurn)
+from .turns import (INTERNAL_ERROR_MESSAGE, TERMINAL_STATUSES, ManagerClosed,
+                    SessionBusy, TooManyTurns, TurnExpired, TurnManager,
+                    UnknownTurn)
 
 logger = logging.getLogger("ollamarun.agent_api")
 
@@ -274,9 +276,10 @@ def turn_body(snapshot: Any) -> dict[str, Any]:
         }
     error = snapshot.error
     if snapshot.synthetic_terminal and error:
-        # A closure crash can carry exception text (paths included); the raw
-        # one goes to the debug log, the client gets a stable message.
-        error = "the turn failed internally"
+        # Defensive: the manager already sanitizes its synthesized terminals
+        # (the raw text goes to the --debug log), so this normally changes
+        # nothing -- but no snapshot shape may leak internal detail here.
+        error = INTERNAL_ERROR_MESSAGE
     return {
         "id": snapshot.id, "object": "turn", "session_id": snapshot.session_id,
         "status": snapshot.status, "created_at": snapshot.created_at,
@@ -876,6 +879,9 @@ class AgentApi:
     def patch_session(self, request: Request,
                       params: dict[str, str]) -> Response:
         session = self._session(params.get("id", ""))
+        active = self._manager.active_for(session.id)
+        if active:
+            raise _session_busy(session.id, active)
         body = request.json
         if not isinstance(body, dict) or not body:
             raise _invalid("request body must be a non-empty JSON object")

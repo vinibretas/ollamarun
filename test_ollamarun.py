@@ -7269,13 +7269,15 @@ def test_turn_manager_synthesized_terminal() -> int:
         sink(orun.RuntimeEvent(orun.TURN_STARTED, {}))
         raise RuntimeError("boom")
 
-    handle = manager.submit(session_id="boom", work=boom)
+    handle = manager.submit(session_id="crash", work=boom)
     snapshot = manager.wait(handle.id, timeout=5)
     events = _collect(manager.subscribe(handle.id, after=0))
     failures = _check(failures, "a raising closure becomes a failed turn",
                       snapshot is not None and snapshot.status == "failed"
-                      and snapshot.error == "RuntimeError: boom"
-                      and snapshot.synthetic_terminal,
+                      and snapshot.error == orun.INTERNAL_ERROR_MESSAGE
+                      and snapshot.synthetic_terminal
+                      and snapshot.result is not None
+                      and snapshot.result.error == "RuntimeError: boom",
                       str(snapshot))
     failures = _check(failures, "the synthesized terminal is the last event",
                       [event.type for event in events]
@@ -7283,6 +7285,10 @@ def test_turn_manager_synthesized_terminal() -> int:
                       and events[-1].data.get("synthetic") is True
                       and events[-1].data.get("code") == "internal_error",
                       str([(event.type, event.data) for event in events]))
+    payload = json.dumps([event.to_dict() for event in events])
+    failures = _check(failures, "the raw crash text stays off the event stream",
+                      "RuntimeError" not in payload and "boom" not in payload,
+                      payload[:200])
 
     def quiet(sink, cancel):
         return orun.TurnResult(id="x", session_id="quiet", status="completed")
@@ -7337,7 +7343,9 @@ def test_turn_expired() -> int:
         return orun.TurnResult(id="x", session_id="s", status="completed")
 
     handle = manager.submit(session_id="s", work=work)
-    manager.wait(handle.id, timeout=5)   # get() sweeps it (ttl 0)
+    # Join the worker directly: wait()/get() would sweep the record first,
+    # hiding whether subscribe() enforces retention on its own.
+    manager._records[handle.id].thread.join(5)
     try:
         manager.subscribe(handle.id)
         raised = None
@@ -9535,6 +9543,15 @@ def test_agent_turn_controls() -> int:
                 server, "DELETE", f"/v1/sessions/{session_id}")
             failures = _check(failures, "a session with an active turn is protected",
                               status == 409, f"{status} {raw[:160]}")
+            status, _headers, raw = _http(
+                server, "PATCH", f"/v1/sessions/{session_id}",
+                body={"title": "too early"})
+            error = json.loads(raw).get("error", {})
+            failures = _check(failures, "a session with an active turn is not editable",
+                              status == 409
+                              and error.get("code") == "session_busy"
+                              and error.get("active_turn_id") == first["id"],
+                              f"{status} {raw[:200]}")
 
             status, _headers, raw = _http(
                 server, "POST", f"/v1/agent/turns/{first['id']}/cancel")
@@ -9558,6 +9575,13 @@ def test_agent_turn_controls() -> int:
             failures = _check(failures, "cancelling a finished turn is a 409",
                               status == 409
                               and json.loads(raw)["error"]["code"] == "turn_finished",
+                              f"{status} {raw[:160]}")
+            status, _headers, raw = _http(
+                server, "PATCH", f"/v1/sessions/{session_id}",
+                body={"title": "after the turn"})
+            failures = _check(failures, "editing works again once the turn is done",
+                              status == 200
+                              and json.loads(raw)["title"] == "after the turn",
                               f"{status} {raw[:160]}")
         finally:
             _stop_api(server, thread)
@@ -10094,15 +10118,15 @@ def test_agent_turn_expiry() -> int:
                               str(body)[:160])
             time.sleep(0.5)
             status, _headers, raw = _http(
+                server, "GET", f"/v1/agent/turns/{turn['id']}/events")
+            failures = _check(failures, "an expired turn's events are a 410",
+                              status == 410, f"{status} {raw[:160]}")
+            status, _headers, raw = _http(
                 server, "GET", f"/v1/agent/turns/{turn['id']}")
             failures = _check(failures, "an expired turn is a 410",
                               status == 410
                               and json.loads(raw)["error"]["code"] == "turn_expired",
                               f"{status} {raw[:160]}")
-            status, _headers, raw = _http(
-                server, "GET", f"/v1/agent/turns/{turn['id']}/events")
-            failures = _check(failures, "an expired turn's events are a 410",
-                              status == 410, f"{status} {raw[:160]}")
             status, _headers, raw = _http(server, "GET",
                                           "/v1/agent/turns/turn_never")
             failures = _check(failures, "an unknown turn stays a 404",

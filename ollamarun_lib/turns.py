@@ -5,7 +5,8 @@ level. `runtime.AgentRuntime` emits `RuntimeEvent`s and knows nothing
 about transport; the manager wraps a host-supplied work closure, stamps
 every event with a `TurnEvent` envelope (turn id, 1-based seq,
 timestamp), buffers it for replay, fans it out to subscribers, and owns
-the turn's lifecycle, cancellation and retention.
+the turn's lifecycle, cancellation and retention (swept on every entry
+point, `subscribe()` included).
 
 The work closure signature is `work(sink, cancel) -> TurnResult`:
 
@@ -39,6 +40,7 @@ Typed errors map onto HTTP in Phase 4: `SessionBusy` -> 409,
 """
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import time
@@ -52,6 +54,8 @@ from .events import (STREAM_GAP, TERMINAL_EVENTS, TURN_CANCELLED, TURN_COMPLETED
 from .helpers import CancelToken, now_iso
 from .runtime import TurnResult
 
+logger = logging.getLogger("ollamarun.turns")
+
 EventSink = Callable[[RuntimeEvent], None]
 Work = Callable[[EventSink, CancelToken], TurnResult]
 
@@ -64,6 +68,12 @@ COMPLETED = "completed"
 FAILED = "failed"
 CANCELLED = "cancelled"
 TERMINAL_STATUSES = frozenset({COMPLETED, FAILED, CANCELLED})
+
+#: The stable message a manager-synthesized error terminal carries. A crash
+#: can include paths or internal detail, so the raw text goes to the --debug
+#: log (and stays on the internal `TurnResult.error`) while clients always
+#: see this one -- the same message the HTTP status shape uses.
+INTERNAL_ERROR_MESSAGE = "the turn failed internally"
 
 _TERMINAL_OF_TYPE = {TURN_COMPLETED: COMPLETED,
                      TURN_ERROR: FAILED,
@@ -362,11 +372,13 @@ class TurnManager:
             assert record.work is not None and record.sink is not None
             result = record.work(record.sink, record.cancel)
         except BaseException as exc:  # a work-closure bug must not kill the manager
-            message = f"{type(exc).__name__}: {exc}"
+            logger.debug("turn %s raised", record.id, exc_info=True)
             result = TurnResult(id=record.id, session_id=record.session_id,
-                                status=FAILED, error=message)
+                                status=FAILED,
+                                error=f"{type(exc).__name__}: {exc}")
             self._publish(record.id, RuntimeEvent(TURN_ERROR, {
-                "code": "internal_error", "message": message, "retryable": False,
+                "code": "internal_error", "message": INTERNAL_ERROR_MESSAGE,
+                "retryable": False,
             }), synthetic=True)
         with self._lock:
             if not record.terminal_seen:
@@ -430,10 +442,15 @@ class TurnManager:
         elif status == COMPLETED:
             event = RuntimeEvent(TURN_COMPLETED, {"content": None})
         else:
+            raw = result.error if result is not None and result.error else ""
+            if raw:
+                logger.debug("turn %s failed without a terminal event: %s",
+                             record.id, raw)
+                message = INTERNAL_ERROR_MESSAGE
+            else:
+                message = "the turn ended without a terminal event"
             event = RuntimeEvent(TURN_ERROR, {
-                "code": "internal_error",
-                "message": (result.error if result is not None and result.error
-                            else "the turn ended without a terminal event"),
+                "code": "internal_error", "message": message,
                 "retryable": False})
         self._publish_locked(record, event, synthetic=True)
 
@@ -512,7 +529,14 @@ class TurnManager:
 
     def subscribe(self, turn_id: str, *, after: Optional[int] = None,
                   queue_size: Optional[int] = None) -> Subscription:
+        """Subscribe to a turn's stream; retention applies here too.
+
+        The sweep runs first, exactly like `get()`/`submit()`, so a completed
+        turn past its TTL answers `TurnExpired` even when no other entry
+        point has triggered a sweep yet.
+        """
         with self._lock:
+            self._sweep_locked(self._clock())
             record = self._records.get(turn_id)
             if record is None:
                 expired = self._expired.get(turn_id)
