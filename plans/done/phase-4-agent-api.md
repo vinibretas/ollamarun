@@ -127,3 +127,31 @@ locking is a later upgrade; distributed coordination is out of scope.
 `test_agent_turn_expiry`, `test_agent_context_warning`; live-checked
 against Ollama 0.40 with a real policy-mode turn, an interactive
 park/resolve, event replay and session cleanup.
+
+## Post-review fixes (v1.50)
+
+The review of the landing confirmed three defects; all were fixed with
+regressions before the phase was closed:
+
+- **Retention on the events endpoint.** `TurnManager.subscribe()` now
+  sweeps expired records before its lookup, exactly like `get()` and
+  `submit()`, so `GET /v1/agent/turns/{id}/events` answers 410 for a turn
+  past `serve_turn_event_ttl` even when no other request swept it first.
+  The Phase 2 `test_turn_expired` had masked the gap by calling `wait()`
+  (which sweeps through `get()`); it now joins the worker directly, and
+  the HTTP expiry test calls the events route before any status read.
+- **Sanitized internal errors.** The manager's synthesized error terminals
+  (`_run`'s crash path and `_synthesize_terminal`) publish the shared
+  stable `INTERNAL_ERROR_MESSAGE`; the raw exception text goes to the
+  `--debug` log and stays on the internal `TurnResult.error`. The SSE
+  stream no longer exposes what the status endpoint (`turn_body`) was
+  already sanitizing, and `turn_body` now uses the shared constant.
+- **Session edits during a turn.** `PATCH /v1/sessions/{id}` is refused
+  with the same 409 `session_busy` (active turn id included) as DELETE
+  while the session has an active turn, closing a lost-update race
+  against the worker's session saves.
+
+Minor observations were recorded, with no behavior change: session routes
+resolve refs like the CLI (exact id, id prefix or title), the
+"cancelled by user" approval note on timeout/disconnect resolution, and
+`Last-Event-ID` resume having no dedicated test.
