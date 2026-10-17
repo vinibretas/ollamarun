@@ -1903,6 +1903,69 @@ def test_context_usage() -> int:
         else:
             print(f"FAIL  context warning: {_plain(cap.get())!r}")
             failures += 1
+
+        # The denominator is the window the runner actually loaded with, not
+        # the model's architectural maximum: /api/ps reports context_length
+        # (a qwen3.5 allows 262144 but may be loaded at 65536).
+        loaded_client = _FakeClient(
+            models=["m1"],
+            show_data={"model_info": {"llama.context_length": 262144}},
+            ps_entries=[{"name": "m1", "model": "m1", "size": 1,
+                         "size_vram": 1, "context_length": 65536}])
+        loaded_repl = orun.Repl(args, config, loaded_client, store, session)
+        if loaded_repl.context_length() == 65536:
+            print("PASS  loaded /api/ps context beats the model's arch max")
+        else:
+            print(f"FAIL  loaded context: {loaded_repl.context_length()}")
+            failures += 1
+
+        with orun.console.capture() as cap:
+            orun.cmd_context(loaded_repl, "")
+        if "65536" in _plain(cap.get()):
+            print("PASS  /context reports the loaded window")
+        else:
+            print(f"FAIL  /context loaded window: {_plain(cap.get())!r}")
+            failures += 1
+
+        # A session num_ctx is what the next request asks for (and reloads
+        # at), so it wins over whatever is loaded right now.
+        session.parameters["num_ctx"] = 8192
+        if loaded_repl.context_length() == 8192:
+            print("PASS  session num_ctx beats the loaded context")
+        else:
+            print(f"FAIL  session num_ctx over loaded: {loaded_repl.context_length()}")
+            failures += 1
+        session.parameters.pop("num_ctx")
+
+        # Before the model is loaded the show answer is provisional: once
+        # /api/ps reports the runner, the next call picks the real window up.
+        grow_client = _FakeClient(models=["m1"],
+                                  show_data={"model_info": {"llama.context_length": 262144}})
+        grow_repl = orun.Repl(args, config, grow_client, store, session)
+        first = grow_repl.context_length()
+        grow_client.ps_entries = [{"name": "m1:latest", "context_length": 65536}]
+        second = grow_repl.context_length()
+        if first == 262144 and second == 65536:
+            print("PASS  a pre-load context is re-checked against /api/ps")
+        else:
+            print(f"FAIL  provisional context upgrade: {first} -> {second}")
+            failures += 1
+
+        # The warning measures against the loaded window too: 140 tokens over
+        # the 262144 arch max is nothing, over the loaded 150-token runner it
+        # is 93% and must warn.
+        ps_warn_client = _FakeClient(
+            models=["m1"],
+            show_data={"model_info": {"llama.context_length": 262144}},
+            ps_entries=[{"name": "m1", "context_length": 150}])
+        ps_warn_repl = orun.Repl(args, config, ps_warn_client, store, session)
+        with orun.console.capture() as cap:
+            ps_warn_repl._context_warning()
+        if "140/150" in _plain(cap.get()):
+            print("PASS  context warning measures against the loaded window")
+        else:
+            print(f"FAIL  loaded-window warning: {_plain(cap.get())!r}")
+            failures += 1
     return failures
 
 

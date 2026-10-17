@@ -2,6 +2,18 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.38
+
+Summary of changes in this version:
+  - The context counter and the context warnings measure against the window
+    the model is actually loaded with, not the model's architectural
+    maximum: the footer's denominator is now `/api/ps`'s `context_length`
+    when a runner is loaded (a qwen3.5 loaded at 65536 reads
+    `ctx 8.012k/65.536k (12.225%)` instead of `.../262.144k (3.056%)`), a
+    session `num_ctx` still wins (the next request asks for it), and a
+    pre-load answer is re-checked once the runner shows up. `/context` and
+    the 80%/85% usage warnings use the same window.
+
 Version: 1.37
 
 Summary of changes in this version:
