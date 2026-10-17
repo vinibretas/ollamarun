@@ -7058,6 +7058,26 @@ def test_cancellation_coverage() -> int:
             raised = exc
         failures = _check(failures, "a cancelled ssh probe refuses to start",
                           isinstance(raised, orun.CommandCancelled), repr(raised))
+        for probe in (orun.ssh_gpu_probe, orun.ssh_ram_probe):
+            try:
+                probe("example.invalid", cancel=token)
+                raised = None
+            except Exception as exc:
+                raised = exc
+            failures = _check(failures,
+                              f"a cancelled {probe.__name__} refuses to start",
+                              isinstance(raised, orun.CommandCancelled), repr(raised))
+
+        remote_ctx = orun.ToolContext(
+            cwd=".", timeout=5, cancel=token, ssh_target="example.invalid",
+            client=type("C", (), {"base": "http://192.0.2.1:11434"})())
+        try:
+            orun.HANDLERS["system_status"]({"target": "ollama"}, remote_ctx)
+            raised = None
+        except Exception as exc:
+            raised = exc
+        failures = _check(failures, "system_status threads the token into its probes",
+                          isinstance(raised, orun.CommandCancelled), repr(raised))
     return failures
 
 
@@ -7084,6 +7104,15 @@ def test_file_mention_inlining() -> int:
                           "SECRET-FILE-CONTENT" in stored
                           and f'<file name="{notes}">' in stored,
                           stored[:200])
+        sent = next((message for message in client.chat_payloads[-1].get("messages", [])
+                     if message.get("role") == "user"), {})
+        failures = _check(failures, "the REPL sends the inlined file to the model",
+                          "SECRET-FILE-CONTENT" in sent.get("content", "")
+                          and f'<file name="{notes}">' in sent.get("content", ""),
+                          str(sent)[:200])
+        failures = _check(failures, "the stored user message lists the file",
+                          session.messages[0].get("files") == [str(notes)],
+                          str(session.messages[0].get("files")))
 
         from ollamarun_lib.run import run_once
         session2 = orun.Session.create("m1", client.base)
@@ -7176,7 +7205,7 @@ def test_tool_support_warning() -> int:
         repl.headless = True
         events = []
         repl.event_sink = events.append
-        with orun.console.capture():
+        with orun.console.capture() as cap:
             repl.send("one")
         first = list(events)
         events.clear()
@@ -7194,6 +7223,12 @@ def test_tool_support_warning() -> int:
                           "turn.started" in types and "turn.warning" in types
                           and types.index("turn.started") < types.index("turn.warning"),
                           str(types))
+        failures = _check(failures, "the headless warning prints nothing",
+                          warnings
+                          and "does not advertise tool support"
+                          in str(warnings[0].data.get("message"))
+                          and _plain(cap.get()).strip() == "",
+                          repr(_plain(cap.get())[:120]))
     return failures
 
 
@@ -7261,6 +7296,541 @@ def test_approval_event_contract() -> int:
                           bool(results) and results[0].data.get("ok") is False
                           and results[0].data.get("denied") is True,
                           str(results[0].data if results else None))
+    return failures
+
+
+def test_runtime_event_contract() -> int:
+    """Phase 1 acceptance: one vocabulary, JSON-ready payloads, one terminal event."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain", "--no-save"])
+        script = [
+            [{"message": {"thinking": "hmm", "content": "checking", "tool_calls": [
+                {"function": {"name": "run_shell",
+                              "arguments": {"command": "echo hi"}}}]}},
+             {"done": True}],
+            [{"message": {"content": "done"}, "done": True,
+             "prompt_eval_count": 7, "eval_count": 2,
+             "prompt_eval_duration": 1_000_000_000, "eval_duration": 1_000_000_000}],
+        ]
+        client = _FakeClient(models=["m1"], capabilities=["completion", "tools"],
+                             chat_script=script)
+        session = orun.Session.create("m1", client.base)
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store, session)
+        repl._build_prompt_session = lambda: None
+        repl.headless = True
+        repl.auto_approve = True
+        events = []
+        repl.event_sink = events.append
+        with orun.console.capture():
+            result = repl.send("check")
+        types = [event.type for event in events]
+
+        try:
+            encoded = json.dumps([event.to_dict() for event in events])
+            payload_ok = True
+        except (TypeError, ValueError) as exc:
+            encoded, payload_ok = str(exc), False
+        failures = _check(failures, "every event payload is JSON-ready",
+                          payload_ok, encoded[:200])
+        unknown = sorted({event_type for event_type in types
+                          if event_type not in orun.EVENT_TYPES})
+        failures = _check(failures, "every emitted type is in the vocabulary",
+                          not unknown, str(unknown))
+        terminals = [event_type for event_type in types
+                     if event_type in orun.TERMINAL_EVENTS]
+        failures = _check(failures, "exactly one terminal event, and it ends the turn",
+                          len(terminals) == 1 and types[-1] in orun.TERMINAL_EVENTS,
+                          f"{terminals} {types[-3:]}")
+        failures = _check(failures, "the turn opens with turn.started",
+                          bool(types) and types[0] == "turn.started", str(types[:3]))
+
+        started = events[0].data
+        failures = _check(failures, "turn.started identifies the session and mode",
+                          started.get("model") == "m1"
+                          and started.get("session_id") == session.id
+                          and started.get("mode") == "agent", str(started))
+
+        completed = [event.data for event in events
+                     if event.type == "message.completed"]
+        failures = _check(failures, "one message.completed per round, round-numbered",
+                          [entry.get("round") for entry in completed] == [0, 1],
+                          str([entry.get("round") for entry in completed]))
+        failures = _check(failures, "message.completed carries content and thinking",
+                          completed[0].get("thinking") == "hmm"
+                          and completed[0].get("content") == "checking"
+                          and completed[0].get("tool_calls") == 1
+                          and completed[1].get("content") == "done",
+                          str(completed))
+
+        deltas = [(event.data.get("channel"), event.data.get("text"))
+                  for event in events if event.type == "message.delta"]
+        failures = _check(failures, "deltas stay in the content/thinking channels",
+                          {channel for channel, _text in deltas} <= {"content", "thinking"}
+                          and "".join(text for channel, text in deltas
+                                      if channel == "content") == "checkingdone",
+                          str(deltas))
+
+        resolved = [event.data for event in events if event.type == "approval.resolved"]
+        actions = {"run", "remember", "rule", "auto", "deny", "interrupt"}
+        failures = _check(failures, "approval.resolved names how it was decided",
+                          bool(resolved)
+                          and all(entry.get("action") in actions
+                                  for entry in resolved),
+                          str(resolved))
+        failures = _check(failures, "tool.call precedes approval.resolved precedes tool.result",
+                          types.index("tool.call") < types.index("approval.resolved")
+                          < types.index("tool.result"), str(types))
+
+        final = [event.data for event in events if event.type == "turn.completed"]
+        failures = _check(failures, "turn.completed carries the final round",
+                          bool(final) and final[0].get("content") == "done"
+                          and final[0].get("stats", {}).get("completion_tokens") == 2,
+                          str(final))
+        failures = _check(failures, "the session keeps the same final content",
+                          session.messages[-1].get("role") == "assistant"
+                          and session.messages[-1].get("content") == "done",
+                          str(session.messages[-1])[:160])
+
+        token = orun.CancelToken()
+        token.cancel()
+        hooks = orun.TurnHooks(
+            client=client, store=store,
+            session=orun.Session.create("m1", client.base),
+            settings=orun.TurnSettings(no_save=True), cancel=token,
+            payload_for=lambda messages, with_tools: {},
+            present_round=lambda payload, after_tools, cancel: orun.GenerationResult(),
+            approver=lambda request: orun.ApprovalDecision(run=False))
+        cancel_events = []
+        hooks.on_event = cancel_events.append
+        cancelled = orun.AgentRuntime(hooks).run()
+        failures = _check(failures, "a cancelled turn is terminal-cancelled",
+                          cancelled.cancelled
+                          and [event.type for event in cancel_events]
+                          == ["turn.started", "turn.cancelled"],
+                          str([event.type for event in cancel_events]))
+
+        class _BrokenClient(_FakeClient):
+            def chat(self, payload, timeout=None, cancel=None):
+                raise orun.OllamaError("boom")
+
+        broken = _BrokenClient(models=["m1"], capabilities=["completion", "tools"])
+        broken_session = orun.Session.create("m1", broken.base)
+        broken_repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), broken, store,
+                                broken_session)
+        broken_repl._build_prompt_session = lambda: None
+        broken_repl.headless = True
+        broken_events = []
+        broken_repl.event_sink = broken_events.append
+        with orun.console.capture():
+            broken_result = broken_repl.send("check")
+        broken_types = [event.type for event in broken_events]
+        failures = _check(failures, "a failed round ends in turn.error",
+                          broken_result.error == "boom"
+                          and broken_types[-1] == "turn.error"
+                          and "turn.completed" not in broken_types
+                          and "turn.error" in orun.TERMINAL_EVENTS,
+                          f"{broken_result.error!r} {broken_types}")
+    return failures
+
+
+def test_approval_runtime_contract() -> int:
+    """The approval gate cannot be skipped, and the event order is fixed."""
+    failures = 0
+    ran = []
+    spec = orun.ToolSpec(name="stub", description="", parameters={},
+                         handler=lambda args, ctx: ran.append(dict(args)) or "STUB-RAN")
+    call = [{"function": {"name": "stub", "arguments": {"x": 1}}}]
+
+    def hooks_with(approver, token=None):
+        events = []
+        session = orun.Session.create("m1", "http://h")
+        hooks = orun.TurnHooks(
+            client=None, store=None, session=session,
+            settings=orun.TurnSettings(no_save=True), cancel=token,
+            registry={"stub": spec},
+            tool_ctx=orun.ToolContext(cwd=".", timeout=5, max_output=1000),
+            payload_for=lambda messages, with_tools: {},
+            present_round=lambda payload, after_tools, cancel: orun.GenerationResult(),
+            approver=approver)
+        hooks.on_event = events.append
+        return hooks, events
+
+    hooks, events = hooks_with(None)
+
+    def allow(request):
+        hooks.on_event(orun.approval_notice(request, reason="needs approval"))
+        return orun.ApprovalDecision(run=True, note="confirmed", action="run")
+
+    hooks.approver = allow
+    interrupted = orun.AgentRuntime(hooks).execute_tool_calls(call, allow_prompt=True)
+    types = [event.type for event in events]
+    failures = _check(failures, "an approved call runs in contract order",
+                      types == ["tool.call", "approval.required",
+                                "approval.resolved", "tool.result"]
+                      and interrupted is False and ran == [{"x": 1}],
+                      f"{types} {interrupted} {ran}")
+    failures = _check(failures, "the approved result carries the handler output",
+                      events[-1].data.get("ok") is True
+                      and "STUB-RAN" in str(events[-1].data.get("text")),
+                      str(events[-1].data))
+
+    ran.clear()
+    hooks, events = hooks_with(None)
+    hooks.approver = lambda request: orun.ApprovalDecision(
+        run=False, note="denied by test", action="deny")
+    interrupted = orun.AgentRuntime(hooks).execute_tool_calls(call, allow_prompt=True)
+    types = [event.type for event in events]
+    failures = _check(failures, "the runtime never emits approval.required itself",
+                      types == ["tool.call", "approval.resolved", "tool.result"]
+                      and "approval.required" not in types and not ran,
+                      f"{types} {ran}")
+    failures = _check(failures, "a denial is recorded as a denied result",
+                      events[-1].data.get("denied") is True
+                      and "not run" in hooks.session.messages[-1].get("content", ""),
+                      str(events[-1].data))
+
+    ran.clear()
+    hooks, events = hooks_with(None)
+
+    def interrupt(request):
+        raise KeyboardInterrupt
+
+    hooks.approver = interrupt
+    interrupted = orun.AgentRuntime(hooks).execute_tool_calls(call, allow_prompt=True)
+    types = [event.type for event in events]
+    failures = _check(failures, "Ctrl-C at the gate interrupts without running",
+                      interrupted is True and not ran
+                      and types == ["tool.call", "approval.resolved", "tool.result"]
+                      and events[1].data.get("action") == "interrupt"
+                      and events[-1].data.get("ok") is False
+                      and "interrupted by user" in str(events[-1].data.get("text"))
+                      and "interrupted by user"
+                      in hooks.session.messages[-1].get("content", ""),
+                      f"{interrupted} {types} {[event.data for event in events]}")
+
+    token = orun.CancelToken()
+    token.cancel()
+    ran.clear()
+    hooks, events = hooks_with(None, token)
+    hooks.approver = lambda request: orun.ApprovalDecision(run=True)
+    interrupted = orun.AgentRuntime(hooks).execute_tool_calls(call, allow_prompt=True)
+    failures = _check(failures, "a stopped turn never starts the tool",
+                      interrupted is True and not ran
+                      and events[-1].data.get("cancelled") is True,
+                      f"{interrupted} {ran} {[event.data for event in events]}")
+    return failures
+
+
+def test_unattended_turn_denial() -> int:
+    """Phase 1 acceptance: a risky call cannot silently bypass the gate."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "owned.txt"
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain", "--no-save"])
+        script = [
+            [{"message": {"content": "", "tool_calls": [
+                {"function": {"name": "run_shell",
+                              "arguments": {"command": f"echo owned > {marker}"}}}]}},
+             {"done": True}],
+            [{"message": {"content": "understood"}, "done": True}],
+        ]
+        client = _FakeClient(models=["m1"], capabilities=["completion", "tools"],
+                             chat_script=script)
+        session = orun.Session.create("m1", client.base)
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store, session)
+        repl._build_prompt_session = lambda: None
+        repl.headless = True
+        events = []
+        repl.event_sink = events.append
+        with orun.console.capture() as cap:
+            result = repl.send("go")
+        out = _plain(cap.get())
+        tool_messages = [message for message in session.messages
+                         if message.get("role") == "tool"]
+        failures = _check(failures, "the risky call never ran",
+                          not marker.exists() and bool(tool_messages)
+                          and "not run" in tool_messages[0].get("content", ""),
+                          f"{marker.exists()} {tool_messages}")
+        failures = _check(failures, "the denial says the run is unattended",
+                          "unattended" in tool_messages[0].get("content", ""),
+                          str(tool_messages))
+        types = [event.type for event in events]
+        failures = _check(failures, "a non-interactive denial never parks for approval",
+                          "approval.required" not in types
+                          and any(event.type == "approval.resolved"
+                                  and event.data.get("action") == "deny"
+                                  for event in events),
+                          str(types))
+        failures = _check(failures, "the headless turn prints nothing and still answers",
+                          out.strip() == "" and result.content == "understood",
+                          f"{result.content!r} {out[:120]!r}")
+    return failures
+
+
+def test_cancel_reaches_production_tools() -> int:
+    """Esc during a real turn's tool call must kill it, not wait for it."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "finished.txt"
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain", "--no-save"])
+        script = [
+            [{"message": {"content": "", "tool_calls": [
+                {"function": {"name": "run_shell",
+                              "arguments": {"command": f"sleep 4; touch {marker}"}}}]}},
+             {"done": True}],
+        ]
+        client = _FakeClient(models=["m1"], capabilities=["completion", "tools"],
+                             chat_script=script)
+        session = orun.Session.create("m1", client.base)
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store, session)
+        repl._build_prompt_session = lambda: None
+        repl.headless = True
+        repl.auto_approve = True
+        repl.event_sink = lambda event: None
+
+        box = {}
+
+        def turn():
+            started = time.monotonic()
+            box["result"] = repl.send("run it")
+            box["elapsed"] = time.monotonic() - started
+
+        worker = threading.Thread(target=turn)
+        worker.start()
+        time.sleep(0.8)                  # the shell tool is now sleeping
+        repl.cancel_token.cancel()       # what the stop key does
+        worker.join(10)
+        tool_messages = [message for message in session.messages
+                         if message.get("role") == "tool"]
+        failures = _check(failures, "the stopped turn returns without waiting for the tool",
+                          not worker.is_alive() and box.get("elapsed", 99.0) < 2.5,
+                          f"alive={worker.is_alive()} {box.get('elapsed', -1):.1f}s")
+        failures = _check(failures, "the killed command never reaches its next step",
+                          not marker.exists(), str(marker))
+        failures = _check(failures, "the stopped tool is recorded as cancelled",
+                          bool(tool_messages)
+                          and "cancelled" in tool_messages[0].get("content", ""),
+                          str(tool_messages))
+    return failures
+
+
+def test_quiet_tools_real_turn() -> int:
+    """A /render raw flipped while the model streams silences that tool round."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(
+            ["m1", "--render", "markdown", "--no-save", "-y"])
+        script = [
+            [{"message": {"content": "working"}},
+             {"message": {"content": "", "tool_calls": [
+                 {"function": {"name": "run_shell",
+                               "arguments": {"command": "echo TOOL-OUTPUT"}}}]}},
+             {"done": True}],
+            [{"message": {"content": "final"}, "done": True}],
+        ]
+
+        class _FlipClient(_FakeClient):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.repl = None
+
+            def chat(self, payload, timeout=None, cancel=None):
+                self.chat_payloads.append(payload)
+                chunks = self.chat_script[self.chat_calls % len(self.chat_script)]
+                self.chat_calls += 1
+
+                def gen():
+                    yield chunks[0]
+                    self.repl.render_mode = "raw"   # /render raw lands mid-stream
+                    yield from chunks[1:]
+
+                return gen()
+
+        client = _FlipClient(models=["m1"], capabilities=["completion", "tools"],
+                             chat_script=script)
+        session = orun.Session.create("m1", client.base)
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store, session)
+        repl._build_prompt_session = lambda: None
+        client.repl = repl
+        with orun.console.capture() as cap:
+            result = repl.send("go")
+        out = _plain(cap.get())
+        tool_messages = [message for message in session.messages
+                         if message.get("role") == "tool"]
+        failures = _check(failures, "the tool still ran under /render raw",
+                          result.content == "final" and bool(tool_messages)
+                          and "TOOL-OUTPUT" in tool_messages[0].get("content", ""),
+                          f"{result.content!r} {tool_messages}")
+        # The assistant message's own call panel is renderer output; the
+        # event panels are the "running …" line and the result panel (which
+        # always carries the shell's "exit 0").
+        failures = _check(failures, "the upcoming tool event panels are silenced",
+                          "running" not in out and "exit 0" not in out,
+                          repr(out[:200]))
+    return failures
+
+
+def test_session_store_process_gate() -> int:
+    """The flock gates another process's index read-modify-write."""
+    failures = 0
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - POSIX only
+        return 0
+    import subprocess
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = str(Path(__file__).parent)
+        code = (
+            "import sys; sys.path.insert(0, {repo!r})\n"
+            "from pathlib import Path\n"
+            "import ollamarun_lib as orun\n"
+            "store = orun.SessionStore(sessions_dir=Path({tmp!r}) / 's',"
+            " index_path=Path({tmp!r}) / 'i.json')\n"
+            "session = orun.Session.create('m1', 'http://h')\n"
+            "store.save(session)\n"
+            "print('saved', len(store.entries()))\n"
+            "store.delete(session.id, use_trash=False)\n"
+            "print('deleted', len(store.entries()))\n"
+        ).format(repo=repo, tmp=tmp)
+        guard = open(Path(tmp) / "i.json.lock", "a+")
+        fcntl.flock(guard.fileno(), fcntl.LOCK_EX)
+        proc = subprocess.Popen([sys.executable, "-c", code],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            time.sleep(0.7)
+            blocked = proc.poll() is None
+        finally:
+            fcntl.flock(guard.fileno(), fcntl.LOCK_UN)
+            guard.close()
+        out, err = proc.communicate(timeout=20)
+        failures = _check(failures, "the other process waits for the index lock",
+                          blocked and proc.returncode == 0
+                          and b"saved 1" in out and b"deleted 0" in out,
+                          f"blocked={blocked} rc={proc.returncode} "
+                          f"out={out[-120:]!r} err={err[-200:]!r}")
+    return failures
+
+
+def test_session_store_same_session_writers() -> int:
+    """Two processes saving one session id cannot corrupt its file or index."""
+    failures = 0
+    import subprocess
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = str(Path(__file__).parent)
+        template = (
+            "import sys; sys.path.insert(0, {repo!r})\n"
+            "from pathlib import Path\n"
+            "import ollamarun_lib as orun\n"
+            "store = orun.SessionStore(sessions_dir=Path({tmp!r}) / 's',"
+            " index_path=Path({tmp!r}) / 'i.json')\n"
+            "for i in range(10):\n"
+            "    session = orun.Session.create('m1', 'http://h', title='{tag}-%d' % i)\n"
+            "    session.id = 'shared-session'\n"
+            "    store.save(session)\n"
+            "print('done')\n"
+        )
+        procs = [subprocess.Popen(
+                     [sys.executable, "-c",
+                      template.format(repo=repo, tmp=tmp, tag=tag)],
+                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                 for tag in ("a", "b")]
+        results = [(proc.communicate(), proc.returncode) for proc in procs]
+        failures = _check(failures, "both same-session writers save cleanly",
+                          all(code == 0 for _out, code in results),
+                          str([(out[1].decode()[-160:], code)
+                               for out, code in results]))
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        try:
+            loaded = store.load("shared-session")
+            parsed = loaded.id == "shared-session" and loaded.title.startswith(("a-", "b-"))
+        except (OSError, ValueError, TypeError):
+            parsed = False
+        entries = store.entries()
+        leftovers = sorted(str(path) for path in Path(tmp).rglob("*.tmp"))
+        failures = _check(failures, "the session file stays valid JSON",
+                          parsed, str(parsed))
+        failures = _check(failures, "the index keeps exactly one entry",
+                          len(entries) == 1
+                          and entries[0].get("id") == "shared-session",
+                          f"{len(entries)} {entries[:2]}")
+        failures = _check(failures, "no temp files are left behind",
+                          not leftovers, str(leftovers))
+    return failures
+
+
+def test_session_store_without_fcntl() -> int:
+    """Without fcntl the store falls back to the in-process lock and still saves."""
+    failures = 0
+    import subprocess
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = str(Path(__file__).parent)
+        code = (
+            "import sys; sys.path.insert(0, {repo!r})\n"
+            "from pathlib import Path\n"
+            "import ollamarun_lib.session as session_module\n"
+            "import ollamarun_lib as orun\n"
+            "session_module.fcntl = None\n"
+            "store = orun.SessionStore(sessions_dir=Path({tmp!r}) / 's',"
+            " index_path=Path({tmp!r}) / 'i.json')\n"
+            "store.save(orun.Session.create('m1', 'http://h'))\n"
+            "print('entries', len(store.entries()))\n"
+        ).format(repo=repo, tmp=tmp)
+        proc = subprocess.run([sys.executable, "-c", code],
+                              capture_output=True, text=True, timeout=30)
+        failures = _check(failures, "save works without fcntl (no-op fallback)",
+                          proc.returncode == 0 and "entries 1" in proc.stdout,
+                          f"rc={proc.returncode} out={proc.stdout[-120:]!r} "
+                          f"err={proc.stderr[-200:]!r}")
+    return failures
+
+
+def test_cancellation_destructive_guard() -> int:
+    """A stopped turn must not trash anything, even inside the handler."""
+    failures = 0
+    token = orun.CancelToken()
+    token.cancel()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        victim = tmp / "precious.txt"
+        victim.write_text("keep me", encoding="utf-8")
+        fake_bin = tmp / "bin"
+        fake_bin.mkdir()
+        shim = fake_bin / "trash-put"
+        shim.write_text('#!/bin/sh\ntouch "$0.ran"\nexit 0\n', encoding="utf-8")
+        shim.chmod(0o755)
+        old_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = str(fake_bin) + os.pathsep + old_path
+        try:
+            ctx = orun.ToolContext(cwd=str(tmp), timeout=5, cancel=token)
+            try:
+                orun.HANDLERS["delete_file"]({"path": str(victim)}, ctx)
+                raised = None
+            except Exception as exc:  # the test wants the exception type
+                raised = exc
+            failures = _check(failures, "delete_file refuses after a stop",
+                              isinstance(raised, orun.CommandCancelled), repr(raised))
+            failures = _check(failures, "nothing was trashed and no child ran",
+                              victim.exists()
+                              and not Path(str(shim) + ".ran").exists(),
+                              f"victim={victim.exists()} "
+                              f"ran={Path(str(shim) + '.ran').exists()}")
+            spec = orun.ToolSpec(name="delete_file", description="", parameters={},
+                                 handler=orun.HANDLERS["delete_file"])
+            outcome = orun.execute_tool(spec, {"path": str(victim)}, ctx)
+            failures = _check(failures, "execute_tool reports the refusal as cancelled",
+                              outcome.cancelled and not outcome.ok, str(outcome))
+        finally:
+            os.environ["PATH"] = old_path
     return failures
 
 
@@ -7356,9 +7926,18 @@ if __name__ == "__main__":
              + test_session_store_cross_process_lock()
              + test_tool_cancellation() + test_run_once_json()
              + test_cancellation_coverage()
+             + test_cancellation_destructive_guard()
              + test_file_mention_inlining()
              + test_tool_support_warning() + test_quiet_tools_live()
+             + test_quiet_tools_real_turn()
              + test_approval_event_contract()
+             + test_approval_runtime_contract()
+             + test_unattended_turn_denial()
+             + test_runtime_event_contract()
+             + test_cancel_reaches_production_tools()
+             + test_session_store_process_gate()
+             + test_session_store_same_session_writers()
+             + test_session_store_without_fcntl()
              + test_python310_syntax() + test_turn_result_mapping())
     if total:
         print(f"\n{total} failure(s)")
