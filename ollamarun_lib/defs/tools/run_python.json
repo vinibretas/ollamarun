@@ -1,6 +1,6 @@
 {
   "name": "run_python",
-  "description": "Execute a short Python 3 program and return its stdout/stderr. Good for calculations and text processing; snippets that touch files or the OS ask the user first.",
+  "description": "Execute a short Python 3 program and return its stdout/stderr. Use it for any calculation — arithmetic, percentages, conversions, precise or large numbers — instead of doing math mentally, and for text processing; snippets that touch files or the OS ask the user first.",
   "parameters": {
     "type": "object",
     "properties": {

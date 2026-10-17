@@ -12,6 +12,10 @@ Summary of changes in this version:
     of concluding the information is not there. The no-results reply, the
     results footer and the 404/JavaScript-shell fetch notes carry the same
     nudge.
+  - Computations go through code. The tool rules tell the model never to do
+    arithmetic in its head — percentages, unit conversions, dates and large
+    or precise numbers get a short `run_python` snippet, and the printed
+    result is the answer — and the run_python definition says the same.
   - System prompts are actually sent now. `--system`/`--system-file`, config
     `system` and `/system` were stored, shown, exported and baked into
     `/save` models, but never reached `/api/chat`; the session prompt now

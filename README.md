@@ -55,9 +55,9 @@ The model-facing text lives in files, not code:
   backend, `tts` for the speech tools), the model-invented `aliases` that
   resolve onto it, and the `handler` that runs it.
 - `ollamarun_lib/defs/prompts/` — `system.md` (the built-in default system
-  prompt), `system_tools.md` (the tool and web-search rules, appended when
-  tools are on), `title.md` and `summarize.md` (both take the text to wrap
-  as `{{content}}`).
+  prompt), `system_tools.md` (the tool, web-search and math-in-code rules,
+  appended when tools are on), `title.md` and `summarize.md` (both take the
+  text to wrap as `{{content}}`).
 
 A same-named file under `~/etc/config_files/ollamarun-defs/` overrides the
 shipped one, so prompts and tool wording can be tuned without touching
