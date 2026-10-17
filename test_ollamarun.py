@@ -7189,6 +7189,28 @@ def test_turn_result_mapping() -> int:
     return failures
 
 
+def test_turn_event_envelope() -> int:
+    """TurnEvent ids, ordering and deterministic serialization."""
+    failures = 0
+    event = orun.TurnEvent(turn_id="turn_1", session_id="s1", seq=3,
+                           ts="2026-10-17T10:00:00.000000-03:00",
+                           type=orun.TOOL_RESULT, data={"ok": True})
+    failures = _check(failures, "the envelope id is turn_id:seq",
+                      event.id == "turn_1:3", event.id)
+    payload = event.to_dict()
+    failures = _check(failures, "the envelope serializes in fixed key order",
+                      list(payload) == ["id", "seq", "type", "turn_id",
+                                        "session_id", "ts", "data"],
+                      str(list(payload)))
+    failures = _check(failures, "every field round-trips through JSON",
+                      json.loads(json.dumps(payload)) == payload, str(payload))
+    failures = _check(failures, "stream.gap is part of the vocabulary",
+                      orun.STREAM_GAP == "stream.gap"
+                      and orun.STREAM_GAP in orun.EVENT_TYPES
+                      and orun.STREAM_GAP not in orun.TERMINAL_EVENTS)
+    return failures
+
+
 def test_tool_support_warning() -> int:
     """The capability warning fires once per model, after turn.started."""
     failures = 0
@@ -7938,7 +7960,8 @@ if __name__ == "__main__":
              + test_session_store_process_gate()
              + test_session_store_same_session_writers()
              + test_session_store_without_fcntl()
-             + test_python310_syntax() + test_turn_result_mapping())
+             + test_python310_syntax() + test_turn_result_mapping()
+             + test_turn_event_envelope())
     if total:
         print(f"\n{total} failure(s)")
         sys.exit(1)
