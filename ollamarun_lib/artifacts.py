@@ -28,6 +28,7 @@ renders those codes (`artifact_not_found`, `artifact_too_large`,
 """
 from __future__ import annotations
 
+import base64
 import contextlib
 import hashlib
 import json
@@ -38,9 +39,12 @@ import re
 import secrets
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
+from urllib.parse import urljoin, urlsplit
+
+import requests
 
 from .constants import (ARTIFACTS_DIR, DEFAULT_ARTIFACT_MAX_BYTES,
                         DEFAULT_ARTIFACT_QUOTA_BYTES, DEFAULT_ARTIFACT_TTL)
@@ -67,6 +71,24 @@ _INDEX_SCHEMA = 1
 STALE_AFTER = 3600.0
 #: The rate limit behind the opportunistic sweep on registration.
 SWEEP_INTERVAL = 300.0
+#: One image part's decoded ceiling (data URI, remote URL or uploaded file).
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+#: How much of a text-ish artifact is inlined into a message.
+INLINE_TEXT_BYTES = 32 * 1024
+#: Remote media fetch: connect/read timeouts and the redirect budget.
+REMOTE_TIMEOUT = 10.0
+REMOTE_REDIRECTS = 3
+#: Media types inlined into messages besides `text/*`.
+TEXTUAL_MEDIA_TYPES = frozenset({
+    "application/json", "application/xml", "application/yaml",
+    "application/x-yaml", "application/toml", "application/x-sh",
+    "application/javascript", "application/sql", "application/x-python",
+    "application/x-httpd-php", "application/x-perl", "application/x-ruby",
+    "application/graphql", "application/ld+json", "application/x-ndjson",
+})
+
+_DATA_URI_RE = re.compile(
+    r"^data:(?P<type>image/[\w.+-]+);base64,(?P<data>.+)$", re.S)
 
 _LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GUARD = threading.Lock()
@@ -502,3 +524,232 @@ class TurnArtifacts:
             target.read_bytes(), filename=target.name,
             media_type=media_type_of(target.name), source=source,
             session_id=self.session_id, turn_id=self.turn_id)
+
+
+# ── shared content-part resolution ──────────────────────────────────────────
+#
+# Both API surfaces (OpenAI messages and native agent turns) resolve
+# `text`/`image_url`/`file` parts through the functions below, so file
+# references, the image capability answer and every error code are identical
+# on both wires while each surface keeps its own request schema.
+
+
+def sniff_media_type(data: bytes) -> str:
+    """A best-effort media type from magic bytes (remote fetches)."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return "application/octet-stream"
+
+
+def fetch_remote_media(url: str, *, max_bytes: int = MAX_IMAGE_BYTES,
+                       timeout: float = REMOTE_TIMEOUT,
+                       max_redirects: int = REMOTE_REDIRECTS
+                       ) -> tuple[bytes, str]:
+    """Fetch an http(s) URL with explicit redirect, timeout and size limits.
+
+    One implementation for every remote input, so the OpenAI surface and
+    any artifact ingestion answer the same way. The SSRF caveat is the
+    locked trusted-network contract: this phase does not filter addresses.
+    """
+    current = url
+    for _attempt in range(max_redirects + 1):
+        parsed = urlsplit(current)
+        if parsed.scheme not in ("http", "https"):
+            raise ApiError(400, "only http(s) URLs are supported",
+                           code="unsupported_value")
+        try:
+            response = requests.get(
+                current, stream=True, allow_redirects=False,
+                timeout=(timeout, timeout),
+                headers={"User-Agent": "ollamarun"})
+        except requests.RequestException:
+            logger.debug("remote media fetch failed: %s", current, exc_info=True)
+            raise ApiError(400, "could not fetch the remote URL",
+                           code="remote_fetch_failed")
+        try:
+            if response.status_code in (301, 302, 303, 307, 308):
+                location = response.headers.get("Location")
+                if not location:
+                    raise ApiError(400, "could not fetch the remote URL",
+                                   code="remote_fetch_failed")
+                current = urljoin(current, location)
+                continue
+            if response.status_code != 200:
+                raise ApiError(
+                    400, f"could not fetch the remote URL "
+                         f"(HTTP {response.status_code})",
+                    code="remote_fetch_failed")
+            media_type = str(response.headers.get("Content-Type") or "") \
+                .split(";")[0].strip().lower()
+            collected = bytearray()
+            for chunk in response.iter_content(64 * 1024):
+                collected.extend(chunk)
+                if len(collected) > max_bytes:
+                    raise ApiError(
+                        413, f"image exceeds the {max_bytes} byte limit",
+                        code="image_too_large")
+        finally:
+            response.close()
+        if not collected:
+            raise ApiError(400, "the remote URL returned no data",
+                           code="remote_fetch_failed")
+        return bytes(collected), media_type or sniff_media_type(bytes(collected))
+    raise ApiError(400, "could not fetch the remote URL (too many redirects)",
+                   code="remote_fetch_failed")
+
+
+def require_vision(capabilities: Any) -> None:
+    """Refuse image input for a model whose capability list has no `vision`.
+
+    An empty/missing list passes: older backends cannot be verified, and an
+    unreachable backend fails the request with its own error.
+    """
+    caps = {str(capability) for capability in (capabilities or [])}
+    if caps and "vision" not in caps:
+        raise ApiError(400, "this model does not support image input",
+                       code="model_does_not_support_images", param="messages")
+
+
+def _is_textual(media_type: str) -> bool:
+    media = str(media_type or "").lower()
+    return (media.startswith("text/")
+            or media in TEXTUAL_MEDIA_TYPES
+            or media.endswith(("+json", "+xml")))
+
+
+@dataclass
+class ResolvedImage:
+    """One image payload, with the artifact id when a file part produced it."""
+
+    b64: str
+    artifact_id: Optional[str] = None
+
+
+@dataclass
+class ResolvedContent:
+    """One message's resolved content: text, image payloads and refs used."""
+
+    text: str = ""
+    images: list[ResolvedImage] = field(default_factory=list)
+    artifacts: list[ArtifactRef] = field(default_factory=list)
+
+
+def _image_from_url(url: str, *, where: str, image_max: int,
+                    fetch: Callable[..., tuple[bytes, str]]) -> str:
+    """A data: or http(s) image URL as a base64 payload."""
+    match = _DATA_URI_RE.match(url)
+    if match is not None:
+        data = re.sub(r"\s+", "", match.group("data"))
+        if (len(data) * 3) // 4 > image_max:
+            raise ApiError(413, f"image exceeds the {image_max} byte limit",
+                           param=where, code="image_too_large")
+        try:
+            base64.b64decode(data, validate=True)
+        except (ValueError, TypeError):
+            raise ApiError(400, "image data is not valid base64", param=where)
+        return data
+    if url.lower().startswith(("http://", "https://")):
+        data, _media_type = fetch(url, max_bytes=image_max)
+        return base64.b64encode(data).decode("ascii")
+    raise ApiError(400, "image URLs must be data: URIs or http(s) URLs",
+                   param=where, code="unsupported_value")
+
+
+def _file_chunk(ref: ArtifactRef, store: ArtifactStore, *,
+                inline_max: int, image_max: int) -> tuple[str, Optional[ResolvedImage]]:
+    """The model-facing text for one file part, plus its image payload."""
+    loaded = store.read(ref.id)
+    if loaded is None:
+        return (f"[attached: {ref.filename} ({ref.media_type}) as {ref.id}; "
+                f"the stored contents are unavailable]", None)
+    data = loaded[1]
+    if ref.media_type.lower().startswith("image/"):
+        if len(data) > image_max:
+            raise ApiError(413, f"image exceeds the {image_max} byte limit",
+                           code="image_too_large")
+        note = (f"[attached image: {ref.filename} ({ref.media_type}, "
+                f"{ref.size} bytes) as {ref.id}]")
+        return note, ResolvedImage(b64=base64.b64encode(data).decode("ascii"),
+                                   artifact_id=ref.id)
+    if _is_textual(ref.media_type):
+        text = data[:inline_max].decode("utf-8", errors="replace")
+        note = ""
+        if len(data) > inline_max:
+            note = (f"\n[… truncated: showing the first {inline_max // 1024} "
+                    f"KiB of {ref.size} bytes]")
+        return f'<file name="{ref.filename}">\n{text.rstrip()}{note}\n</file>', None
+    return (f"[attached: {ref.filename} ({ref.media_type}, {ref.size} bytes) "
+            f"as {ref.id}; contents were not extracted]", None)
+
+
+def resolve_content_parts(content: Any, *, where: str,
+                          store: Optional[ArtifactStore] = None,
+                          inline_max: int = INLINE_TEXT_BYTES,
+                          image_max: int = MAX_IMAGE_BYTES,
+                          fetch: Optional[Callable[..., tuple[bytes, str]]] = None
+                          ) -> ResolvedContent:
+    """Resolve one message's content parts into text, images and refs.
+
+    `where` is the caller's parameter path (e.g. `messages[0].content`) so
+    both surfaces name the offending part identically. Strings pass through;
+    an array accepts `text`, `image_url` (data: or http(s)) and `file`
+    (`file_id`), raising `ApiError` for anything else.
+    """
+    if content is None:
+        return ResolvedContent()
+    if isinstance(content, str):
+        return ResolvedContent(text=content)
+    if not isinstance(content, list):
+        raise ApiError(400, "content must be a string or an array of parts",
+                       param=where)
+    fetch_fn = fetch or fetch_remote_media
+    chunks: list[str] = []
+    images: list[ResolvedImage] = []
+    refs: list[ArtifactRef] = []
+    for part_index, part in enumerate(content):
+        at = f"{where}[{part_index}]"
+        if not isinstance(part, dict):
+            raise ApiError(400, "content parts must be objects", param=at)
+        kind = part.get("type")
+        if kind == "text":
+            text = part.get("text")
+            if not isinstance(text, str):
+                raise ApiError(400, "text parts need a text string",
+                               param=f"{at}.text")
+            chunks.append(text)
+        elif kind == "image_url":
+            image = part.get("image_url")
+            url = image.get("url") if isinstance(image, dict) else None
+            if not isinstance(url, str):
+                raise ApiError(400, "image_url parts need a url",
+                               param=f"{at}.url")
+            images.append(ResolvedImage(
+                b64=_image_from_url(url, where=f"{at}.url",
+                                    image_max=image_max, fetch=fetch_fn)))
+        elif kind == "file":
+            file_id = part.get("file_id")
+            if not isinstance(file_id, str) or not file_id.strip():
+                raise ApiError(400, "file parts need a file_id",
+                               param=f"{at}.file_id")
+            ref = store.resolve(file_id.strip()) if store is not None else None
+            if ref is None:
+                raise ApiError(
+                    404, f"unknown or expired artifact: {file_id.strip()!r}",
+                    param=f"{at}.file_id", code="artifact_not_found")
+            refs.append(ref)
+            chunk, image = _file_chunk(ref, store, inline_max=inline_max,
+                                       image_max=image_max)
+            chunks.append(chunk)
+            if image is not None:
+                images.append(image)
+        else:
+            raise ApiError(400, f"unsupported content part type: {kind!r}",
+                           param=at, code="unsupported_value")
+    return ResolvedContent(text="\n\n".join(c for c in chunks if c),
+                           images=images, artifacts=refs)

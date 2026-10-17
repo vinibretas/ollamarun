@@ -36,6 +36,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from .artifacts import ArtifactStore, require_vision, resolve_content_parts
 from .client import OllamaError
 from .events import TERMINAL_EVENTS, TURN_WARNING, RuntimeEvent
 from .helpers import CancelToken, now_iso
@@ -74,7 +75,7 @@ class AgentTurnRequest:
 
     session_id: Optional[str] = None
     model: str = ""
-    messages: list[dict[str, str]] = field(default_factory=list)
+    messages: list[dict[str, Any]] = field(default_factory=list)
     persist: bool = True
     tools: bool = True
     max_rounds: int = 8
@@ -147,7 +148,7 @@ def parse_agent_turn(body: Any, *, default_max_rounds: int = 8
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages:
         raise _invalid("messages must be a non-empty array", param="messages")
-    parsed_messages: list[dict[str, str]] = []
+    parsed_messages: list[dict[str, Any]] = []
     for index, message in enumerate(messages):
         if not isinstance(message, dict):
             raise _invalid(f"messages[{index}] must be an object",
@@ -162,8 +163,24 @@ def parse_agent_turn(body: Any, *, default_max_rounds: int = 8
                            "(the harness owns tool messages)",
                            param=f"messages[{index}].role")
         content = message.get("content")
-        if not isinstance(content, str) or not content.strip():
-            raise _invalid("message content must be a non-empty string",
+        if isinstance(content, str):
+            if not content.strip():
+                raise _invalid("message content must be a non-empty string "
+                               "or an array of content parts",
+                               param=f"messages[{index}].content")
+        elif isinstance(content, list):
+            if not content:
+                raise _invalid("message content must be a non-empty string "
+                               "or a non-empty array of content parts",
+                               param=f"messages[{index}].content")
+            for part_index, part in enumerate(content):
+                if not isinstance(part, dict):
+                    raise _invalid(
+                        "content parts must be objects",
+                        param=f"messages[{index}].content[{part_index}]")
+        else:
+            raise _invalid("message content must be a non-empty string or an "
+                           "array of content parts",
                            param=f"messages[{index}].content")
         parsed_messages.append({"role": str(role), "content": content})
 
@@ -270,7 +287,7 @@ class AgentTurnState:
     approval_mode: str = "policy"
     cancel_on_disconnect: bool = False
     auto_approve: bool = False
-    messages_pending: list[dict[str, str]] = field(default_factory=list)
+    messages_pending: list[dict[str, Any]] = field(default_factory=list)
     done: threading.Event = field(default_factory=threading.Event)
 
 
@@ -349,11 +366,15 @@ class AgentApi:
     def __init__(self, *, args: Any, config: dict[str, Any],
                  store: SessionStore, client_factory: Callable[[], Any],
                  manager: Optional[TurnManager] = None,
-                 cwd: Optional[str] = None):
+                 cwd: Optional[str] = None,
+                 artifacts: Optional[ArtifactStore] = None):
         self._args = args
         self._config = dict(config or {})
         self._store = store
         self._client_factory = client_factory
+        #: The serve artifact store: `file`/image parts resolve through it,
+        #: turn tools publish into it, and the artifact routes read from it.
+        self._artifacts = artifacts
         self._manager = manager or TurnManager(
             max_active=int(self._config.get("serve_max_active_turns") or 4),
             buffer_events=int(self._config.get("serve_turn_event_buffer")
@@ -467,14 +488,38 @@ class AgentApi:
             session.parameters = {**(session.parameters or {}),
                                   **spec.parameters}
 
+        # Resolve every message's content parts before the turn is accepted:
+        # a missing artifact id, an oversize image and a text/file mapping are
+        # all decided here, so the client gets a structured 4xx synchronously.
+        resolved_messages: list[dict[str, Any]] = []
+        has_images = False
+        for index, message in enumerate(spec.messages):
+            resolved = resolve_content_parts(
+                message.get("content"), where=f"messages[{index}].content",
+                store=self._artifacts)
+            payload: dict[str, Any] = {"role": message["role"],
+                                       "content": resolved.text}
+            if resolved.images:
+                has_images = True
+                payload["images"] = [
+                    ({"b64": image.b64, "artifact_id": image.artifact_id}
+                     if image.artifact_id else {"b64": image.b64})
+                    for image in resolved.images]
+            if resolved.artifacts:
+                payload["artifacts"] = [ref.to_dict()
+                                        for ref in resolved.artifacts]
+            resolved_messages.append(payload)
+        if has_images:
+            require_vision(client.capabilities(session.model))
+
         turn_id = f"turn_{uuid.uuid4().hex[:12]}"
         token = CancelToken()
-        repl = self._make_repl(session, client, spec, token)
+        repl = self._make_repl(session, client, spec, token, turn_id)
         state = AgentTurnState(
             id=turn_id, session_id=session.id, session=session, repl=repl,
             client=client, token=token, approval_mode=spec.approval,
             cancel_on_disconnect=spec.cancel_on_disconnect,
-            messages_pending=[dict(message) for message in spec.messages])
+            messages_pending=resolved_messages)
         with self._lock:
             self._turns[turn_id] = state
 
@@ -514,8 +559,13 @@ class AgentApi:
         return Response.json(body, status=202)
 
     def _make_repl(self, session: Session, client: Any,
-                   spec: AgentTurnRequest, token: CancelToken) -> Repl:
-        repl = Repl(self._args, self._config, client, self._store, session)
+                   spec: AgentTurnRequest, token: CancelToken,
+                   turn_id: str = "") -> Repl:
+        artifacts = (self._artifacts.for_turn(turn_id=turn_id,
+                                              session_id=session.id)
+                     if self._artifacts is not None else None)
+        repl = Repl(self._args, self._config, client, self._store, session,
+                    artifacts=artifacts)
         repl.headless = True
         repl.tools_enabled = bool(spec.tools) and bool(
             self._config.get("tools", True))
@@ -573,7 +623,11 @@ class AgentApi:
         repl = state.repl
         try:
             for message in state.messages_pending:
-                session.add_message(message["role"], message["content"])
+                session.add_message(message["role"], message["content"],
+                                    images=message.get("images") or None,
+                                    artifacts=message.get("artifacts") or None)
+                if message.get("artifacts"):
+                    session.add_artifacts(message["artifacts"])
             state.messages_pending = []
             if spec.persist:
                 self._store.save(session)
@@ -974,10 +1028,12 @@ def _session_busy(session_id: str, active_turn_id: str) -> ApiError:
 def add_agent_routes(router: Router, *, args: Any, config: dict[str, Any],
                      store: SessionStore, client_factory: Callable[[], Any],
                      manager: Optional[TurnManager] = None,
-                     cwd: Optional[str] = None) -> AgentApi:
+                     cwd: Optional[str] = None,
+                     artifacts: Optional[ArtifactStore] = None) -> AgentApi:
     """Register the native endpoints on `router`; returns the API object."""
     api = AgentApi(args=args, config=config, store=store,
-                   client_factory=client_factory, manager=manager, cwd=cwd)
+                   client_factory=client_factory, manager=manager, cwd=cwd,
+                   artifacts=artifacts)
     router.add("POST", "/v1/agent/turns", api.start_turn)
     router.add("GET", "/v1/agent/turns/{id}", api.turn_status)
     router.add("GET", "/v1/agent/turns/{id}/events", api.turn_events)
