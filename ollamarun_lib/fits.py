@@ -214,7 +214,7 @@ class FitService:
         for fit_id, job in list(self._jobs.items()):
             if job.status not in TERMINAL_FIT_STATUSES:
                 continue
-            if now - float(job.updated_epoch) > self._ttl:
+            if self._ttl > 0 and now - float(job.updated_epoch) > self._ttl:
                 del self._jobs[fit_id]
                 self._threads.pop(fit_id, None)
                 removed += 1

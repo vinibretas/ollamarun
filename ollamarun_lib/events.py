@@ -23,6 +23,9 @@ TOOL_RESULT = "tool.result"
 APPROVAL_REQUIRED = "approval.required"
 APPROVAL_RESOLVED = "approval.resolved"
 ARTIFACT_CREATED = "artifact.created"
+#: A turn-start context fit (`settings.num_ctx: "max-gpu"|"max-cpu"`): the
+#: fitted num_ctx (or the failure) as the FitOutcome dict.
+SESSION_FIT = "session.fit"
 TURN_WARNING = "turn.warning"
 TURN_ERROR = "turn.error"
 TURN_COMPLETED = "turn.completed"
@@ -37,8 +40,8 @@ TERMINAL_EVENTS = frozenset({TURN_COMPLETED, TURN_ERROR, TURN_CANCELLED})
 #: The runtime vocabulary plus the manager's `stream.gap`.
 EVENT_TYPES = (
     TURN_STARTED, MESSAGE_DELTA, MESSAGE_COMPLETED, TOOL_CALL, TOOL_RESULT,
-    APPROVAL_REQUIRED, APPROVAL_RESOLVED, ARTIFACT_CREATED, TURN_WARNING,
-    TURN_ERROR, TURN_COMPLETED, TURN_CANCELLED, STREAM_GAP,
+    APPROVAL_REQUIRED, APPROVAL_RESOLVED, ARTIFACT_CREATED, SESSION_FIT,
+    TURN_WARNING, TURN_ERROR, TURN_COMPLETED, TURN_CANCELLED, STREAM_GAP,
 )
 
 
