@@ -44,6 +44,7 @@ from .constants import (
 from .files import expand_file_mentions
 from .helpers import (
     CancelToken,
+    canonical_model_name,
     coerce_value,
     human_bytes,
     human_chars,
@@ -407,6 +408,7 @@ class Repl:
         self._last_tps: Optional[float] = None
         self._turn_summary = ""
         self._context_totals: dict[tuple[str, Any], Optional[int]] = {}
+        self._context_provisional: set[tuple[str, Any]] = set()
         # The Textual front end sets `tui_mode` and `stream_sink`; the inline
         # REPL leaves both alone (rich.Live keeps rendering the stream).
         self.tui_mode = False
@@ -852,15 +854,65 @@ class Repl:
         renderer = self.current_renderer
         return renderer.estimator.average() if renderer is not None else None
 
+    def _resident_context_length(self) -> Optional[int]:
+        """The window the loaded runner actually uses, from `/api/ps`.
+
+        `/api/show` reports the model's architectural maximum (262144 for a
+        qwen3.5); the runner may be loaded with far less -- ollama's own
+        default when nothing set `num_ctx`, or whatever another client asked
+        for -- and `/api/ps` reports the live window as `context_length`.
+        """
+        model = self.session.model
+        if not model:
+            return None
+        try:
+            entries = self.client.ps()
+        except OllamaError:
+            return None
+        wanted = canonical_model_name(model)
+        for entry in entries:
+            name = str(entry.get("name") or entry.get("model") or "")
+            if canonical_model_name(name) != wanted:
+                continue
+            ctx = entry.get("context_length")
+            if isinstance(ctx, int) and ctx > 0:
+                return ctx
+        return None
+
     def context_length(self, *, refresh: bool = False) -> Optional[int]:
-        """The model's context window (`num_ctx` when set), cached per model."""
+        """The window the model actually runs with, cached per model/num_ctx.
+
+        Priority: the session's `num_ctx` (what the next request asks for and
+        would reload at), the loaded runner's `/api/ps` context, then the
+        model's own default from `/api/show`. A show-only answer is
+        *provisional* -- the model may not be loaded yet when the footer
+        first asks -- so it is re-checked against `/api/ps` until the loaded
+        window shows up.
+        """
         key = (self.session.model, self.session.parameters.get("num_ctx"))
         if refresh or key not in self._context_totals:
             try:
                 show = self.client.show(self.session.model)
             except OllamaError:
                 show = {}
-            self._context_totals[key] = model_context_length(show, self.session.parameters)
+            total = model_context_length(show, self.session.parameters)
+            provisional = False
+            if not isinstance(self.session.parameters.get("num_ctx"), int):
+                resident = self._resident_context_length()
+                if resident is not None:
+                    total = resident
+                else:
+                    provisional = True
+            self._context_totals[key] = total
+            if provisional:
+                self._context_provisional.add(key)
+            else:
+                self._context_provisional.discard(key)
+        elif key in self._context_provisional:
+            resident = self._resident_context_length()
+            if resident is not None:
+                self._context_totals[key] = resident
+                self._context_provisional.discard(key)
         return self._context_totals[key]
 
     def _context_total(self) -> Optional[int]:
@@ -1139,22 +1191,14 @@ class Repl:
     def _context_warning(self) -> None:
         if not self.session.messages:
             return
-        try:
-            show = self.client.show(self.session.model)
-        except OllamaError:
-            return
-        total = model_context_length(show, self.session.parameters)
+        total = self.context_length()
         used = self.context_used()
         if total and used and used / total >= 0.8:
             console.print(f"[warn]context {used}/{total} tokens "
                           f"({used * 100 // total}%) — /summarize to compact[/warn]")
 
     def _maybe_auto_compact(self) -> None:
-        try:
-            show = self.client.show(self.session.model)
-        except OllamaError:
-            return
-        total = model_context_length(show, self.session.parameters)
+        total = self.context_length()
         used = self.context_used()
         if total and used and used / total >= 0.85 and len(self.session.messages) > 4:
             console.print("[warn]context almost full — summarizing older messages[/warn]")
@@ -2201,12 +2245,7 @@ def cmd_context(repl: Repl, argument: str) -> None:
     prompt = repl.session.stats.get("last_prompt_tokens")
     completion = repl.session.stats.get("last_completion_tokens")
     used = repl.context_used()
-    total = None
-    try:
-        total = model_context_length(repl.client.show(repl.session.model),
-                                     repl.session.parameters)
-    except OllamaError:
-        pass
+    total = repl.context_length()
     table = Table(title="context", box=box.ROUNDED, header_style="bold magenta")
     table.add_column("field")
     table.add_column("value", justify="right")

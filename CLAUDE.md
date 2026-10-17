@@ -278,6 +278,11 @@ a module's own docstring for what lives there before editing:
    text when set, the built-in default otherwise, None when disabled (empty
    string) — deliberately *not* stored in `session.messages`, so `/system`
    changes land on the next request and exports keep the history clean.
+   `Repl.context_length()` is the one effective-window resolver behind the
+   footer/status-bar ctx counter, `/context` and the 80%/85% warnings: a
+   session `num_ctx` first, then the loaded runner's `/api/ps`
+   `context_length`, then `/api/show`'s model default; a show-only answer
+   stays provisional until `/api/ps` reports the runner.
    `/system` semantics live in `_apply_system` (`clear`/`default` → built-in,
    `off` → disabled, text → custom) plus `_show_system`, shared with
    `/set system`. Then the `cmd_*` functions.
