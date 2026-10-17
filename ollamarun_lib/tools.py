@@ -1478,6 +1478,7 @@ def _handler_edit_file(args: dict[str, Any], ctx: ToolContext) -> str:
         raise ToolError(f"old_string appears {count} times in {path}; include more "
                         f"surrounding context or pass replace_all=true")
     updated = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+    tmp_name: Optional[str] = None
     try:
         mode = path.stat().st_mode
         fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp",
@@ -1486,8 +1487,15 @@ def _handler_edit_file(args: dict[str, Any], ctx: ToolContext) -> str:
             handle.write(updated)
         os.chmod(tmp_name, mode & 0o7777)
         os.replace(tmp_name, path)
+        tmp_name = None
     except OSError as exc:
         raise ToolError(f"could not write {path}: {exc}") from exc
+    finally:
+        if tmp_name is not None:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
     replaced = count if replace_all else 1
     if replaced == 1:
         first = text[:text.find(old)].count("\n") + 1
