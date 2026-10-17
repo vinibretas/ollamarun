@@ -88,7 +88,16 @@ runs deny with a note unless `-y/--yes` or `/tools policy auto` is in effect.
 redirections, privilege/wrapper/interpreter commands, disk-level tools,
 catastrophic `rm` and pipes into an interpreter always prompt again.
 
-- `/tools` — `on|off`, `policy MODE`, `enable`/`disable NAME…`, `allow`, `rules`
+- `/tools` — harness-wide `on|off`, `policy MODE`, `enable`/`disable NAME…`,
+  `allow`, `rules`, plus per-tool control with `/tools NAME on|off|help|call
+  ARGS` (NAME also takes the invented aliases, e.g. `/tools search off`).
+  `help` is generated from the tool's definition JSON — description, every
+  parameter with its type and whether it is required or optional, aliases,
+  approval behaviour, and what an uninstalled tool needs — and `call` runs
+  the tool yourself through the same approval gate and result panel as a
+  model call (`call {"query": "x"}`, `call query=x max_results=3`, or a bare
+  value when a single parameter is required); a manual call never touches the
+  conversation. `/tools help` (and `/help tools`) is the reference.
 - `--tools` / `--no-tools` for a single run; config `tools`, `tools_policy`,
   `tools_shell_allow`, `tools_timeout`, `tools_max_output`, `tools_max_rounds`
   (default 8), `tool_colors`
@@ -318,7 +327,7 @@ Dispatched in the REPL and the TUI; `/help` also lists the shortcuts (`/?`).
 | `/num-ctx [N \| --max-gpu [--probe] \| --max-cpu N [--probe]]` | Context window: N, the largest that keeps the GPU, or N% of DRAM |
 | `/gpu-layers [N\|N%\|+N\|-N\|all\|cpu\|auto]` | GPU layers for this model |
 | `/params` | Show session parameters |
-| `/tools [on\|off\|policy MODE\|enable\|disable NAME…\|allow\|rules]` | Tool harness, approval rules and per-tool control |
+| `/tools [on\|off\|policy MODE\|enable\|disable NAME…\|NAME on\|off\|NAME help\|NAME call ARGS\|allow\|rules\|help]` | Tool harness, per-tool control (aliases resolve), generated help pages and direct calls |
 | `/tts [on\|off\|voice NAME\|lang CODE\|tools on\|off\|voices]` | Auto-speak via tts-remote |
 | `/think [on\|off\|low\|medium\|high]` | Thinking mode |
 | `/thinking [show\|collapse\|hide\|toggle\|full]` | Thinking display (Ctrl+T while streaming) |
