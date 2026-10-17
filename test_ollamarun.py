@@ -8858,6 +8858,8 @@ def test_openai_mapping() -> int:
                    "audio": {"format": "wav"}}),
         ("a non-text modality", {"model": "m1", "messages": user,
                                  "modalities": ["image"]}),
+        ("a non-boolean parallel_tool_calls", {"model": "m1", "messages": user,
+                                               "parallel_tool_calls": "yes"}),
         ("an out-of-range temperature", {"model": "m1", "messages": user,
                                          "temperature": 5}),
         ("empty messages", {"model": "m1", "messages": []}),
@@ -8908,9 +8910,11 @@ def test_openai_mapping() -> int:
     accepted = orun.parse_chat_request({
         "model": "m1", "n": 1, "messages": user,
         "stream_options": {"include_usage": False},
+        "parallel_tool_calls": False,
         "tools": [{"type": "function",
                    "function": {"name": "f", "strict": False}}]})
-    failures = _check(failures, "the strict forms of n/strict still pass",
+    failures = _check(failures,
+                      "the strict forms of n/strict/parallel_tool_calls still pass",
                       accepted.include_usage is False
                       and bool(accepted.tools), str(accepted))
 
@@ -9915,6 +9919,23 @@ def test_agent_turn_lifecycle() -> int:
                               and id_lines[0].endswith(":1"),
                               f"{status} {sse[:2]}")
 
+            status, headers, raw = _http(
+                server, "GET", f"/v1/agent/turns/{turn_id}/events",
+                headers={"Last-Event-ID": f"{turn_id}:1"})
+            sse = _sse_events(raw)
+            payloads = [json.loads(item) for item in sse]
+            failures = _check(failures,
+                              "Last-Event-ID resumes after the given seq",
+                              status == 200 and payloads
+                              and payloads[0]["seq"] == 2
+                              and payloads[-1]["type"] == "turn.completed",
+                              f"{status} {sse[:2]}")
+            status, _headers, raw = _http(
+                server, "GET", f"/v1/agent/turns/{turn_id}/events",
+                headers={"Last-Event-ID": "nonsense"})
+            failures = _check(failures, "a malformed Last-Event-ID is a 400",
+                              status == 400, f"{status} {raw[:160]}")
+
             status, _headers, raw = _http(server, "GET", "/v1/sessions")
             listed = json.loads(raw)["data"]
             failures = _check(failures, "the turn created a persisted session",
@@ -10223,7 +10244,8 @@ def test_agent_approval_edge() -> int:
             failures = _check(failures, "cancelling while waiting resolves the approval",
                               body.get("status") == "cancelled"
                               and resolved
-                              and resolved[0].get("action") == "cancelled",
+                              and resolved[0].get("action") == "cancelled"
+                              and resolved[0].get("note") == "cancelled by user",
                               f"{body.get('status')} {resolved[:1]}")
 
             client.chat_script = [
@@ -10248,6 +10270,14 @@ def test_agent_approval_edge() -> int:
                               elapsed < 4.0 and snapshot is not None
                               and snapshot.status == "cancelled",
                               f"{elapsed:.2f}s {snapshot}")
+            events = _headless_events(api, turn3["id"])
+            resolved = [event.data for event in events
+                        if event.type == "approval.resolved"]
+            failures = _check(failures,
+                              "shutdown says why the approval was cancelled",
+                              resolved and resolved[0].get("note")
+                              == "cancelled (server shutting down)",
+                              str(resolved[:1]))
         finally:
             _stop_api(server, thread)
     return failures

@@ -6,7 +6,7 @@ Client `tools` are passed to the backend and come back as standard
 `tool_calls` with `finish_reason: "tool_calls"` -- they are never executed
 here. The agent loop (harness tools, approvals, sessions) is not reachable
 from this module; full agent turns belong to the native `/v1/agent/*`
-endpoints of the next phase.
+endpoints in `agent_api.py`.
 
 Streaming speaks OpenAI SSE only (role chunk, content/thinking deltas,
 finish reason, optional usage chunk, `[DONE]`); the typed `turn.*` event
@@ -44,9 +44,11 @@ logger = logging.getLogger("ollamarun.openai_api")
 #: Cap on one decoded image content part (the request body cap bounds the rest).
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
-#: Fields a chat-completion request may carry. `user`, `metadata` and
-#: `parallel_tool_calls` are accepted and ignored (tracking hints with no
-#: backend meaning); everything else is rejected explicitly.
+#: Fields a chat-completion request may carry. `user` and `metadata` are
+#: accepted and ignored (tracking hints with no backend meaning);
+#: `parallel_tool_calls` must be a boolean and is otherwise ignored until
+#: the compatibility phase implements it; everything else is rejected
+#: explicitly.
 _CHAT_FIELDS = frozenset({
     "model", "messages", "stream", "stream_options", "temperature", "top_p",
     "max_tokens", "max_completion_tokens", "stop", "seed",
@@ -138,6 +140,13 @@ def _reject_unsupported(body: dict[str, Any]) -> None:
                 or any(item != "text" for item in modalities):
             raise ApiError(400, 'only the "text" modality is supported',
                            param="modalities", code="unsupported_value")
+    if "parallel_tool_calls" in body:
+        value = body["parallel_tool_calls"]
+        if value is not None and not isinstance(value, bool):
+            # Accepted but ignored until the compatibility phase implements
+            # it -- still type-checked like every other field it accepts.
+            raise ApiError(400, "parallel_tool_calls must be a boolean",
+                           param="parallel_tool_calls")
 
 
 def _stream_options(body: dict[str, Any]) -> bool:
