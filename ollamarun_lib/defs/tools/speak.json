@@ -1,0 +1,16 @@
+{
+  "name": "speak",
+  "description": "Speak text out loud through tts-remote (queued in the background; returns immediately). Pass voice/lang to override the default voice.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "text": {"type": "string", "description": "what to say"},
+      "voice": {"type": "string", "description": "voice slug (optional)"},
+      "lang": {"type": "string", "description": "ISO language code (optional)"}
+    },
+    "required": ["text"]
+  },
+  "handler": "speak",
+  "always_safe": true,
+  "requires": "tts"
+}

@@ -102,7 +102,7 @@ except ImportError:  # pragma: no cover - fallback path
     TEXTUAL_VERSION = ""
     TextualApp = None
 
-VERSION = "1.35"
+VERSION = "1.36"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -112,6 +112,13 @@ SESSIONS_DIR = DATA_DIR / "sessions"
 INDEX_PATH = DATA_DIR / "index.json"
 HISTORY_PATH = DATA_DIR / "history"
 LOG_PATH = HOME / "etc/logs/ollamarun.log"
+
+# Model-facing definitions live outside the code: one JSON per tool and one
+# file per prompt, shipped in `ollamarun_lib/defs/`. A same-named file in the
+# override directory replaces the shipped one, so prompts and tool text can
+# be edited without touching Python.
+DEFS_DIR = Path(__file__).resolve().parent / "defs"
+DEFS_OVERRIDE_DIR = HOME / "etc/config_files/ollamarun-defs"
 
 DEFAULT_HOST = "127.0.0.1:11434"
 DEFAULT_PORT = 11434

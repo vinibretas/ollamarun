@@ -1,0 +1,15 @@
+{
+  "name": "fetch_url",
+  "description": "Fetch one exact http(s) URL and return its readable content: HTML is converted to text (plus the page's links), JSON is pretty-printed and PDFs are turned into text. Call web_search first when you do not already have a real URL — never guess URLs — and do not fetch the same URL twice. If the pages you fetch do not answer the question, search again with different words instead of concluding the answer is not available.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "url": {"type": "string", "description": "absolute http(s) URL"},
+      "timeout": {"type": "number", "description": "seconds (optional)"}
+    },
+    "required": ["url"]
+  },
+  "handler": "fetch_url",
+  "read_only": true,
+  "aliases": ["fetch", "browse", "open_url", "read_url", "get_url", "http_get", "curl"]
+}

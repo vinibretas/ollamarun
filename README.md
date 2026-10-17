@@ -4,7 +4,7 @@ Full `ollama run` wrapper: every ollama 0.34 run flag plus markdown rendering wi
 
 ```console
 $ ollamarun MODEL [PROMPT] [--host HOST | --remote NAME] [--pull] [--sort KEY] [--gpu-layers SPEC] [--num-ctx [N|max-gpu | --max-cpu N] [--probe]] [--think [STR]] [--render MODE] [--option K=V]
-                  [--image PATH] [--system TEXT] [-c [ID] | --session NAME | -r] [--new]
+                  [--image PATH] [--system TEXT | --no-system] [-c [ID] | --session NAME | -r] [--new]
                   [--tools | --no-tools] [-y] [--list | --show ID | --search TEXT | --export ID]
                   [--export-format FMT] [--delete ID [-y]] [--out FILE] [--no-save]
                   [--json | --raw] [--verbose] [--speak | --no-speak]
@@ -44,6 +44,32 @@ key hints) and an input box that stays available while the model works.
 
 The inline prompt_toolkit REPL remains the default (`--ui inline`) and is the
 fallback whenever Textual is missing or the output is not a terminal.
+
+## Prompts and tool definitions
+
+The model-facing text lives in files, not code:
+
+- `ollamarun_lib/defs/tools/*.json` — one JSON per tool: `name`, the
+  `description` and JSON-schema `parameters` the model sees, `read_only` /
+  `always_safe` safety flags, `requires` (`search` for `web_search`'s ddgs
+  backend, `tts` for the speech tools), the model-invented `aliases` that
+  resolve onto it, and the `handler` that runs it.
+- `ollamarun_lib/defs/prompts/` — `system.md` (the built-in default system
+  prompt), `system_tools.md` (the tool and web-search rules, appended when
+  tools are on), `title.md` and `summarize.md` (both take the text to wrap
+  as `{{content}}`).
+
+A same-named file under `~/etc/config_files/ollamarun-defs/` overrides the
+shipped one, so prompts and tool wording can be tuned without touching
+Python. Bad definition files warn and are skipped instead of breaking the
+harness.
+
+Every request carries a system prompt: the session's own (`--system`,
+`--system-file`, config `system`, `/system TEXT`) when set, the built-in
+default otherwise. `--no-system` / config `system: ""` / `/system off` send
+none, `/system clear` returns to the default, and `/system` alone shows what
+is in effect. It is sent as a leading system message and never enters the
+saved history.
 
 ## Layout
 

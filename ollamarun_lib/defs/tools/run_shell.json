@@ -1,0 +1,14 @@
+{
+  "name": "run_shell",
+  "description": "Run a shell command (bash -lc) and return its output and exit code. Use it for listings, search, git and similar read-only commands; anything that modifies the system asks the user first.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "command": {"type": "string", "description": "the command to run"},
+      "cwd": {"type": "string", "description": "working directory (optional)"},
+      "timeout": {"type": "number", "description": "seconds (optional)"}
+    },
+    "required": ["command"]
+  },
+  "handler": "shell"
+}
