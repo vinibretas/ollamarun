@@ -265,8 +265,9 @@ a module's own docstring for what lives there before editing:
    (both expand `{{content}}`) and `render_prompt()`. Defaults live in
    `defs/prompts/`.
 10. **`events.py`** — the runtime event vocabulary: `RuntimeEvent` plus
-   the `turn.*`/`message.*`/`tool.*`/`approval.*` type constants and
-   `TERMINAL_EVENTS`. A leaf module (no imports from the package) shared
+   the `turn.*`/`message.*`/`tool.*`/`approval.*` type constants,
+   `artifact.created` and `session.fit`, and `TERMINAL_EVENTS`. A leaf
+   module (no imports from the package) shared
    by `renderer.py`, `runtime.py` and the HTTP layer; envelopes, sequence
    numbers and replay are added on top of the same types, so nothing
    here depends on transport.
@@ -467,7 +468,16 @@ a module's own docstring for what lives there before editing:
    `require_vision()` the one image capability check. It raises
    `server.ApiError` directly — it exists for the HTTP layer. Imports
    `constants`, `helpers`, `server`.
-23. **`openai_api.py`** — the OpenAI-compatible `/v1` surface
+23. **`fits.py`** — the context-fit jobs behind the native API's fit
+   surface: `FitService` (a worker thread per job; queued → running →
+   completed/failed/cancelled; per-session exclusivity, a global
+   `max_active_fits` cap, cancel via the job's token, TTL sweeping of
+   terminal jobs and an idempotent shutdown that cancels and joins) and
+   `FitJob`/`fit_body` (the HTTP shape) plus `FitBusy`/`TooManyFits`/
+   `FitsClosed`. Jobs run one `ctxfit.fit_context()` and report progress
+   through the request's `on_progress`; the optional session write is the
+   API's `on_success` hook, so this module never touches the store.
+24. **`openai_api.py`** — the OpenAI-compatible `/v1` surface
    (`build_router()` registers `GET /v1/models`, `GET /v1/models/{id}`,
    `POST /v1/chat/completions`). Model turns only: `parse_chat_request()`
    validates the OpenAI schema (explicit 400s for unknown fields, `n>1`,
@@ -487,12 +497,14 @@ a module's own docstring for what lives there before editing:
    off unless asked. `translate_error()`/`stream_backend_error()` map
    upstream failures onto sanitized 404/502 envelopes with stable messages
    (raw backend detail goes to the `--debug` log).
-23. **`agent_api.py`** — the native agent endpoints
+25. **`agent_api.py`** — the native agent endpoints
    (`add_agent_routes()` registers `POST /v1/agent/turns`,
    `GET /v1/agent/turns/{id}` and `.../events`, `POST .../cancel`,
-   `POST /v1/agent/approvals/{id}`, the `/v1/sessions` routes and the
-   files/artifacts routes: `POST /v1/files`, `GET /v1/artifacts/{id}` and
-   `.../meta`).
+   `POST /v1/agent/approvals/{id}`, the `/v1/sessions` routes, the
+   files/artifacts routes (`POST /v1/files`, `GET /v1/artifacts/{id}` and
+   `.../meta`) and the fit routes (`POST /v1/agent/fit`,
+   `POST /v1/agent/fits`, `GET /v1/agent/fits/{id}`,
+   `POST /v1/agent/fits/{id}/cancel`).
    `parse_agent_turn()` validates the turn body (new-session seed vs
    existing-session delta; `settings.tools`/`max_rounds`/`approval`/
    `system`/`parameters`/`cancel_on_disconnect`). Each turn builds a
@@ -512,8 +524,17 @@ a module's own docstring for what lives there before editing:
    an active turn (409 `session_busy`, same as delete);
    `serve_turn_timeout` is a watchdog that cancels with reason `timeout`.
    The context warning/auto-compaction step runs headlessly at turn start
-   through the runtime's `on_started` hook.
-25. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
+   through the runtime's `on_started` hook. Context control:
+   `PATCH`/turn settings take `num_ctx`/`gpu_layers` (strictly validated;
+   a placement change unloads the resident model),
+   `settings.num_ctx: "max-gpu"|"max-cpu"` estimates at turn start
+   (estimate only) and rides the typed `session.fit` event plus
+   `result.fit`, `POST /v1/agent/fit` serves the synchronous estimate with
+   an optional `apply`, and `POST /v1/agent/fits` parks a probe job in
+   `fits.py`. `serve_fit` gates off/estimate/probe; a fitting session is
+   held by `_fit_guard` (409 `session_busy` with `active_fit_id`, checked
+   alongside active turns by every session route and turn submit).
+26. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
    every `ollama run` flag), `resolve_model`/`resolve_session` (figuring out
    what model/session a given invocation means, including the `-c`/`-r`/
    `--session` disambiguation in `normalize_argv`), `ui_mode()`/`wants_tui()`
@@ -656,4 +677,16 @@ gating, note-not-failure), the `artifact.created` ordering and
 persistence, the shared content resolver (inlining, binary notes, 404s,
 remote-fetch rules against a local stub server) and the HTTP endpoints
 (201 refs, strict validation, 413/507, download headers, 404 and the
-no-store 503).
+no-store 503). The Phase 10 context-control tests
+(`test_ctxfit_outcome`, `test_ctxfit_cancel_progress`, `test_fit_service`,
+`test_session_context_fields`, `test_fit_estimate_api`, `test_fit_job_api`,
+`test_turn_start_fit`) pin the structured `fit_context()` outcome and its
+data-shaped failures, cancellation at estimate/probe checkpoints and
+progress stages, the fit service (lifecycle, caps, per-session
+exclusivity, TTL, apply hook, shutdown), the first-class
+`num_ctx`/`gpu_layers` fields (strict validation, unload parity,
+persistence), the estimate endpoint matrix and policy gates, the async
+job API (202 + warnings, status/progress, cancel, apply, 404/409/429) and
+the turn-start estimate (`session.fit`, `result.fit`, persistence, the
+no-change failure path). Fit tests inject the machine (`MachineGpu`) and
+read-only RAM probes, so they need no GPU.

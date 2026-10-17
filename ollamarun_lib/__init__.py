@@ -35,6 +35,7 @@ if HAS_TEXTUAL:
 from .run import *  # noqa: F401,F403
 from .server import *  # noqa: F401,F403
 from .artifacts import *  # noqa: F401,F403
+from .fits import *  # noqa: F401,F403
 from .openai_api import *  # noqa: F401,F403
 from .agent_api import *  # noqa: F401,F403
 from .cli import *  # noqa: F401,F403

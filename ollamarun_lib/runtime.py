@@ -106,6 +106,9 @@ class TurnResult:
     usage: dict[str, Any] = field(default_factory=dict)
     rounds: int = 0
     artifacts: list[dict[str, Any]] = field(default_factory=list)
+    #: The turn-start context fit, when the request asked for one
+    #: (`settings.num_ctx: "max-gpu"|"max-cpu"`): the FitOutcome dict.
+    fit: Optional[dict[str, Any]] = None
     error: Optional[str] = None
 
 
