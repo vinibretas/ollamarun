@@ -124,7 +124,7 @@ except ImportError:  # pragma: no cover - fallback path
     TEXTUAL_VERSION = ""
     TextualApp = None
 
-VERSION = "1.48"
+VERSION = "1.49"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -317,6 +317,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # trusted-network boundary is the bind address).
     "serve_bind": DEFAULT_SERVE_BIND,
     "serve_port": DEFAULT_SERVE_PORT,
+    # Native agent turns (`agent_api.py`): how long an interactive approval
+    # may stay pending before it resolves as denied, and a wall-clock cap on
+    # one turn (0 = no cap).
+    "serve_approval_timeout": 300,
+    "serve_turn_timeout": 0,
 }
 
 THINKING_MODES = {"collapsed", "expanded", "hidden"}

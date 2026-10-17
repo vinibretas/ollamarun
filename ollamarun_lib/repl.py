@@ -111,13 +111,12 @@ from .tools import (
     ToolDefinition,
     ToolRule,
     ToolSpec,
-    approval_decision,
     call_detail,
     call_fingerprint,
     default_registry,
     execute_tool,
     find_tts_remote,
-    matching_rule,
+    policy_check,
     resolve_tool_alias,
     rule_label,
     run_tts_say,
@@ -755,36 +754,34 @@ class Repl:
         """Decide whether a tool call runs; a denial is a normal result."""
         if self.auto_approve:
             return True, "auto (--yes)"
-        decision = approval_decision(spec, args, policy=self.tools_policy,
-                                     shell_allow=self.shell_allow)
-        if decision.allowed:
-            return True, "safe list"
-        if fingerprint in (self.session.tool_allow or []):
-            return True, "previously allowed"
-        rule = matching_rule(self._session_rules(), spec.name, args,
-                             cwd=self.tool_ctx.cwd, shell_allow=self.shell_allow)
-        if rule is not None:
-            label = rule_label(rule)
-            if not self.headless:
-                console.print(f"[dim]allowed by rule[/dim] [key]{escape(label)}[/key]")
-            return True, f"rule: {label}"
+        check = policy_check(spec, args, policy=self.tools_policy,
+                             shell_allow=self.shell_allow,
+                             fingerprints=self.session.tool_allow or [],
+                             rules=self._session_rules(), fingerprint=fingerprint,
+                             cwd=self.tool_ctx.cwd)
+        if check.run:
+            if check.rule is not None and not self.headless:
+                console.print(f"[dim]allowed by rule[/dim] "
+                              f"[key]{escape(rule_label(check.rule))}[/key]")
+            return True, check.note
         if not (allow_prompt and self.ui.interactive):
-            return False, f"not auto-approved ({decision.reason}) and this run is unattended"
+            return False, (f"not auto-approved ({check.reason}) and this run is "
+                           "unattended")
         suggestions = suggest_rules(spec.name, args, cwd=self.tool_ctx.cwd)
         detail = call_detail(spec.name, args)
         self._emit_event(approval_notice(
             ApprovalRequest(spec=spec, args=args, fingerprint=fingerprint,
                             detail=detail, allow_prompt=allow_prompt),
-            reason=decision.reason, suggestions=suggestions))
+            reason=check.reason, suggestions=suggestions))
         if not self.headless:
             color = tool_color(spec.name)
             console.print(f"[{color}]{escape(spec.name)}[/{color}][warn] needs "
-                          f"confirmation: {escape(decision.reason)}[/warn]")
+                          f"confirmation: {escape(check.reason)}[/warn]")
         self.set_state("approval", spec.name)
         action, rule = self.ui.approval(
             suggestions,
             name=spec.name, detail=detail,
-            reason=decision.reason)
+            reason=check.reason)
         if action == "auto":
             self.auto_approve = True
             self.session.touch()
@@ -1268,21 +1265,104 @@ class Repl:
         omits the assistant reply that was appended after it was counted)."""
         return session_context_used(self.session)
 
-    def _context_warning(self) -> None:
+    def context_warning(self) -> Optional[str]:
+        """The 80%-full notice, or None; the caller decides where it goes.
+
+        The REPL prints it; the serve controller raises it as a
+        `turn.warning` event at the start of the next turn.
+        """
         if not self.session.messages:
-            return
+            return None
         total = self.context_length()
         used = self.context_used()
         if total and used and used / total >= 0.8:
-            console.print(f"[warn]context {used}/{total} tokens "
-                          f"({used * 100 // total}%) — /summarize to compact[/warn]")
+            return (f"context {used}/{total} tokens "
+                    f"({used * 100 // total}%) — /summarize to compact")
+        return None
 
-    def _maybe_auto_compact(self) -> None:
+    def _context_warning(self) -> None:
+        warning = self.context_warning()
+        if warning:
+            console.print(f"[warn]{escape(warning)}[/warn]")
+
+    def maybe_auto_compact(self) -> Optional[str]:
+        """Compact at 85% when config `auto_compact` is "auto"; the summary.
+
+        Headless-safe: returns the summary text (or None when nothing was
+        done) and prints only for a terminal front end.
+        """
         total = self.context_length()
         used = self.context_used()
         if total and used and used / total >= 0.85 and len(self.session.messages) > 4:
-            console.print("[warn]context almost full — summarizing older messages[/warn]")
-            cmd_summarize(self, "auto")
+            if not self.headless:
+                console.print("[warn]context almost full — summarizing older "
+                              "messages[/warn]")
+            return self.summarize(ask=False)
+        return None
+
+    def _maybe_auto_compact(self) -> None:
+        self.maybe_auto_compact()
+
+    def summarize(self, *, ask: bool = True) -> Optional[str]:
+        """Compact older messages into a summary; returns it (None = no-op).
+
+        The headless serve controller calls this directly (no printing, no
+        confirmation); `/summarize` keeps the interactive prompt.
+        """
+        quiet = self.headless
+        messages = self.session.messages
+        if len(messages) <= 3:
+            if not quiet:
+                console.print("[dim]not enough messages to summarize[/dim]")
+            return None
+        keep_tail = messages[-2:] if len(messages) % 2 == 0 else messages[-1:]
+        older = messages[:len(messages) - len(keep_tail)]
+        if not older:
+            if not quiet:
+                console.print("[dim]nothing to summarize[/dim]")
+            return None
+        if ask and not self.ui.confirm(f"summarize {len(older)} older messages?",
+                                       default=True):
+            return None
+        transcript_lines = []
+        for message in older:
+            role = message.get("role", "?")
+            transcript_lines.append(f"{role}: {message.get('content', '')}")
+        prompt = summarize_prompt("\n\n".join(transcript_lines))
+        if prompt is None:
+            if not quiet:
+                console.print("[err]prompt file defs/prompts/summarize.md is missing[/err]")
+            return None
+        if not quiet:
+            console.print("[dim]summarizing…[/dim]")
+        try:
+            response = self.client.chat_once(build_chat_payload(
+                self.session.model, [{"role": "user", "content": prompt}],
+                stream=False, think=False))
+            summary = (response.get("message") or {}).get("content", "").strip()
+        except OllamaError as exc:
+            if not quiet:
+                console.print(f"[err]{escape(str(exc))}[/err]")
+            return None
+        if not summary:
+            if not quiet:
+                console.print("[err]empty summary; keeping messages[/err]")
+            return None
+        self.session.messages = [
+            {"role": "user", "ts": now_iso(),
+             "content": "[Summary of earlier conversation]\n\n" + summary},
+            {"role": "assistant", "ts": now_iso(),
+             "content": "Understood — continuing from that summary."},
+            *keep_tail,
+        ]
+        self.session.touch()
+        self.session.stats["last_prompt_tokens"] = None
+        self.session.stats["last_completion_tokens"] = None
+        if not self.no_save:
+            self.store.save(self.session)
+        if not quiet:
+            console.print(f"[ok]compacted[/ok] {len(older)} messages → summary")
+        return summary
 
     def _dispatch(self, line: str) -> bool:
         name, _, argument = line.partition(" ")
@@ -2615,51 +2695,7 @@ def cmd_context(repl: Repl, argument: str) -> None:
 
 
 def cmd_summarize(repl: Repl, argument: str) -> None:
-    messages = repl.session.messages
-    if len(messages) <= 3:
-        console.print("[dim]not enough messages to summarize[/dim]")
-        return
-    keep_tail = messages[-2:] if len(messages) % 2 == 0 else messages[-1:]
-    older = messages[:len(messages) - len(keep_tail)]
-    if not older:
-        console.print("[dim]nothing to summarize[/dim]")
-        return
-    if not argument and not repl.ui.confirm(f"summarize {len(older)} older messages?",
-                                            default=True):
-        return
-    transcript_lines = []
-    for message in older:
-        role = message.get("role", "?")
-        transcript_lines.append(f"{role}: {message.get('content', '')}")
-    prompt = summarize_prompt("\n\n".join(transcript_lines))
-    if prompt is None:
-        console.print("[err]prompt file defs/prompts/summarize.md is missing[/err]")
-        return
-    console.print("[dim]summarizing…[/dim]")
-    try:
-        response = repl.client.chat_once(build_chat_payload(
-            repl.session.model, [{"role": "user", "content": prompt}],
-            stream=False, think=False))
-        summary = (response.get("message") or {}).get("content", "").strip()
-    except OllamaError as exc:
-        console.print(f"[err]{escape(str(exc))}[/err]")
-        return
-    if not summary:
-        console.print("[err]empty summary; keeping messages[/err]")
-        return
-    repl.session.messages = [
-        {"role": "user", "ts": now_iso(),
-         "content": "[Summary of earlier conversation]\n\n" + summary},
-        {"role": "assistant", "ts": now_iso(),
-         "content": "Understood — continuing from that summary."},
-        *keep_tail,
-    ]
-    repl.session.touch()
-    repl.session.stats["last_prompt_tokens"] = None
-    repl.session.stats["last_completion_tokens"] = None
-    if not repl.no_save:
-        repl.store.save(repl.session)
-    console.print(f"[ok]compacted[/ok] {len(older)} messages → summary")
+    repl.summarize(ask=not argument)
 
 
 def cmd_image(repl: Repl, argument: str) -> None:

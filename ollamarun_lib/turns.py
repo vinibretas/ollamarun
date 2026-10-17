@@ -55,7 +55,8 @@ from .runtime import TurnResult
 EventSink = Callable[[RuntimeEvent], None]
 Work = Callable[[EventSink, CancelToken], TurnResult]
 
-#: Turn lifecycle states. `waiting_approval` is reserved for Phase 4.
+#: Turn lifecycle states. `waiting_approval` is set by the API's approval
+#: controller while a decision is genuinely pending.
 QUEUED = "queued"
 RUNNING = "running"
 WAITING_APPROVAL = "waiting_approval"
@@ -473,6 +474,31 @@ class TurnManager:
     def active_for(self, session_id: str) -> Optional[str]:
         with self._lock:
             return self._active_by_session.get(session_id)
+
+    def expired(self, turn_id: str) -> Optional[str]:
+        """The final status of a swept turn, or None when it was never retained.
+
+        `get()` answers None for both an unknown turn and an expired one; the
+        HTTP layer calls this right after to distinguish 404 from 410.
+        """
+        with self._lock:
+            record = self._expired.get(turn_id)
+            return record.status if record is not None else None
+
+    def mark_waiting_approval(self, turn_id: str, *, waiting: bool = True) -> bool:
+        """Park/unpark a turn's status while an approval decision is pending.
+
+        The worker's next published event flips the status back to running
+        on its own (`_publish_locked`), so `waiting=False` only matters when
+        a resolution needs to be visible before that event lands.
+        """
+        with self._lock:
+            record = self._records.get(turn_id)
+            if record is None or record.terminal_seen:
+                return False
+            record.status = WAITING_APPROVAL if waiting else RUNNING
+            record.updated_at = now_iso()
+            return True
 
     def wait(self, turn_id: str, timeout: Optional[float] = None
              ) -> Optional[TurnSnapshot]:

@@ -620,7 +620,7 @@ def translate_error(exc: OllamaError, *, model: str = "") -> ApiError:
     """
     raw = str(exc)
     logger.debug("upstream error (model=%s): %s", model or "-", raw)
-    code, message = _backend_error(raw, model)
+    code, message = classify_backend_error(raw, model=model)
     status = 404 if code == "model_not_found" else 502
     return ApiError(status, message,
                     type_="invalid_request_error" if status == 404
@@ -630,11 +630,16 @@ def translate_error(exc: OllamaError, *, model: str = "") -> ApiError:
 def stream_backend_error(raw: str, *, model: str = "") -> dict[str, Any]:
     """The in-band `{"error": {...}}` SSE event for an upstream failure."""
     logger.debug("upstream stream error (model=%s): %s", model or "-", raw)
-    code, message = _backend_error(raw, model)
+    code, message = classify_backend_error(raw, model=model)
     return stream_error(message, code=code)
 
 
-def _backend_error(raw: str, model: str) -> tuple[str, str]:
+def classify_backend_error(raw: str, *, model: str = "") -> tuple[str, str]:
+    """(code, stable message) for an upstream failure text.
+
+    Shared with the native agent endpoints so both surfaces classify a
+    backend failure identically (and keep the raw text out of responses).
+    """
     if "HTTP 404" in raw or "not found" in raw.lower():
         message = (f"model {model!r} is not available" if model
                    else "the requested model is not available")
@@ -642,6 +647,18 @@ def _backend_error(raw: str, model: str) -> tuple[str, str]:
     if "cannot reach" in raw:
         return "backend_unreachable", "cannot reach the model backend"
     return "backend_error", "the model backend failed to complete the request"
+
+
+def model_listed(model: str, entries: list[dict[str, Any]]) -> bool:
+    """True when `model` (tag-normalized) appears in an `/api/tags` list."""
+    wanted = canonical_model_name(model)
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        candidate = entry.get("name") or entry.get("model") or ""
+        if canonical_model_name(str(candidate)) == wanted:
+            return True
+    return False
 
 
 def ollama_payload(plan: ChatRequest, *, keepalive: Optional[str] = None
@@ -735,13 +752,9 @@ class OpenAIApi:
             raise translate_error(exc)
 
     def _ensure_model(self, model: str) -> None:
-        wanted = canonical_model_name(model)
-        for entry in self._safe_models():
-            candidate = entry.get("name") or entry.get("model") or ""
-            if canonical_model_name(str(candidate)) == wanted:
-                return
-        raise ApiError(404, f"model {model!r} not found",
-                       code="model_not_found", param="model")
+        if not model_listed(model, self._safe_models()):
+            raise ApiError(404, f"model {model!r} not found",
+                           code="model_not_found", param="model")
 
     def _capabilities(self, client: Any, model: str) -> list[str]:
         cached = self._cached_capabilities(model)

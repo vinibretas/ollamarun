@@ -47,17 +47,23 @@ class ApiError(Exception):
 
     def __init__(self, status: int, message: str, *,
                  type_: str = "invalid_request_error",
-                 code: Optional[str] = None, param: Optional[str] = None):
+                 code: Optional[str] = None, param: Optional[str] = None,
+                 extra: Optional[dict[str, Any]] = None):
         super().__init__(message)
         self.status = int(status)
         self.message = message
         self.type = type_
         self.code = code
         self.param = param
+        #: Extra keys merged into the error object (e.g. `active_turn_id` on
+        #: a 409 `session_busy`), keeping the OpenAI-style envelope shape.
+        self.extra = dict(extra or {})
 
     def to_dict(self) -> dict[str, Any]:
-        return {"error": {"message": self.message, "type": self.type,
-                          "param": self.param, "code": self.code}}
+        error = {"message": self.message, "type": self.type,
+                 "param": self.param, "code": self.code}
+        error.update(self.extra)
+        return {"error": error}
 
 
 @dataclass
@@ -154,9 +160,18 @@ class SseWriter:
             except Exception:  # a going-away client must not break the server
                 logger.debug("on_disconnect callback failed", exc_info=True)
 
-    def event(self, data: str, *, event: Optional[str] = None) -> None:
-        """Send one `data:` event (optionally with an `event:` name)."""
-        prefix = f"event: {event}\n" if event else ""
+    def event(self, data: str, *, event: Optional[str] = None,
+              id: Optional[str] = None) -> None:
+        """Send one `data:` event (optionally with an `event:` name / `id:`).
+
+        The `id:` is what an SSE client echoes back as `Last-Event-ID`, so
+        the native turn stream sets it to the envelope's `<turn>:<seq>`.
+        """
+        prefix = ""
+        if id is not None:
+            prefix += f"id: {id}\n"
+        if event:
+            prefix += f"event: {event}\n"
         self._write(f"{prefix}data: {data}\n\n".encode("utf-8"))
 
     def ping(self) -> None:
