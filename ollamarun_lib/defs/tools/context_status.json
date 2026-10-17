@@ -1,0 +1,12 @@
+{
+  "name": "context_status",
+  "description": "How much room is left in the model's context window: the window actually in use (a session num_ctx, else the loaded runner's, else the model default), the tokens the last request carried, the free space and the message counts. Check it before a long answer or when the conversation grows.",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  },
+  "handler": "context_status",
+  "read_only": true,
+  "aliases": ["context", "context_info", "context_usage", "token_status"]
+}

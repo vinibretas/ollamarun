@@ -30,12 +30,14 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.parse
 from dataclasses import dataclass, field
+from datetime import datetime
 from html.parser import HTMLParser
 from http import HTTPStatus
 from pathlib import Path
@@ -199,6 +201,11 @@ class ToolContext:
     ssh_user: Optional[str] = None
     #: Path/command of the chemInventoryAPI CLI (config `chem_inventory`).
     chem_inventory: Optional[str] = None
+    #: Environment reports the REPL injects: `context_report()` returns the
+    #: context window/usage data and `session_report()` the identity, settings
+    #: and tool state. None outside a REPL (the tools then say so).
+    context_report: Optional[Callable[[], dict[str, Any]]] = None
+    session_report: Optional[Callable[[], dict[str, Any]]] = None
     #: URL -> formatted result, so a repeated fetch is answered from the cache
     #: (the model is told instead of silently re-downloading the same page).
     fetched: dict[str, str] = field(default_factory=dict)
@@ -476,6 +483,10 @@ def call_detail(name: str, args: dict[str, Any]) -> str:
         text = "loaded only" if args.get("loaded_only") else "installed"
     elif name == "system_status":
         text = str(args.get("target") or "ollama")
+    elif name == "context_status":
+        text = "window and usage"
+    elif name == "session_info":
+        text = "session and environment"
     elif name == "chem_search":
         text = str(args.get("query") or "")
     elif name == "chem_container":
@@ -1738,6 +1749,106 @@ def _handler_system_status(args: dict[str, Any], ctx: ToolContext) -> str:
     return "\n".join(lines)
 
 
+# ── environment awareness (context_status / session_info) ───────────────────
+
+
+def _handler_context_status(args: dict[str, Any], ctx: ToolContext) -> str:
+    report = ctx.context_report
+    if report is None:
+        raise ToolError("context status is unavailable in this run")
+    data = report()
+    model = str(data.get("model") or "?")
+    base = str(data.get("base") or "")
+    remote = data.get("remote")
+    where = (f"{remote} (ollama at {base})" if remote else
+             f"this machine ({base})" if base else "this machine")
+    lines = [f"model: {model} on {where}"]
+    window = data.get("window")
+    model_max = data.get("model_max")
+    if window is None:
+        lines.append("context window: unknown (server unreachable or the model "
+                     "is not loaded yet)")
+    else:
+        source = str(data.get("source") or "unknown")
+        detail = f"{window} tokens ({source}"
+        if model_max and model_max != window:
+            detail += f"; model default {model_max}"
+        detail += ")"
+        lines.append(f"context window: {detail}")
+    used = data.get("used")
+    prompt = data.get("prompt")
+    completion = data.get("completion")
+    if used is None:
+        lines.append("context used: nothing yet (no request has been sent)")
+    else:
+        lines.append(f"context used: {used} tokens = last prompt {prompt or 0} "
+                     f"+ last reply {completion or 0}")
+        if window:
+            free = max(0, window - used)
+            lines.append(f"free: {free} tokens ({used * 100 / window:.1f}% used)")
+    counts = data.get("messages") or {}
+    total = int(counts.get("total") or 0)
+    if total:
+        parts = [f"{role} {count}" for role, count in sorted(counts.items())
+                 if role != "total" and count]
+        lines.append(f"messages: {total}" + (f" ({' · '.join(parts)})" if parts else ""))
+    if used and window and used / window >= 0.8:
+        lines.append("note: the context window is nearly full — keep this answer "
+                     "short or offer to summarize older messages")
+    return "\n".join(lines)
+
+
+def _handler_session_info(args: dict[str, Any], ctx: ToolContext) -> str:
+    report = ctx.session_report
+    if report is None:
+        raise ToolError("session info is unavailable in this run")
+    data = report()
+    now = datetime.now().astimezone()
+    lines = [f"now: {now.strftime('%Y-%m-%d %H:%M %z')} ({now.strftime('%A')})"]
+    session = data.get("session") or {}
+    if session:
+        lines.append(
+            f"session: {session.get('id')} \"{session.get('title')}\" · "
+            f"{session.get('messages', 0)} messages · {session.get('turns', 0)} turns"
+            f" · started {short_stamp(session.get('created_at'))}")
+    model_bits = [str(data.get("model") or "?")]
+    details = data.get("details") or {}
+    if details.get("parameter_size"):
+        model_bits.append(str(details["parameter_size"]))
+    if details.get("quantization_level"):
+        model_bits.append(str(details["quantization_level"]))
+    capabilities = details.get("capabilities") or []
+    if capabilities:
+        model_bits.append("capabilities: " + ", ".join(str(cap) for cap in capabilities))
+    lines.append("model: " + " · ".join(model_bits))
+    base = str(data.get("base") or "")
+    remote = data.get("remote")
+    where = (f"{remote} ({base})" if remote else
+             f"this machine ({base})" if base else "?")
+    lines.append(f"server: {where}")
+    cwd = data.get("cwd") or "?"
+    lines.append(f"tools run on: {socket.gethostname()} ({sys.platform}) · cwd {cwd}")
+    settings = []
+    parameters = data.get("parameters") or {}
+    for key in sorted(parameters)[:8]:
+        settings.append(f"{key} {parameters[key]}")
+    keepalive = data.get("keepalive")
+    settings.append("keepalive " + (str(keepalive) if keepalive else "default"))
+    if data.get("gpu_layers"):
+        settings.append("gpu layers " + str(data["gpu_layers"]))
+    lines.append("settings: " + " · ".join(settings))
+    lines.append(f"modes: thinking {data.get('thinking')} · render {data.get('render')} "
+                 f"· system prompt {data.get('system_prompt')}")
+    tools = data.get("tools") or {}
+    tool_bits = ["on" if tools.get("enabled") else "off",
+                 f"policy {tools.get('policy')}",
+                 f"round {tools.get('round')} of {tools.get('max_rounds')}"]
+    disabled = tools.get("disabled") or []
+    tool_bits.append("disabled: " + (", ".join(disabled) if disabled else "none"))
+    lines.append("tools: " + " · ".join(tool_bits))
+    return "\n".join(lines)
+
+
 # ── chem inventory (chemInventoryAPI) ───────────────────────────────────────
 
 
@@ -2177,6 +2288,8 @@ HANDLERS: dict[str, Callable[[dict[str, Any], ToolContext], str]] = {
     "search_sessions": _handler_search_sessions,
     "list_models": _handler_list_models,
     "system_status": _handler_system_status,
+    "context_status": _handler_context_status,
+    "session_info": _handler_session_info,
     "chem_search": _handler_chem_search,
     "chem_container": _handler_chem_container,
     "chem_locations": _handler_chem_locations,

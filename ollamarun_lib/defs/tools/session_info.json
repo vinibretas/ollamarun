@@ -1,0 +1,12 @@
+{
+  "name": "session_info",
+  "description": "Facts about this run: the current date and time, the session id and title, the model with its size, quantization and capabilities, the server it runs on, the working directory, the active parameters, thinking/render modes, the system-prompt status, and the tool policy with how many tool rounds remain.",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  },
+  "handler": "session_info",
+  "read_only": true,
+  "aliases": ["whoami", "session", "environment", "about"]
+}

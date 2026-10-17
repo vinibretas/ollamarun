@@ -363,7 +363,9 @@ class Repl:
             client=client, store=store,
             ssh_target=remote_node(session.remote, config) if session.remote else None,
             ssh_user=config.get("remote_ssh_user"),
-            chem_inventory=config.get("chem_inventory") or None)
+            chem_inventory=config.get("chem_inventory") or None,
+            context_report=self.context_report,
+            session_report=self.session_report)
         tts_option: Optional[bool]
         if not config.get("tts_tools", True):
             tts_option = False
@@ -409,6 +411,8 @@ class Repl:
         self._turn_summary = ""
         self._context_totals: dict[tuple[str, Any], Optional[int]] = {}
         self._context_provisional: set[tuple[str, Any]] = set()
+        self._show_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        self._tool_round = 0
         # The Textual front end sets `tui_mode` and `stream_sink`; the inline
         # REPL leaves both alone (rich.Live keeps rendering the stream).
         self.tui_mode = False
@@ -585,11 +589,7 @@ class Repl:
         if not model:
             return None
         if model not in self._block_counts:
-            try:
-                show = self.client.show(model)
-            except OllamaError:
-                show = {}
-            self._block_counts[model] = model_block_count(show)
+            self._block_counts[model] = model_block_count(self.model_show(model))
         return self._block_counts[model]
 
     def gpu_layers_value(self) -> Optional[int]:
@@ -879,6 +879,22 @@ class Repl:
                 return ctx
         return None
 
+    def model_show(self, model: Optional[str] = None) -> dict[str, Any]:
+        """Raw `/api/show` for a model, cached per (host, model) for the run.
+
+        `context_length()`, `_model_block_count()`, `context_report()` and
+        `session_report()` all read from this one cache, so a burst of calls
+        makes a single request; a failure is cached as `{}`.
+        """
+        name = model or self.session.model
+        key = (self.client.base, name)
+        if key not in self._show_cache:
+            try:
+                self._show_cache[key] = self.client.show(name)
+            except OllamaError:
+                self._show_cache[key] = {}
+        return self._show_cache[key]
+
     def context_length(self, *, refresh: bool = False) -> Optional[int]:
         """The window the model actually runs with, cached per model/num_ctx.
 
@@ -891,11 +907,10 @@ class Repl:
         """
         key = (self.session.model, self.session.parameters.get("num_ctx"))
         if refresh or key not in self._context_totals:
-            try:
-                show = self.client.show(self.session.model)
-            except OllamaError:
-                show = {}
-            total = model_context_length(show, self.session.parameters)
+            if refresh:
+                self._show_cache.pop((self.client.base, self.session.model), None)
+            total = model_context_length(self.model_show(self.session.model),
+                                         self.session.parameters)
             provisional = False
             if not isinstance(self.session.parameters.get("num_ctx"), int):
                 resident = self._resident_context_length()
@@ -919,6 +934,94 @@ class Repl:
         """The cached window size for the current model/num_ctx, if known."""
         return self._context_totals.get(
             (self.session.model, self.session.parameters.get("num_ctx")))
+
+    def context_report(self) -> dict[str, Any]:
+        """Plain data for the `context_status` tool (window + usage).
+
+        `window` is the effective window `context_length()` resolves (a
+        session `num_ctx`, else the loaded runner's, else the model default),
+        `source` names which of the three won, and `model_max` is the
+        architectural maximum from `/api/show` for contrast.
+        """
+        parameters = self.session.parameters or {}
+        num_ctx = parameters.get("num_ctx")
+        key = (self.session.model, num_ctx)
+        window = self.context_length()
+        model_max = model_context_length(self.model_show(self.session.model), {})
+        provisional = key in self._context_provisional
+        if window is None:
+            source = "unknown"
+        elif isinstance(num_ctx, int) and window == num_ctx:
+            source = "num_ctx"
+        elif provisional:
+            source = "model default (runner not loaded yet)"
+        elif model_max is not None and window == model_max:
+            source = "model default"
+        else:
+            source = "loaded runner"
+        roles: dict[str, int] = {}
+        for message in self.session.messages:
+            role = str(message.get("role") or "?")
+            roles[role] = roles.get(role, 0) + 1
+        return {
+            "model": self.session.model,
+            "base": self.client.base,
+            "remote": self.session.remote,
+            "window": window,
+            "source": source,
+            "model_max": model_max,
+            "num_ctx": num_ctx,
+            "prompt": self.session.stats.get("last_prompt_tokens"),
+            "completion": self.session.stats.get("last_completion_tokens"),
+            "used": self.context_used(),
+            "messages": {"total": len(self.session.messages), **roles},
+        }
+
+    def session_report(self) -> dict[str, Any]:
+        """Plain data for the `session_info` tool (identity, settings, tools)."""
+        session = self.session
+        show = self.model_show()
+        details = show.get("details") or {}
+        if not self.tools_enabled:
+            policy = "off"
+        elif self.auto_approve:
+            policy = "auto (all calls allowed)"
+        else:
+            policy = self.tools_policy
+        return {
+            "session": {
+                "id": session.id,
+                "title": session.display_title(),
+                "created_at": session.created_at,
+                "updated_at": session.updated_at,
+                "messages": len(session.messages),
+                "turns": session.stats.get("turns", 0),
+            },
+            "model": session.model,
+            "details": {
+                "parameter_size": details.get("parameter_size"),
+                "quantization_level": details.get("quantization_level"),
+                "family": details.get("family"),
+                "capabilities": list(show.get("capabilities") or []),
+            },
+            "base": self.client.base,
+            "remote": session.remote,
+            "cwd": self.tool_ctx.cwd,
+            "parameters": dict(session.parameters or {}),
+            "keepalive": session.keepalive or getattr(self.args, "keepalive", None),
+            "gpu_layers": self.gpu_layers_summary(),
+            "thinking": self.thinking_mode,
+            "render": self.render_mode,
+            "system_prompt": ("off" if session.system == "" else
+                              "custom" if session.system else "built-in default"),
+            "tools": {
+                "enabled": self.tools_enabled,
+                "policy": policy,
+                "round": self._tool_round,
+                "max_rounds": self.tools_max_rounds,
+                "disabled": sorted(session.tools_disabled or []),
+            },
+        }
 
     def live_context_used(self) -> Optional[int]:
         """`context_used()` plus the chunks streamed in the running round.
@@ -998,6 +1101,7 @@ class Repl:
         self._check_tool_support()
         result = GenerationResult()
         tool_rounds = 0
+        self._tool_round = 0
         cancel = self.cancel_token
         self._turn_started = time.monotonic()
         self.set_state("generating")
@@ -1061,6 +1165,7 @@ class Repl:
                     if not self.no_save:
                         self.store.save(self.session)
                     break
+                self._tool_round = tool_rounds
                 if self._execute_tool_calls(result.tool_calls,
                                             quiet=(self.render_mode == "raw")):
                     console.print("[warn]tool execution interrupted; stopping this turn[/warn]")

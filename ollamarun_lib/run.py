@@ -88,6 +88,7 @@ def _run_once_json(args: argparse.Namespace, client: OllamaClient, store: Sessio
                 session.add_message("tool", "not executed: tool-call limit reached",
                                     tool_name=str(function.get("name") or "?"))
             break
+        repl._tool_round = rounds
         repl._execute_tool_calls(tool_calls, quiet=True, allow_prompt=False)
     console.print(json.dumps(response, indent=2), markup=False, highlight=False)
     return 0
