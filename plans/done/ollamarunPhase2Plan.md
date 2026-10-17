@@ -4,10 +4,10 @@ Phase 1/1b delivered the `AgentRuntime` extraction, the event vocabulary
 and the safety rails. Phase 2 builds the **in-process turn manager and
 event envelopes** on top of that emission API — still no HTTP server.
 Phase 3 maps this onto `/v1`; Phase 4 exposes the agent endpoints. This
-plan follows the merged API plan
-(`ollamarun-api-layer-merged-plan.md`) and the Phase 1b closure table
-(`ollamarunPhase1bPlan.md`). The CLI/TUI must keep working and
-`python3 test_ollamarun.py` stays green at every step.
+plan follows the API layer plan (`ollamarunAPILayerPlan.md`) and the
+Phase 1b closure table (`plans/done/ollamarunPhase1bPlan.md`). The
+CLI/TUI must keep working and `python3 test_ollamarun.py` stays green
+at every step.
 
 ## Status
 
