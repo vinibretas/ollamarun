@@ -431,10 +431,10 @@ def test_tool_definitions() -> int:
                                 "context_status", "copy_file", "delete_file",
                                 "edit_file", "fetch_url", "list_dir",
                                 "list_models", "list_voices", "make_dir",
-                                "move_file", "read_file", "run_python",
-                                "run_shell", "search_sessions", "session_info",
-                                "speak", "system_status", "web_search",
-                                "write_file"], str(names))
+                                "move_file", "publish_artifact", "read_file",
+                                "run_python", "run_shell", "search_sessions",
+                                "session_info", "speak", "system_status",
+                                "web_search", "write_file"], str(names))
     failures = _check(failures, "every definition's handler resolves",
                       all(definition.handler in orun.HANDLERS
                           for definition in defs))
@@ -443,6 +443,12 @@ def test_tool_definitions() -> int:
     failures = _check(failures, "web_search declares its capability and aliases",
                       web is not None and web.read_only
                       and web.requires == "search" and "google" in web.aliases)
+    publish = next((definition for definition in defs
+                    if definition.name == "publish_artifact"), None)
+    failures = _check(failures, "publish_artifact needs the artifact store",
+                      publish is not None and publish.requires == "artifacts"
+                      and not publish.read_only
+                      and not publish.always_safe, str(publish))
     run_python = next((definition for definition in defs
                        if definition.name == "run_python"), None)
     failures = _check(failures, "run_python prefers code over mental math",
@@ -8884,6 +8890,142 @@ def test_artifact_quota_and_ttl() -> int:
     return failures
 
 
+def test_tool_artifact_registration() -> int:
+    """File tools publish their destination; publish_artifact is gated and jailed."""
+    failures = 0
+
+    def _spec(name: str) -> orun.ToolSpec:
+        return orun.ToolSpec(name=name, description="", parameters={},
+                             handler=orun.HANDLERS[name])
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        store = orun.ArtifactStore(tmp / "artifacts")
+        publisher = store.for_turn(turn_id="turn_9", session_id="ses_9")
+        ctx = orun.ToolContext(cwd=str(tmp), artifacts=publisher)
+
+        target = tmp / "out.txt"
+        outcome = orun.execute_tool(_spec("write_file"),
+                                    {"path": str(target), "content": "hi"}, ctx)
+        refs = outcome.artifacts
+        failures = _check(failures, "write_file publishes the file it wrote",
+                          outcome.ok and len(refs) == 1
+                          and refs[0]["filename"] == "out.txt"
+                          and refs[0]["source"] == "tool"
+                          and refs[0]["turn_id"] == "turn_9"
+                          and refs[0]["session_id"] == "ses_9"
+                          and store.read(refs[0]["id"])[1] == b"hi",
+                          f"{outcome.ok} {refs}")
+
+        target.write_text("changed on disk", encoding="utf-8")
+        failures = _check(failures, "the published snapshot is immutable",
+                          store.read(refs[0]["id"])[1] == b"hi",
+                          repr(store.read(refs[0]["id"])))
+
+        edited = orun.execute_tool(
+            _spec("edit_file"),
+            {"path": str(target), "old_string": "changed", "new_string": "edited"}, ctx)
+        failures = _check(failures, "edit_file publishes the edited file",
+                          edited.ok and len(edited.artifacts) == 1
+                          and store.read(edited.artifacts[0]["id"])[1]
+                          == b"edited on disk",
+                          str(edited.artifacts))
+
+        copied = tmp / "copy.txt"
+        copy_outcome = orun.execute_tool(
+            _spec("copy_file"),
+            {"source": str(target), "destination": str(copied)}, ctx)
+        failures = _check(failures, "copy_file publishes the destination",
+                          copy_outcome.ok and len(copy_outcome.artifacts) == 1
+                          and copy_outcome.artifacts[0]["filename"] == "copy.txt",
+                          str(copy_outcome.artifacts))
+
+        moved = tmp / "moved.txt"
+        move_outcome = orun.execute_tool(
+            _spec("move_file"),
+            {"source": str(copied), "destination": str(moved)}, ctx)
+        failures = _check(failures, "move_file publishes the destination",
+                          move_outcome.ok and len(move_outcome.artifacts) == 1
+                          and move_outcome.artifacts[0]["filename"] == "moved.txt"
+                          and not copied.exists(),
+                          str(move_outcome.artifacts))
+
+        folder = tmp / "folder"
+        folder.mkdir()
+        (folder / "inner.txt").write_text("x", encoding="utf-8")
+        dir_outcome = orun.execute_tool(
+            _spec("copy_file"),
+            {"source": str(folder), "destination": str(tmp / "folder-copy")}, ctx)
+        failures = _check(failures, "a directory copy publishes nothing",
+                          dir_outcome.ok and dir_outcome.artifacts == []
+                          and "artifact not published" not in dir_outcome.text,
+                          str(dir_outcome.artifacts))
+
+        published = tmp / "report.bin"
+        published.write_bytes(b"\x00\x01")
+        publish_outcome = orun.execute_tool(
+            _spec("publish_artifact"), {"path": "report.bin"}, ctx)
+        failures = _check(failures, "publish_artifact publishes a relative path",
+                          publish_outcome.ok and len(publish_outcome.artifacts) == 1
+                          and publish_outcome.artifacts[0]["filename"] == "report.bin",
+                          str(publish_outcome))
+        outside = Path("/etc/hostname")
+        if outside.is_file():
+            refused = orun.execute_tool(
+                _spec("publish_artifact"), {"path": str(outside)}, ctx)
+            failures = _check(failures,
+                              "publish_artifact refuses a path outside the cwd",
+                              not refused.ok and refused.artifacts == []
+                              and "outside the working directory" in refused.text,
+                              str(refused))
+        refused_dir = orun.execute_tool(
+            _spec("publish_artifact"), {"path": "folder"}, ctx)
+        failures = _check(failures, "publish_artifact refuses a directory",
+                          not refused_dir.ok and refused_dir.artifacts == [],
+                          str(refused_dir))
+        no_store = orun.execute_tool(
+            _spec("publish_artifact"), {"path": "report.bin"},
+            orun.ToolContext(cwd=str(tmp)))
+        failures = _check(failures, "publish_artifact needs the serve store",
+                          not no_store.ok and no_store.artifacts == []
+                          and "artifact store" in no_store.text,
+                          str(no_store))
+        failures = _check(failures, "publish_artifact is not auto-approved",
+                          not orun.approval_decision(
+                              _spec("publish_artifact"), {"path": "x"},
+                              policy="allowlist").allowed,
+                          "auto-approved")
+
+        tiny = orun.ArtifactStore(tmp / "tiny", max_bytes=2)
+        tiny_ctx = orun.ToolContext(
+            cwd=str(tmp),
+            artifacts=tiny.for_turn(turn_id="turn_t", session_id="ses_t"))
+        note = orun.execute_tool(_spec("write_file"),
+                                 {"path": str(tmp / "big.txt"), "content": "hello"},
+                                 tiny_ctx)
+        failures = _check(failures,
+                          "a failed publication is a note, not a failed tool",
+                          note.ok and note.artifacts == []
+                          and "artifact not published" in note.text
+                          and (tmp / "big.txt").is_file(),
+                          str(note))
+        refused_size = orun.execute_tool(
+            _spec("publish_artifact"), {"path": "big.txt"}, tiny_ctx)
+        failures = _check(failures, "publish_artifact refuses over the store limit",
+                          not refused_size.ok
+                          and "byte artifact limit" in refused_size.text,
+                          str(refused_size))
+
+        without = orun.default_registry(tts=False, search=False, chem=False)
+        with_store = orun.default_registry(tts=False, search=False, chem=False,
+                                           artifacts=True)
+        failures = _check(failures, "publish_artifact appears only with a store",
+                          "publish_artifact" not in without
+                          and "publish_artifact" in with_store,
+                          str(sorted(set(with_store) - set(without))))
+    return failures
+
+
 def test_cancellation_destructive_guard() -> int:
     """A stopped turn must not trash anything, even inside the handler."""
     failures = 0
@@ -10991,6 +11133,7 @@ if __name__ == "__main__":
              + test_session_store_same_session_writers()
              + test_session_store_without_fcntl()
              + test_artifact_store() + test_artifact_quota_and_ttl()
+             + test_tool_artifact_registration()
              + test_python310_syntax() + test_turn_result_mapping()
              + test_turn_event_envelope()
              + test_turn_manager_lifecycle()
