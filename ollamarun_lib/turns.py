@@ -492,6 +492,11 @@ class TurnManager:
         with self._lock:
             return self._active_by_session.get(session_id)
 
+    def active_count(self) -> int:
+        """How many turns are live (any non-terminal status)."""
+        with self._lock:
+            return self._active_count
+
     def expired(self, turn_id: str) -> Optional[str]:
         """The final status of a swept turn, or None when it was never retained.
 

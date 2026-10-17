@@ -2,6 +2,39 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.55
+
+Summary of changes in this version:
+  - Context and placement control over the native API. A session's context
+    size and GPU placement are first-class fields: `PATCH /v1/sessions/{id}`
+    and the agent-turn `settings` accept `num_ctx` (a positive integer,
+    refused past the model's trained maximum) and `gpu_layers` (the CLI
+    spec grammar, resolved against `/api/show` at validation time); a
+    placement change unloads the resident model, `/gpu-layers` parity.
+  - Fitting comes in two speeds. `POST /v1/agent/fit` is the synchronous
+    estimate (no model loads; `mode` gpu/cpu, optional `gpu_layers` pin and
+    `apply`), returning the chosen `num_ctx` and the whole fit report as
+    data. `POST /v1/agent/fits` starts the same fit as an asynchronous
+    probe job that verifies the boundary by loading models: 202 with the
+    job id and honest warnings (resident models / active turns make it
+    slower; prior measurements on the host seed the probe), `GET
+    /v1/agent/fits/{id}` for status/progress/result, `POST .../cancel` to
+    stop it. A job with a session holds it — turns, edits and a second fit
+    get 409 `session_busy` with `active_fit_id` — the global cap answers
+    429, and terminal jobs live until `serve_fit_ttl`. `serve_fit` gates
+    the surface: "probe" (default), "estimate" or "off".
+  - Turn-start fitting: `settings.num_ctx` also accepts `"max-gpu"` /
+    `"max-cpu"` (with `settings.cpu_percent`). The estimate runs at turn
+    start (never a blocking probe), the fitted context is persisted and
+    reported as the new typed `session.fit` event plus `result.fit` on the
+    turn status; a failed fit leaves the context unchanged and reports the
+    reason on the same event. `ctxfit`'s compute path now returns a
+    structured `FitOutcome` (the CLI's reports print from it,
+    behavior unchanged) and honours cancellation/progress checkpoints.
+  - The OpenAI-compatible surface deliberately gains none of this: it
+    stays a stateless translation proxy (no session to configure; fitting
+    per request would mean load churn per completion). Locked.
+
 Version: 1.54
 
 Summary of changes in this version:

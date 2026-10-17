@@ -15,5 +15,6 @@ Network exposure is a privileged control surface. **Locked: LAN-accessible, no a
 - `serve_models` allowlist (optional), `serve_agent=false` for a pure inference server.
 - Cancellation through `OllamaClient.abort_stream` plus cancellable tool subprocesses; graceful shutdown drains and cancels.
 - Signal handling: SIGTERM/SIGINT stop accepting, cancel turns, flush sessions, optional unload.
+- Fold Phase 10's context-control policy keys (`serve_fit`, `serve_max_active_fits`, `serve_fit_ttl`, shipped with that phase) into the consolidated policy matrix: values, caps and their tests alongside `serve_agent`/`serve_models`.
 
 **Acceptance:** the service is LAN-accessible by default with no credentials, documented as trusted-network-only; tool safeguards survive HTTP unchanged; oversized/invalid requests fail safely; cancellation leaves sessions consistent.
