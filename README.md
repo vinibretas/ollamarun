@@ -374,8 +374,11 @@ follows it over Server-Sent Events.
 | `POST /v1/files` | upload one file (`{filename, media_type, data_base64}`) as an artifact |
 | `GET /v1/artifacts/{id}` | download an artifact's bytes (recorded media type) |
 | `GET /v1/artifacts/{id}/meta` | the artifact's `ArtifactRef` |
+| `POST /v1/agent/fit` | synchronous context estimate (optional `apply`) |
+| `POST` `/v1/agent/fits` | start an asynchronous probe job (202 + warnings) |
+| `GET /v1/agent/fits/{id}` / `POST .../cancel` | job status, progress and result / cancel |
 | `GET`/`POST /v1/sessions` | list / create sessions |
-| `GET`/`PATCH`/`DELETE /v1/sessions/{id}` | inspect, edit (title/model/system/tags) or trash a session; edits and deletes are refused (409 `session_busy`) while a turn runs |
+| `GET`/`PATCH`/`DELETE /v1/sessions/{id}` | inspect, edit (title/model/system/tags/`num_ctx`/`gpu_layers`) or trash a session; edits and deletes are refused (409 `session_busy`) while a turn or fit runs |
 
 ```json
 POST /v1/agent/turns
@@ -463,6 +466,31 @@ references the ids; turn results and session metadata list the refs. A
 `persist: false` turn still registers and serves its artifacts — retention
 is TTL-only and shared with session-deleted conversations (deleting a
 session never deletes artifacts early).
+
+**Context and placement.** A session's context size and GPU placement are
+first-class fields: `PATCH /v1/sessions/{id}` (and the turn `settings`)
+accept `num_ctx` (a positive integer, refused past the model's trained
+maximum) and `gpu_layers` (`N`, `P%`, `+N`/`-N`, `all`, `cpu` or `auto`; a
+change unloads the resident model, exactly like `/gpu-layers`).
+
+Fitting comes in two speeds. `POST /v1/agent/fit` estimates synchronously
+(no model loads) — `{model?, session_id?, mode: "gpu"|"cpu", cpu_percent,
+gpu_layers?, apply?}` — and returns the `num_ctx`, the bound and a report
+(parameters, weights, per-token KV, machine budget); `apply: true` writes
+it to the session. `POST /v1/agent/fits` starts the same fit as an
+asynchronous probe job that verifies the boundary by actually loading the
+model: `202` with the job id and warnings (other resident models or active
+turns make it slower; prior measurements on this host make it faster),
+`GET /v1/agent/fits/{id}` for status/progress/result, `POST .../cancel` to
+stop it. A job with a session holds it — turns, edits and a second fit get
+`409 session_busy` with `active_fit_id` — a global cap
+(`serve_max_active_fits`) answers `429`, and completed jobs live until
+`serve_fit_ttl`. Turn `settings.num_ctx` also accepts `"max-gpu"` /
+`"max-cpu"` (with `settings.cpu_percent`): the turn estimates at start —
+never a blocking probe — persists the fitted context and reports it as a
+typed `session.fit` event and `result.fit` on the turn status; a failed fit
+leaves the context unchanged. `serve_fit` gates the whole surface:
+`"probe"` (default), `"estimate"` (no probing) or `"off"`.
 
 ## Prompts and tool definitions
 
@@ -574,7 +602,8 @@ Selected config keys: `render`, `math`, `thinking`, `ui`, `show_stats`,
 `tools*`, `tool_colors`, `tts*`, `chem_*`, `remote*`, `max_gpu_*`,
 `max_cpu_*`, `serve_bind`, `serve_port`, `serve_approval_timeout`,
 `serve_turn_timeout`, `serve_artifact_*` (`root`, `max_bytes`,
-`quota_bytes`, `ttl`), `timeout`, plus the turn-manager keys
+`quota_bytes`, `ttl`), `serve_fit*` (`serve_fit`, `serve_max_active_fits`,
+`serve_fit_ttl`), `timeout`, plus the turn-manager keys
 (`serve_max_active_turns`, `serve_turn_event_buffer`, `serve_turn_event_ttl`)
 for the agent endpoints. See `DEFAULT_CONFIG` in
 `ollamarun_lib/constants.py` for the full set.

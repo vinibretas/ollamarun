@@ -1,5 +1,10 @@
 # Phase 10 — Context and placement control over the API
 
+Status: implemented and landed at v1.55 (`fits.py`, the structured ctxfit
+outcome, the `num_ctx`/`gpu_layers` fields, the estimate/probe endpoints and
+the turn-start estimate). The contracts below are what shipped; the
+implementation decisions are recorded at the end.
+
 The native API can only *guess* a context today: `settings.parameters` passes
 `num_ctx`/`num_gpu` through as raw Ollama options (unvalidated, undocumented),
 `gpu_layers` is not reachable at all, and no surface can ask the server — the
@@ -153,6 +158,31 @@ same facts the CLI's fit report prints, as data.
 | `PATCH /v1/sessions/{id}` | extended with `num_ctx` / `gpu_layers` |
 | `POST /v1/agent/turns` | `settings.num_ctx` / `gpu_layers` / `cpu_percent` |
 
+## Recorded implementation decisions
+
+- **The sync estimate never probes.** `POST /v1/agent/fit` rejects a
+  `probe` field (unknown-field 400): verifying by loading is the async
+  endpoint's job, so no HTTP request ever holds a connection for minutes.
+  `POST /v1/agent/fits` accepts `probe: false` (a job that just estimates)
+  for uniformity.
+- **`cpu_percent` is required for `mode: "cpu"`** on both the endpoints and
+  `settings.num_ctx: "max-cpu"`.
+- **`serve_fit_ttl: 0` keeps terminal jobs forever** (explicit-None
+  defaulting, matching the artifact TTL convention); unknown and expired
+  fits are the same 404 `fit_not_found` (no 410 tombstones).
+- **The turn-start estimate runs before the context warning /
+  auto-compaction** in `on_started`, so the warning measures the fitted
+  window.
+- **`apply` writes only `num_ctx`.** A fit is computed *for* a placement; it
+  never changes `gpu_layers` (that stays an explicit PATCH/settings act).
+- **Session exclusivity is symmetric.** `_fit_guard` refuses a fit while a
+  turn runs (409 `active_turn_id`) and every session route plus turn submit
+  refuse while a fit holds the session (409 `active_fit_id`) — one
+  `session_busy` code, the id field says which.
+- **Probe progress stays CLI-visible.** The probe's per-candidate `[dim]`
+  lines still print (they land in the serve log); the API report rides the
+  job's `progress` field.
+
 ## Tests
 
 | Test | Proves |
@@ -192,6 +222,14 @@ existing `/api/ps`-verified fake backend.
   event and `result.fit` make it observable.
 - The OpenAI surface is untouched; the CLI/REPL behavior is unchanged; the
   full suite is green at every commit.
+
+## Closure
+
+Closed at v1.55 with the full suite green (`python3 test_ollamarun.py`) and
+these regression groups: `test_ctxfit_outcome`, `test_ctxfit_cancel_progress`,
+`test_fit_service`, `test_session_context_fields`, `test_fit_estimate_api`,
+`test_fit_job_api`, `test_turn_start_fit`, plus the existing ctxfit/CLI
+suites unchanged (the max-* wrappers print from the same outcome).
 
 ## Handoffs
 
