@@ -5,6 +5,7 @@ three export formats (markdown, json, html).
 from __future__ import annotations
 
 import contextlib
+import io
 import json
 import os
 import re
@@ -412,6 +413,9 @@ def export_json(session: Session) -> str:
 
 
 def export_html(session: Session, width: int = 110) -> str:
-    recorder = Console(record=True, width=width, theme=THEME)
+    # The recorder needs a file of its own: `Console(record=True)` records in
+    # addition to printing, so without a sink every render_transcript line
+    # also lands on stdout before the HTML document.
+    recorder = Console(record=True, file=io.StringIO(), width=width, theme=THEME)
     render_transcript(session, recorder, show_stats=True, pager=False)
     return recorder.export_html(inline_styles=True)
