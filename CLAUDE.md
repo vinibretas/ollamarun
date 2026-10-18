@@ -149,6 +149,12 @@ docstring convention) — it is binding, not optional, for edits in this repo.
   `AGENTS.md` sections automatically). `CLAUDE.md`/`AGENTS.md` are the working
   guidance — keep the two guidance files identical, and re-check the site with
   `mkdocs build --strict`.
+- Submodule bookkeeping: after commits are pushed on this repo (`main` moves),
+  bump the `~/bin` (`vinibretas/binscripts`) submodule pointer to the new
+  `main` commit in the same session —
+  `git -C ~/bin add ollamarun && git -C ~/bin commit -m "ollamarun: bump
+  submodule to ..."` — so the binscripts checkout never shows a modified
+  `ollamarun`.
 - Inspection-style flags (`--list`, `--show`, `--search`, `--export`) share
   one output convention: rich table by default, `--json`/`--csv`/`--markdown`
   plus `--out FILE` to redirect — implemented once in `emit()`
