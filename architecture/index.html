@@ -1,0 +1,1055 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="A terminal agent harness for Ollama — a drop-in ollama run superset with an approval-gated tool loop, persistent sessions, live rendering and an OpenAI-compatible API layer.">
+      
+      
+      
+        <link rel="canonical" href="https://vinibretas.github.io/ollamarun/architecture/">
+      
+      
+        <link rel="prev" href="..">
+      
+      
+        <link rel="next" href="../development/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Architecture - ollamarun</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#architecture" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="ollamarun" class="md-header__button md-logo" aria-label="ollamarun" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            ollamarun
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Architecture
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m14.3 16-.7-2h-3.2l-.7 2H7.8L11 7h2l3.2 9zM20 8.69V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12zm-9.15 3.96h2.3L12 9z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_2" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to system preference"  type="radio" name="__palette" id="__palette_2">
+    
+      <label class="md-header__button md-icon" title="Switch to system preference" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/vinibretas/ollamarun" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    vinibretas/ollamarun
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="ollamarun" class="md-nav__button md-logo" aria-label="ollamarun" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    ollamarun
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/vinibretas/ollamarun" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    vinibretas/ollamarun
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design notes
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design notes
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../design/api-layer/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API layer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/vinibretas/ollamarun/edit/main/docs/architecture.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+    
+      
+    
+    <a href="https://github.com/vinibretas/ollamarun/raw/main/docs/architecture.md" title="View source of this page" class="md-content__button md-icon">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 18c.56 0 1 .44 1 1s-.44 1-1 1-1-.44-1-1 .44-1 1-1m0-3c-2.73 0-5.06 1.66-6 4 .94 2.34 3.27 4 6 4s5.06-1.66 6-4c-.94-2.34-3.27-4-6-4m0 6.5a2.5 2.5 0 0 1-2.5-2.5 2.5 2.5 0 0 1 2.5-2.5 2.5 2.5 0 0 1 2.5 2.5 2.5 2.5 0 0 1-2.5 2.5M9.27 20H6V4h7v5h5v4.07c.7.08 1.36.25 2 .49V8l-6-6H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h4.5a8.2 8.2 0 0 1-1.23-2"/></svg>
+    </a>
+  
+
+
+<h1 id="architecture">Architecture<a class="headerlink" href="#architecture" title="Permanent link">&para;</a></h1>
+<p><code>ollamarun_lib/</code> is organized as pipeline stages, one module per stage; read
+a module's own docstring for what lives there before editing:</p>
+<ol>
+<li><strong><code>constants.py</code></strong> — shared stdlib/<code>rich</code>/optional-dependency imports,
+   <code>VERSION</code>, config/session/log paths, <code>THEME</code>, the shared <code>console</code>
+   singleton, <code>DEFAULT_CONFIG</code>, the <code>DEFAULT_SERVE_*</code> transport/limit
+   defaults, and the tool-panel colours (<code>TOOL_COLORS</code>/
+   <code>TOOL_COLOR_PALETTE</code>, <code>tool_color()</code> with its random per-run fallback,
+   <code>set_tool_colors()</code> for the config <code>tool_colors</code> overrides). Every other
+   module sits on top of this one.</li>
+<li><strong><code>helpers.py</code></strong> — small helpers: ISO timestamps, id generation,
+   bool/host/think coercion, <code>--remote</code> resolution (<code>resolve_remote</code>,
+   <code>remote_node</code>, <code>tailscale_map</code>, <code>tailscale_peer_state</code>, <code>is_local_host</code>),
+   disk-space probes (<code>local_free_disk</code>, <code>ssh_free_disk</code> — the ssh probes
+   take a <code>cancel</code> token), <code>run_cancellable()</code>/<code>CommandCancelled</code> (the
+   process-group-killing subprocess runner every tool shares), config load
+   (<code>load_config</code>) and the response-timings policy (<code>resolve_show_stats</code>),
+   logging setup, and the count formatters shared by both front ends
+   (<code>human_tokens</code>/<code>format_context</code> for the ctx counter, <code>human_chars</code>,
+   <code>human_duration</code>), <code>serve_settings()</code> (the one validated <code>serve_*</code>
+   policy matrix: defaults, types, ranges and zero semantics, consumed
+   by <code>serve_main</code>), <code>model_allowed()</code> (the <code>serve_models</code> tag-aware
+   fnmatch allowlist) and <code>ModelTracker</code> (the models a serve process
+   used, for unload-on-exit).</li>
+<li><strong><code>mathrender.py</code></strong> — LaTeX → Unicode, combined in one module because the
+   two halves call into each other: regex-level conversion for inline math
+   (<code>convert_math</code>, <code>latex_to_unicode</code>) falls through to the 2D layout
+   engine's <code>render_inline_math</code> for inline math, and the layout engine
+   falls back to <code>convert_math</code>/<code>latex_to_unicode</code> for anything unsupported.
+   The layout engine is a self-contained parser/box-layout system for
+   <em>display</em> math (<code>$$...$$</code>, <code>\[...\]</code>): <code>_tokenize_math</code> → <code>_MathParser</code> →
+   an AST of <code>M*</code> node classes (<code>MFrac</code>, <code>MSqrt</code>, <code>MScript</code>, <code>MBigOp</code>,
+   <code>MMatrix</code>, <code>MCases</code>, <code>MAligned</code>, <code>MBoxed</code>, etc.) → <code>_layout()</code> builds a
+   <code>_Box</code> (list-of-strings + width) recursively → <code>_flatten()</code> is the
+   plain-text fallback path. <code>render_display_math()</code>/<code>render_inline_math()</code>
+   are the public entry points; both must never raise — anything unsupported
+   (unknown environment, over-wide, over-budget) falls through to
+   <code>pylatexenc</code>. This module also has <code>render_content()</code>/<code>render_thinking()</code>
+   (markdown + centered display math, used by the renderer and REPL).
+   Changes here need care: the layout is hand-rolled string-grid arithmetic,
+   not a real typesetting library.</li>
+<li><strong><code>files.py</code></strong> — <code>@file</code> mentions: <code>expand_file_mentions()</code> inlines file
+   contents into a prompt.</li>
+<li><strong><code>images.py</code></strong> — <code>encode_image</code>/<code>image_payload</code>, base64 embedding with
+   <code>max_file_kb</code> truncation.</li>
+<li><strong><code>renderer.py</code></strong> — <code>Renderer</code> class drives a <code>rich.Live</code> view:
+   incremental markdown re-render while tokens stream, the collapsible
+   thinking panel (<code>render_thinking</code>, Ctrl+T expand/collapse in place;
+   <code>/thinking full</code> prints the stored panel directly), and
+   <code>TpsEstimator</code> (<code>windowed()</code>/<code>average()</code>/<code>rate()</code>) for the live footer:
+   windowed rate, cumulative average, streamed tokens and a ctx counter
+   that counts the round's chunks on top of the <code>context_used</code>/
+   <code>context_total</code> the REPL passes in, and the per-response <code>⏱</code> timings
+   line whose visibility comes from <code>resolve_show_stats()</code> (on by default
+   on a terminal, piped output only with <code>--verbose</code>, config
+   <code>show_stats: false</code> as the off-switch). <code>StreamSink</code> is the seam the
+   TUI uses: with a sink, <code>stream()</code> pushes the same frames to a widget
+   instead of a <code>rich.Live</code>, so both front ends share one streaming loop
+   (and <code>stream(cancel=…)</code> honors a <code>CancelToken</code>). Also has the chat-bubble
+   helpers (<code>user_message_box</code>, small right-aligned box for a user turn;
+   <code>model_message_panel</code>, full-width titled box for a model turn) and the
+   tool panels -- <code>tool_call_panel()</code>/<code>tool_result_panel()</code>, both coloured
+   by <code>constants.tool_color()</code> so every tool keeps one identity across the
+   live view and the transcript (<code>tool_result_panel</code> also takes a <code>note</code>
+   that lands in the title -- the speak tool's <code>optiplex → g3</code>, persisted
+   on the tool message as <code>tool_note</code>) -- plus
+   <code>render_transcript()</code> (replays a saved session the way it looked live,
+   used by <code>/show</code>/<code>--show</code>). This is the piece that talks to the terminal
+   frame-by-frame; changes to streaming UX go here. <code>consume_chunk()</code> is
+   the shared per-chunk accumulator and <code>HeadlessRenderer</code> is the
+   terminal-free presenter (it emits <code>message.delta</code> events instead of
+   printing), used by the runtime's headless turns.</li>
+<li><strong><code>client.py</code></strong> — <code>OllamaClient</code> wraps <code>/api/chat</code>, <code>/api/generate</code>,
+   <code>/api/embed</code>, <code>/api/ps</code>, <code>/api/pull</code>, <code>/api/create</code> etc. over raw
+   <code>requests</code>, streaming response bodies line-by-line (including pull
+   progress events). <code>build_chat_payload()</code> assembles
+   the request body from CLI args + session history.</li>
+<li><strong><code>tools.py</code></strong> — the tool harness: <code>ToolSpec</code>/<code>default_registry()</code> (shell,
+   python, files — read/write/list plus <code>edit_file</code> and the
+   <code>make_dir</code>/<code>move_file</code>/<code>copy_file</code>/<code>delete_file</code> chores — <code>web_search</code>
+   when <code>ddgs</code> is installed, <code>fetch_url</code>, <code>search_sessions</code>, <code>list_models</code>,
+   <code>system_status</code>, <code>context_status</code>/<code>session_info</code>, tts-remote
+   speak/list_voices, and the chemInventoryAPI
+   lookup tools when that CLI is present), the allowlist policy
+   (<code>shell_safety</code>, <code>python_safety</code>, <code>approval_decision</code>), the approval-rule
+   engine (<code>ToolRule</code>, <code>suggest_rules</code>, <code>rule_matches</code>, <code>dangerous_command</code>),
+   argument normalization, output truncation and <code>execute_tool()</code>. The tool
+   <em>declarations</em> load from the definition files — one JSON per tool under
+   <code>defs/tools/</code> (<code>ToolDefinition</code>, <code>load_tool_definitions()</code>; <code>HANDLERS</code>
+   maps the JSON's <code>handler</code> name onto the function, <code>requires</code> gates a tool
+   on a capability, <code>tool_aliases()</code> is built from the <code>aliases</code> lists so
+   invented names like <code>search</code>/<code>curl</code> resolve onto the real tools, and
+   <code>resolve_tool_alias()</code> strips a call-id prefix (<code>call_fetch_url</code>) and
+   retries on a miss; bad files
+   warn and are skipped). <code>ToolSpec</code> keeps each definition's <code>requires</code> and
+   <code>aliases</code> (<code>REQUIREMENT_HINTS</code> words them for the help pages).
+   <code>ToolHandlerResult(text, artifact_paths)</code> is the optional structured
+   handler return: <code>execute_tool()</code> registers regular files through
+   <code>ToolContext.artifacts</code> (the turn-bound <code>TurnArtifacts</code> publisher the
+   serve API injects) and attaches the refs to the <code>ToolOutcome</code>; plain
+   strings still work for every handler that produces no files.
+   <code>ToolContext</code> carries the runtime seams the REPL
+   injects: <code>client</code>/<code>store</code> (list_models, system_status, search_sessions),
+   <code>ssh_target</code>/<code>ssh_user</code> for remote probes, <code>chem_inventory</code> (the CLI
+   path override), <code>artifacts</code> (the serve publisher),
+   <code>context_report</code>/<code>session_report</code> (the plain dicts
+   Repl.context_report()/session_report() assemble for the awareness tools)
+   and <code>workspace</code> (the API path jail: when set, path arguments and the
+   <code>run_shell</code>/<code>run_python</code> working directories resolve under it and
+   resolved escapes including symlinks are refused; the CLI leaves it
+   unset).
+   The web half
+   is self-contained: <code>_HTMLTextExtractor</code>/<code>extract_html_text</code> turn pages into
+   readable text plus links, <code>extract_pdf_text</code> uses pypdf or pdftotext,
+   <code>format_fetch_response</code> maps a response onto model-readable text (never the
+   site's error page), <code>run_web_search</code> wraps ddgs. The speech half speaks
+   through <code>run_tts_say()</code> (an older
+   <code>tts-remote</code> without <code>--json</code> is retried without it) and turns the
+   <code>say --json</code> plan into the shared <code>title_note</code> via <code>speech_hosts()</code>.
+   The agent loop that
+   calls into it lives in <code>runtime.py</code> (approve → execute → append a
+   <code>role: tool</code> message → ask the model again), auto-speak lives in
+   <code>Repl.speak_text</code>, and rendering of calls/results is <code>renderer.py</code>.
+   <code>ToolContext.cancel</code> reaches every subprocess-backed tool (shell,
+   python, the ssh probes, chemInventoryAPI, tts-remote, trash-put)
+   through <code>helpers.run_cancellable()</code>, and <code>ToolRunner</code> abandons network
+   tools (<code>fetch_url</code>, <code>web_search</code>) on cancel so the result is discarded
+   instead of waited on.</li>
+<li><strong><code>prompts.py</code></strong> — the prompt files: <code>load_prompt()</code> (override layer first,
+   shipped default after, cached per process; missing/unreadable warns and
+   reads as None), <code>default_system_prompt()</code> (composes <code>system.md</code> +
+   <code>system_tools.md</code> when tools are on), <code>title_prompt()</code>/<code>summarize_prompt()</code>
+   (both expand <code>{{content}}</code>) and <code>render_prompt()</code>. Defaults live in
+   <code>defs/prompts/</code>.</li>
+<li><strong><code>events.py</code></strong> — the runtime event vocabulary: <code>RuntimeEvent</code> plus
+   the <code>turn.*</code>/<code>message.*</code>/<code>tool.*</code>/<code>approval.*</code> type constants,
+   <code>artifact.created</code> and <code>session.fit</code>, and <code>TERMINAL_EVENTS</code>. A leaf
+   module (no imports from the package) shared
+   by <code>renderer.py</code>, <code>runtime.py</code> and the HTTP layer; envelopes, sequence
+   numbers and replay are added on top of the same types, so nothing
+   here depends on transport.</li>
+<li><strong><code>session.py</code></strong> — <code>Session</code> (in-memory conversation model: messages,
+   model, system prompt, options; <code>artifacts</code> accumulates the refs the
+   conversation saw, <code>add_artifacts()</code> dedupes by id) and <code>SessionStore</code>
+   (atomic read/write of the JSON files + <code>index.json</code>, list/search/export/delete; its index
+   read-modify-write runs under a shared <code>RLock</code> plus an exclusive <code>flock</code>
+   on <code>&lt;index&gt;.lock</code> (so a CLI saving while serve runs cannot lose entries)
+   and its temp files are named per writer.
+   <code>export_markdown</code>/<code>export_json</code>/<code>export_html</code> are the three export
+   formats.</li>
+<li><strong><code>emit.py</code></strong> — <code>emit()</code> plus the <code>cli_list</code>/<code>cli_search</code>/<code>cli_show</code>/
+   <code>cli_export</code>/<code>cli_delete</code> functions that implement the non-interactive
+   inspection flags.</li>
+<li><strong><code>ui.py</code></strong> — the front-end seam: <code>Ui</code> (the interactive hooks <code>repl.py</code>
+   and <code>interactive.py</code> call: <code>ask</code>, <code>confirm</code>, <code>editor</code>, <code>approval</code>,
+   <code>notify</code>, and <code>interactive</code> — whether the front end can actually ask),
+   <code>ConsoleUi</code> (the inline implementation — the same rich prompts as
+   always, notifications are a no-op; <code>interactive</code> follows
+   <code>console.is_terminal</code>), the tool-approval choice list
+   (<code>approval_entries</code>/<code>approval_lines</code>) and the numbered typed prompt
+   <code>_prompt_approval</code> (moved here so the console prompt and the TUI modal are
+   built from one list), and the status-bar model (<code>StatusSnapshot</code>,
+   <code>format_status()</code>, <code>spinner_frame()</code>): plain data plus a pure formatter
+   (context text via <code>format_context</code>, tps + <code>tps_avg</code>), unit-testable
+   without a terminal.</li>
+<li><strong><code>interactive.py</code></strong> — <code>open_in_editor</code> (<code>$OLLAMA_EDITOR</code>),
+   <code>pick_model</code>/<code>pick_session</code> (fuzzy pickers; <code>ui=</code> routes the question to
+   the TUI front end), <code>model_context_length</code>
+   (reads context window from <code>/api/show</code>), and the missing-model flow:
+   <code>ensure_model()</code> (free-space line + y/N pull prompt, <code>--pull</code> skip,
+   picker on decline), <code>pull_with_progress()</code> and <code>disk_free_line()</code>.
+   Model-list sorting lives here too: <code>MODEL_SORT_KEYS</code>/<code>parse_model_sort</code>
+   (<code>modified</code>|<code>name</code>|<code>size</code>|<code>parameters</code>|<code>context</code>, plus aliases),
+   <code>model_parameter_count</code> (parses <code>details.parameter_size</code>, MoE totals
+   included), <code>sort_models</code>/<code>model_table</code> (shared by the picker and
+   <code>/model --list</code>) and <code>fetch_context_lengths</code>/<code>cached_context_length</code>
+   (one <code>/api/show</code> per uncached model, in parallel behind a status line,
+   cached per host); <code>pick_model</code> takes <code>sort=</code>/<code>on_sort=</code> and its prompt
+   accepts <code>--sort KEY</code>/<code>-s KEY</code>/<code>sort KEY</code> to re-order the table in place.
+   Also
+   the GPU-layer spec logic: <code>model_block_count()</code>,
+   <code>parse_gpu_layers_spec()</code>, <code>resolve_gpu_layers()</code>, <code>gpu_layers_label()</code>.</li>
+<li><strong><code>ctxfit.py</code></strong> — the context fits behind <code>/num-ctx --max-gpu</code> and
+   <code>/num-ctx --max-cpu N</code>: <code>kv_bytes_per_token()</code> (llama.cpp's KV formula
+   applied to <code>/api/show</code>'s GGUF metadata, per-layer <code>head_count_kv</code> arrays
+   included), <code>machine_state_for()</code>/<code>probe_machine_gpu()</code> (free VRAM plus
+   the ollama unit env) and <code>machine_ram_for()</code>/<code>probe_machine_ram()</code>
+   (available DRAM from /proc/meminfo), locally or over one ssh probe each;
+   <code>estimate_max_gpu_ctx()</code> (weights from <code>/api/tags</code>, llama.cpp's fit
+   margin, resident models' <code>/api/ps</code> VRAM credited back, pinned
+   <code>/gpu-layers</code>); <code>estimate_max_cpu_ctx()</code> (the budget is MemAvailable plus
+   the resident model's own host RAM -- a reload returns it -- and the
+   host footprint is the weights plus per-token KV of the layers llama.cpp's
+   fit leaves on the CPU, <code>max_cpu_overhead_mb</code> reserved); the
+   <code>/api/ps</code>-verified <code>probe_max_gpu_ctx()</code>/<code>probe_max_cpu_ctx()</code> that solve
+   each next candidate from the measured affine footprint line instead of
+   bisecting, plus <code>ModelProfile</code>/<code>model_profile()</code> (the
+   parameters/quantization cross-check, per-layer KV geometry with sliding
+   windows and MLA, <code>ssm.*</code>/shortconv recurrent state and the
+   embedding/output/block weight split behind every estimate) and
+   <code>CtxCalibrationStore</code> (bounded, host/model/placement-scoped measured
+   samples that calibrate later estimates and seed probe search;
+   stale/incompatible data falls back to the profile)
+   (<code>FitRequest</code>/<code>GpuFit</code>/<code>CpuFit</code>/<code>ProbeResult</code>), the rich reports and
+   <code>max_gpu_context()</code>/<code>max_cpu_context()</code>, which the REPL
+   command and the CLI <code>--num-ctx max-gpu</code> / <code>--num-ctx --max-cpu N</code> flags
+   both call. The probes themselves live in <code>helpers.py</code> (<code>local_gpu_probe</code>,
+   <code>ssh_gpu_probe</code>, <code>local_ram_probe</code>, <code>ssh_ram_probe</code>, <code>host_is_self</code>).</li>
+<li><strong><code>runtime.py</code></strong> — the agent turn runtime: <code>AgentRuntime</code> (the loop
+   and tool execution that used to live in <code>Repl._generate</code>/
+   <code>Repl._execute_tool_calls</code>), <code>TurnSettings</code>, <code>TurnHooks</code> (the host
+   seam: payload builder, presenter, approver, event sink, boundary
+   drain), <code>ApprovalRequest</code>/<code>ApprovalDecision</code>, <code>TurnResult</code>, and the
+   shared <code>build_payload()</code>/<code>context_report()</code>/<code>session_report()</code>
+   helpers. It never prints and never touches a terminal; the CLI
+   supplies a <code>rich</code> presenter and keeps thin wrappers with the old
+   signatures, while <code>HeadlessRenderer</code> + an event sink drive it with no
+   terminal at all. The runtime owns the tool-support capability check
+   (once per model, after <code>turn.started</code>, warned as a <code>turn.warning</code>), and
+   <code>quiet_tools</code> is read live so <code>/render raw</code> mid-turn takes effect. Tool
+   artifacts: the runtime emits one <code>artifact.created</code> per ref between the
+   approval decision and <code>tool.result</code> (which references the ids), stores
+   the refs on the tool session message and accumulates them onto
+   <code>TurnResult.artifacts</code>.</li>
+<li><strong><code>turns.py</code></strong> — the turn manager: <code>TurnEvent</code> envelopes (turn id,
+   1-based <code>seq</code>, ISO timestamp, deterministic <code>id</code>), <code>TurnManager</code>
+   (a worker thread per turn, one active turn per session, a global
+   cap, per-turn buffers, replay with <code>stream.gap</code>, TTL retention swept
+   on every entry point (<code>subscribe()</code> included), cancellation,
+   <code>begin_shutdown()</code> (refuse new submissions before the ordered
+   cancel/join), shutdown, and synthesized error terminals that carry the
+   stable <code>INTERNAL_ERROR_MESSAGE</code> while the raw crash text goes to the
+   <code>--debug</code> log and stays on the internal <code>TurnResult</code>),
+   <code>TurnHandle</code>/<code>Subscription</code>/
+   <code>TurnSnapshot</code>, and the typed errors (<code>SessionBusy</code>/<code>TooManyTurns</code>/
+   <code>UnknownTurn</code>/<code>TurnExpired</code>) the HTTP layer maps to 409/429/404/410.
+   It imports no front end: a host closure runs the runtime and
+   returns a <code>TurnResult</code>; <code>wait()</code> joins a worker for tests and
+   shutdown, and a subscriber that falls behind is closed, never
+   stalling the turn.</li>
+<li><strong><code>repl.py</code></strong> — <code>SlashCompleter</code>/<code>completion_candidates</code> (completion for
+   <code>/commands</code>, session ids, models, <code>@files</code>, shared with the TUI input),
+   the <code>Repl</code> class (the CLI adapter over <code>runtime.AgentRuntime</code>:
+   <code>_generate</code> and <code>_execute_tool_calls</code> are thin wrappers that build the
+   per-turn <code>TurnHooks</code> and render its events, <code>_approve_tool_call</code> is the
+   policy + prompt approver, and the <code>MessageQueue</code>/<code>CancelToken</code>
+   machinery is unchanged). <code>headless</code> + <code>event_sink</code> make the same
+   object drivable with no terminal. <code>_payload()</code> is the one chat-
+   request builder: it prepends the effective system prompt as a leading
+   <code>role: system</code> message — <code>Repl.effective_system()</code> returns the session's
+   text when set, the built-in default otherwise, None when disabled (empty
+   string) — deliberately <em>not</em> stored in <code>session.messages</code>, so <code>/system</code>
+   changes land on the next request and exports keep the history clean.
+   <code>Repl.context_length()</code> is the one effective-window resolver behind the
+   footer/status-bar ctx counter, <code>/context</code> and the 80%/85% warnings: a
+   session <code>num_ctx</code> first, then the loaded runner's <code>/api/ps</code>
+   <code>context_length</code>, then <code>/api/show</code>'s model default; a show-only answer
+   stays provisional until <code>/api/ps</code> reports the runner. <code>model_show()</code> is
+   the run-long <code>/api/show</code> cache the length/block-count/awareness readers
+   share, and <code>context_report()</code>/<code>session_report()</code> assemble the plain
+   dicts the <code>context_status</code>/<code>session_info</code> tools format (window + usage,
+   identity + settings + tool round).
+   <code>/system</code> semantics live in <code>_apply_system</code> (<code>clear</code>/<code>default</code> → built-in,
+   <code>off</code> → disabled, text → custom) plus <code>_show_system</code>, shared with
+   <code>/set system</code>. Then the <code>cmd_*</code> functions.
+   The numbered tool-approval prompt itself and the entry list it is built
+   from (<code>approval_entries</code>/<code>_prompt_approval</code>, storing generalized
+   <code>ToolRule</code>s in the session) now live in <code>ui.py</code>, re-exported here so
+   <code>_prompt_approval</code> keeps resolving from this module. Each slash command
+   (<code>/model</code>/<code>/models</code>, <code>/set</code>, <code>/show</code>, <code>/load</code>, <code>/save</code>, <code>/pull</code>,
+   <code>/num-ctx</code>, <code>/gpu-layers</code>, <code>/params</code>, <code>/tools</code>, <code>/tts</code>, <code>/think</code>,
+   <code>/thinking</code>, <code>/system</code>, <code>/undo</code>, <code>/retry</code>, <code>/edit</code>, <code>/branch</code>,
+   <code>/context</code>, <code>/summarize</code>, <code>/image</code>, <code>/render</code>, <code>/math</code>, <code>/pager</code>,
+   <code>/tps</code>, <code>/copy</code>, <code>/export</code>, <code>/stats</code>, <code>/queue</code>, ...) is a standalone
+   <code>cmd_NAME(repl, argument)</code> function dispatched by name through
+   <code>COMMAND_HANDLERS</code>; <code>COMMAND_INFO</code> is the authoritative description table
+   (the REPL <code>/help</code>, the README's command table and the <code>cli.py</code> epilog all
+   mirror it). Add a new slash command by adding one function here and
+   wiring it into <code>COMMAND_INFO</code>/<code>COMMAND_HANDLERS</code> (and the hand-maintained
+   <code>build_parser()</code> epilog in <code>cli.py</code>).
+   <code>/tools</code> takes a tool name (or alias) as its first token for per-tool
+   control — <code>NAME on|off|help|call ARGS</code>: <code>_find_tool</code> resolves aliases and
+   falls back to <code>tool_definitions()</code> so an uninstalled tool still gets a
+   page, <code>_print_tool_help</code> renders state/description/parameters/approval
+   from the definition JSON, and <code>_cmd_tools_call</code> runs the tool through the
+   normal approval gate without touching the conversation.
+   <code>completion_candidates</code>/<code>_tools_completion</code> Tab-complete the whole
+   command (subcommands, names and aliases, per-tool actions, policy modes,
+   rule kinds) in both front ends.
+   <code>ps_table()</code>/<code>resolve_num_ctx()</code> also live here since <code>cmd_ps</code>/
+   <code>cmd_num_ctx</code> are their only callers (<code>resolve_num_ctx</code> is reused by
+   <code>main()</code> in <code>cli.py</code> for <code>--num-ctx</code>). <code>ApprovalPicker</code> and its runners are
+   re-exported from <code>ui.py</code> for compatibility.</li>
+<li><strong><code>tui.py</code></strong> — the optional Textual front end (<code>--ui tui</code>), deprecated:
+   it will be rewritten as a pure <code>ollamarun serve</code> API client instead of
+   reaching into the runtime in-process. Current code: the app
+   (transcript pane / rule / status bar / always-on <code>PromptInput</code>),
+   <code>TuiStreamSink</code> (the <code>StreamSink</code> that paints the streaming answer),
+   <code>TranscriptWriter</code> (a file-like sink capturing everything printed through
+   the shared <code>console</code> into the transcript), the modal screens (confirm,
+   ask, and tool approval offering the same numbered choices as the console
+   prompt) and <code>TuiUi</code> (the <code>Ui</code> implementation <code>repl.py</code> talks to). Turns and commands run in thread
+   workers that marshal widget updates back with <code>call_from_thread</code>;
+   <code>run_tui()</code> is the entry point. Textual is optional — <code>cli.py</code>'s
+   <code>wants_tui()</code> checks it and falls back to the inline REPL with a note.</li>
+<li><strong><code>run.py</code></strong> — <code>run_once()</code> (non-REPL path, built on an
+   already-constructed <code>Repl</code>; its <code>--json</code> branch runs the tool loop
+   through <code>AgentRuntime</code> directly) and <code>run_embed()</code> (routes
+   embedding-capable models to <code>/api/embed</code> instead of chat).</li>
+<li><strong><code>server.py</code></strong> — the generic HTTP plumbing behind <code>ollamarun serve</code>:
+   <code>Router</code> (method + <code>{param}</code> path patterns, with distinct 404/405),
+   the <code>Request</code>/<code>Response</code>/<code>StreamResponse</code> model, <code>HttpServer</code> (a
+   <code>ThreadingHTTPServer</code> wrapper with a body cap checked before the body
+   is read — <code>Content-Length</code> and chunked alike, the chunked decoder
+   enforcing the cumulative decoded cap before each chunk and rejecting
+   ambiguous or malformed framing — socket timeouts, daemon handler
+   threads and a bounded <code>drain()</code> over its tracked in-flight handlers)
+   and <code>SseWriter</code>
+   (one HTTP chunk per event, flushed; a <code>: ping</code> heartbeat from a
+   companion thread; a failed write marks the stream broken exactly once
+   and fires the response's <code>on_disconnect</code>). <code>ApiError</code> renders as the
+   sanitized <code>{"error": {...}}</code> envelope; any other exception is a bare
+   500 and its traceback goes only to the <code>--debug</code> log.
+   <code>run_forever()</code> serves on a worker thread with SIGINT/SIGTERM mapped
+   to a clean <code>shutdown()</code>. It knows nothing about OpenAI or Ollama.</li>
+<li><strong><code>artifacts.py</code></strong> — the artifact subsystem behind the serve API's
+   files/artifacts endpoints and the <code>file</code> content parts: <code>ArtifactStore</code>
+   (immutable snapshots behind opaque <code>art_…</code> ids; <code>register()</code> reserves
+   quota in the index under the <code>SessionStore</code> lock pattern — RLock +
+   <code>flock</code> — publishes with a temp file + <code>os.replace</code>, writes one
+   authoritative manifest per artifact under <code>meta/</code>, and <code>sweep()</code>s TTL
+   expiries, stale reservations and debris at startup and, rate-limited,
+   on registration; every index/manifest path read back must resolve
+   inside the store root) and <code>ArtifactRef</code> (the public record: id, media type,
+   sanitized display filename, size, sha256, source, turn/session
+   provenance, created_at and the relative <code>url</code>; <code>TurnArtifacts</code> is the
+   turn-bound publisher tools receive through <code>ToolContext.artifacts</code>).
+   The shared content layer lives here too: <code>resolve_content_parts()</code>
+   maps <code>text</code>/<code>image_url</code>/<code>file</code> parts for both API surfaces (text
+   inlining bounded by <code>INLINE_TEXT_BYTES</code>, <code>TEXTUAL_MEDIA_TYPES</code> as the
+   deterministic text rule, binary parts described but never faked,
+   missing ids a structured 404), charging every part/image/text byte to
+   an optional <code>InputBudget</code> (<code>InputLimits</code>/<code>input_limits</code>, the aggregate
+   <code>serve_max_*</code> caps: message/part counts, message and total text bytes,
+   image counts and cumulative decoded image bytes), <code>fetch_remote_media()</code>
+   is the one bounded http(s) fetch (redirects, timeouts, size cap) and
+   <code>require_vision()</code> the one image capability check. It raises
+   <code>server.ApiError</code> directly — it exists for the HTTP layer. Imports
+   <code>constants</code>, <code>helpers</code>, <code>server</code>.</li>
+<li><strong><code>fits.py</code></strong> — the context-fit jobs behind the native API's fit
+   surface: <code>FitService</code> (a worker thread per job; queued → running →
+   completed/failed/cancelled; per-session exclusivity, a global
+   <code>max_active_fits</code> cap, cancel via the job's token, TTL sweeping of
+   terminal jobs and an idempotent shutdown that cancels and joins) and
+   <code>FitJob</code>/<code>fit_body</code> (the HTTP shape) plus <code>FitBusy</code>/<code>TooManyFits</code>/
+   <code>FitsClosed</code>. Jobs run one <code>ctxfit.fit_context()</code> and report progress
+   through the request's <code>on_progress</code>; the optional session write is the
+   API's <code>on_success</code> hook, so this module never touches the store.</li>
+<li><strong><code>openai_api.py</code></strong> — the OpenAI-compatible <code>/v1</code> surface
+   (<code>build_router()</code> registers <code>GET /v1/models</code>, <code>GET /v1/models/{id}</code>,
+   <code>POST /v1/embeddings</code>, <code>POST /v1/chat/completions</code>). Model turns only:
+   <code>parse_chat_request()</code> validates the OpenAI schema (explicit 400s for
+   unknown fields, <code>n</code> outside 1..8 or non-integer, <code>logprobs</code>,
+   <code>logit_bias</code>, <code>audio</code>, non-text modalities,
+   <code>tool_choice: "required"</code>), converts messages verbatim (assistant
+   <code>tool_calls</code>, <code>role: tool</code> + <code>tool_call_id</code>→<code>tool_name</code> history,
+   data-URI images) and <code>ollama_payload()</code> builds the <code>/api/chat</code> call; an
+   <code>n &gt; 1</code> request emulates the fan-out as <code>n</code> sequential generations
+   (indexed choices, summed usage, per-choice streaming indexes, capped at
+   <code>MAX_N = 8</code>), and <code>parallel_tool_calls: false</code> is honored by truncating
+   to the first returned call. <code>parse_embeddings_request()</code>/
+   <code>embeddings_body()</code> map <code>POST /v1/embeddings</code> onto <code>/api/embed</code> (string
+   or string-array inputs, float/base64 encodings, <code>dimensions</code> forwarded,
+   an <code>embedding</code> capability gate). Client <code>tools</code> pass through and never
+   execute (the agent loop, tools registry and sessions are not reachable
+   from this module).
+   <code>completion_body()</code>/<code>_stream_completion()</code>/<code>stream_chunk()</code> shape the
+   OpenAI response and SSE (role chunk, deltas, thinking as
+   <code>delta.reasoning_content</code>, the tool calls as one indexed array chunk,
+   finish reason, optional usage chunk, <code>[DONE]</code>); <code>OpenAIApi</code> keeps
+   single-flight model-list/capability caches and builds one <code>OllamaClient</code>
+   per request so a disconnecting client cancels only its own stream. The
+   <code>system</code> extension (<code>"auto"</code> = built-in default, text = replace) is
+   off unless asked. <code>translate_error()</code>/<code>stream_backend_error()</code> map
+   upstream failures onto sanitized 404/502 envelopes with stable messages
+   (raw backend detail goes to the <code>--debug</code> log).</li>
+<li><strong><code>agent_api.py</code></strong> — the native agent endpoints
+   (<code>build_agent_api()</code> constructs the one <code>AgentApi</code>;
+   <code>add_artifact_routes()</code> registers the shared <code>POST /v1/files</code> and
+   <code>GET /v1/artifacts/*</code> routes — kept even when <code>serve_agent</code> disables
+   the agent surface — and <code>add_agent_routes()</code> registers
+   <code>POST /v1/agent/turns</code>,
+   <code>GET /v1/agent/turns/{id}</code> and <code>.../events</code>, <code>POST .../cancel</code>,
+   <code>POST /v1/agent/approvals/{id}</code>, the <code>/v1/sessions</code> routes and the
+   fit routes (<code>POST /v1/agent/fit</code>, <code>POST /v1/agent/fits</code>,
+   <code>GET /v1/agent/fits/{id}</code>, <code>POST /v1/agent/fits/{id}/cancel</code>).
+   <code>parse_agent_turn()</code> validates the turn body (new-session seed vs
+   existing-session delta; <code>settings.tools</code>/<code>max_rounds</code>/<code>approval</code>/
+   <code>system</code>/<code>parameters</code>/<code>cancel_on_disconnect</code>). Each turn builds a
+   headless <code>Repl</code> (its <code>cancel_token</code> and <code>tool_ctx.cancel</code> rewired to the
+   turn's token) and runs <code>AgentRuntime</code> through <code>TurnManager</code> with the
+   runtime's own tool execution, so the API approver and event sink apply
+   to every round. The approver composes <code>tools.policy_check</code> (shared with
+   the CLI), parks genuinely undecided calls in <code>waiting_approval</code>
+   (<code>PendingApproval</code> + <code>approval.required</code> carrying its <code>approval_id</code>;
+   the first decision wins, a timeout denies, cancellation resolves it as
+   cancelled), and the serve tool policy is never <code>auto</code>. The events
+   endpoint speaks the typed <code>TurnEvent</code> stream (<code>id: &lt;turn&gt;:&lt;seq&gt;</code>,
+   <code>?after=</code>/<code>Last-Event-ID</code> replay, <code>stream.gap</code> passthrough) and treats a
+   disconnect as an unsubscribe unless <code>cancel_on_disconnect</code>; the status
+   endpoint distinguishes 404 from 410 through <code>TurnManager.expired()</code>;
+   session routes go through the store and refuse edits to a session with
+   an active turn (409 <code>session_busy</code>, same as delete);
+   <code>serve_turn_timeout</code> is a watchdog that cancels with reason <code>timeout</code>.
+   The context warning/auto-compaction step runs headlessly at turn start
+   through the runtime's <code>on_started</code> hook. Context control:
+   <code>PATCH</code>/turn settings take <code>num_ctx</code>/<code>gpu_layers</code> (strictly validated;
+   a placement change unloads the resident model) and a validated
+   <code>parameters</code> merge (<code>validate_settings_parameters</code>: known Ollama
+   options type/range checked, unknown names passed through bounded),
+   <code>settings.num_ctx: "max-gpu"|"max-cpu"</code> estimates at turn start
+   (estimate only) and rides the typed <code>session.fit</code> event plus
+   <code>result.fit</code>, <code>POST /v1/agent/fit</code> serves the synchronous estimate with
+   an optional <code>apply</code>, and <code>POST /v1/agent/fits</code> parks a probe job in
+   <code>fits.py</code>. <code>serve_fit</code> gates off/estimate/probe; a fitting session is
+   held by <code>_fit_guard</code> (409 <code>session_busy</code> with <code>active_fit_id</code>, checked
+   alongside active turns by every session route and turn submit).</li>
+<li><strong><code>cli.py</code></strong> — <code>build_parser()</code> (the full argparse surface, mirroring
+   every <code>ollama run</code> flag), <code>resolve_model</code>/<code>resolve_session</code> (figuring out
+   what model/session a given invocation means, including the <code>-c</code>/<code>-r</code>/
+   <code>--session</code> disambiguation in <code>normalize_argv</code>), <code>ui_mode()</code>/<code>wants_tui()</code>
+   (which front end to start), <code>build_serve_parser()</code>/<code>serve_main()</code> (the
+   <code>ollamarun serve</code> subcommand: upstream resolution, <code>serve_settings()</code>
+   validation, banner, the combined OpenAI + agent router gated by
+   <code>serve_agent</code>, and the ordered shutdown — refuse new work, cancel/join,
+   drain handlers within <code>serve_shutdown_timeout</code>, then unload the tracked
+   models unless <code>--keep-loaded</code>) and
+   <code>main()</code> as the entry point (called by the top-level <code>ollamarun</code> script),
+   which dispatches <code>serve</code> before the normal parser.</li>
+</ol>
+<p>Model housekeeping (unload-before-switch, unload-on-exit, embedding models
+always resident) is cross-cutting logic that lives in the REPL commands
+(<code>cmd_model</code>, <code>cmd_load</code>, both in <code>repl.py</code>) and <code>main()</code>'s exit path
+(<code>cli.py</code>), coordinated through <code>/api/ps</code> lookups in <code>OllamaClient</code> — not a
+separate module. The model picker those commands (and a model-less
+<code>ollamarun</code> run) open is ordered by the session's <code>model_sort</code>, seeded from
+<code>--sort</code> and updated whenever a sort is chosen at the prompt.</p>
+<p>Cross-module imports follow the numbering above (a module only imports from
+one earlier in the list, plus <code>constants.py</code>/<code>helpers.py</code>/<code>events.py</code> from
+anywhere) — keep new code on that side of the dependency graph rather than
+reaching "backwards" (e.g. don't import from <code>repl.py</code> inside
+<code>renderer.py</code>); use <code>typing.TYPE_CHECKING</code> for a backwards-pointing type
+hint only, the way <code>renderer.py</code> does for <code>Session</code> (defined later, in
+<code>session.py</code>).</p>
+<p>See <a href="../development/">Development</a> for where to change what and the test suite.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href=".." class="md-footer__link md-footer__link--prev" aria-label="Previous: Home">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Home
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../development/" class="md-footer__link md-footer__link--next" aria-label="Next: Development">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Development
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.tracking", "navigation.top", "navigation.footer", "content.action.edit", "content.action.view", "content.code.copy", "search.suggest", "search.highlight", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
