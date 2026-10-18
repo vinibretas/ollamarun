@@ -2477,9 +2477,9 @@ def test_run_once_json() -> int:
         session = orun.Session.create("m1", client.base)
         repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store, session)
         session.add_message("user", "hi")
-        with orun.console.capture() as cap:
+        with contextlib.redirect_stdout(io.StringIO()) as out:
             code = _run_once_json(args, client, store, session, repl)
-        printed = _plain(cap.get()).strip()
+        printed = out.getvalue().strip()
         failures = _check(failures, "the --json run exits 0 after the tool loop",
                           code == 0 and len(client.chat_once_payloads) == 2,
                           f"{code} {len(client.chat_once_payloads)}")

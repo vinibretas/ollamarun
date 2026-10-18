@@ -16,6 +16,7 @@ from rich.prompt import Confirm
 from rich.table import Table
 
 from .constants import console
+from .helpers import stdout_text
 from .renderer import render_transcript
 from .session import SessionStore, export_html, export_json, export_markdown
 
@@ -56,7 +57,7 @@ def emit(records: list[dict[str, Any]], title: str, args: argparse.Namespace,
         Path(args.out).write_text(text, encoding="utf-8")
         console.print(f"[ok]wrote[/ok] {args.out}")
     else:
-        console.print(text, markup=False, highlight=False)
+        stdout_text(text)
 
 
 def cli_list(args: argparse.Namespace, store: SessionStore) -> int:
@@ -90,7 +91,7 @@ def cli_show(args: argparse.Namespace, store: SessionStore, config: dict[str, An
         console.print(f"[err]no such session: {args.show}[/err]")
         return 1
     if args.json:
-        console.print(export_json(session), markup=False, highlight=False)
+        stdout_text(export_json(session))
         return 0
     render_transcript(session, console, pager=args.pager or config.get("pager", False))
     return 0
@@ -112,7 +113,7 @@ def cli_export(args: argparse.Namespace, store: SessionStore) -> int:
         Path(args.out).write_text(text, encoding="utf-8")
         console.print(f"[ok]wrote[/ok] {args.out}")
     else:
-        console.print(text, markup=False, highlight=False)
+        stdout_text(text)
     return 0
 
 

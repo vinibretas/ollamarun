@@ -17,6 +17,7 @@ from rich.table import Table
 from .client import OllamaClient, OllamaError
 from .constants import console
 from .files import expand_file_mentions
+from .helpers import stdout_text
 from .renderer import GenerationResult, stats_from_final, user_message_box
 from .repl import Repl
 from .runtime import AgentRuntime
@@ -34,7 +35,7 @@ def run_embed(client: OllamaClient, model: str, prompt: str, *,
         return 1
     embeddings = response.get("embeddings") or []
     if json_out:
-        console.print(json.dumps(response, indent=2), markup=False, highlight=False)
+        stdout_text(json.dumps(response, indent=2))
         return 0
     if not embeddings:
         console.print("[err]no embeddings returned[/err]")
@@ -80,7 +81,7 @@ def _run_once_json(args: argparse.Namespace, client: OllamaClient, store: Sessio
     if result.error:
         console.print(f"[err]{escape(str(result.error))}[/err]")
         return 1
-    console.print(json.dumps(final, indent=2), markup=False, highlight=False)
+    stdout_text(json.dumps(final, indent=2))
     return 0
 
 
