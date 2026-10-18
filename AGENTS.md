@@ -665,10 +665,13 @@ hint only, the way `renderer.py` does for `Session` (defined later, in
 - **Streaming/rendering UX**: `renderer.py` (the TUI consumes the same frames
   through `StreamSink`), and `ui.py`'s `StatusSnapshot`/`format_status()` when
   it shows up in the status bar.
-- **New docs page**: add `docs/NAME.md`, register it in `mkdocs.yml`'s `nav`
-  and assemble it from existing sources with `--8<--` snippet includes
-  (`README.md`, a marked `AGENTS.md` section, `plans/`) rather than copying
-  text; verify with `mkdocs build --strict`.
+- **New docs page**: place it under its surface — `docs/cli/`, `docs/api/`,
+  `docs/tui/`, `docs/web-ui/` — or the global `docs/getting-started/`/
+  `docs/config/`; register it in `mkdocs.yml`'s `nav` and assemble it from
+  existing sources with `--8<--` snippet includes (`README.md`, a marked
+  `AGENTS.md` section, `plans/`) rather than copying text. Command
+  collections stay on one reference page. Verify with `mkdocs build
+  --strict`.
 
 <!-- --8<-- [end:where-to-change] -->
 
