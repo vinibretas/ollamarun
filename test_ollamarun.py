@@ -757,6 +757,94 @@ def test_renderer_plain() -> int:
     return failures
 
 
+def test_stream_error_reporting() -> int:
+    """A mid-stream backend error is reported, not a TypeError crash (#38)."""
+    failures = 0
+
+    def check(name, condition, detail=""):
+        nonlocal failures
+        if condition:
+            print(f"PASS  {name}")
+        else:
+            print(f"FAIL  {name}: {detail}")
+            failures += 1
+
+    err_buffer = io.StringIO()
+    stderr_console = Console(file=err_buffer, width=100, stderr=True)
+    out_buffer = io.StringIO()
+    console = Console(file=out_buffer, width=100, force_terminal=False)
+    renderer_err = orun.renderer.err_console
+    repl_err = orun.repl.err_console
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "sessions",
+                                  index_path=Path(tmp) / "index.json")
+        try:
+            orun.renderer.err_console = stderr_console
+            raw = orun.Renderer(console, mode="raw")
+            with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                result = raw.stream(iter([{"message": {"content": "partial "}},
+                                          {"error": "mid-stream boom"}]))
+            check("raw mid-stream error reports on stderr",
+                  result.error == "mid-stream boom"
+                  and "ollama error" in _plain(err_buffer.getvalue())
+                  and "mid-stream boom" in err_buffer.getvalue(),
+                  f"{result.error!r} / {err_buffer.getvalue()!r}")
+            check("raw mode still writes the partial content to stdout",
+                  stdout.getvalue() == "partial \n", repr(stdout.getvalue()))
+
+            out_buffer.seek(0); out_buffer.truncate(0)
+            err_buffer.seek(0); err_buffer.truncate(0)
+            normal = orun.Renderer(console, mode="markdown", thinking_mode="hidden")
+            result = normal.stream(iter([{"error": "normal-mode boom"}]))
+            check("non-raw renderer leaves error reporting to the runtime event",
+                  result.error == "normal-mode boom"
+                  and not out_buffer.getvalue() and not err_buffer.getvalue(),
+                  f"{out_buffer.getvalue()!r} / {err_buffer.getvalue()!r}")
+
+            client = _FakeClient(chat_script=[[{"message": {"content": "partial "}},
+                                               {"error": "mid-stream boom"}]])
+            args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+            repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store,
+                             orun.Session.create("m1", client.base))
+            repl._build_prompt_session = lambda: None
+            with orun.console.capture() as cap:
+                result = repl._generate()
+            text = _plain(cap.get())
+            check("a full turn reports the mid-stream error exactly once",
+                  result.error == "mid-stream boom"
+                  and text.count("mid-stream boom") == 1,
+                  f"{result.error!r} / {text!r}")
+
+            orun.repl.err_console = stderr_console
+            client = _FakeClient(resident=["m1"], models=["m1"])
+
+            def exploding_unload(model):
+                raise orun.OllamaError("unload exploded")
+
+            client.unload = exploding_unload
+            args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+            repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store,
+                             orun.Session.create("m1", client.base))
+            repl._build_prompt_session = lambda: None
+
+            err_buffer.seek(0); err_buffer.truncate(0)
+            ok = repl.unload_model("m1", quiet=True)
+            check("quiet unload failure warns on stderr",
+                  ok is False and "could not unload" in _plain(err_buffer.getvalue())
+                  and "unload exploded" in err_buffer.getvalue(),
+                  f"{err_buffer.getvalue()!r}")
+
+            with orun.console.capture() as cap:
+                ok = repl.unload_model("m1", quiet=False)
+            check("loud unload failure warns on the console",
+                  ok is False and "could not unload" in _plain(cap.get()),
+                  cap.get())
+        finally:
+            orun.renderer.err_console = renderer_err
+            orun.repl.err_console = repl_err
+    return failures
+
+
 def test_thinking_display() -> int:
     failures = 0
 
@@ -7519,6 +7607,7 @@ if __name__ == "__main__":
              + test_session_payloads() + test_chat_payload()
              + test_tool_definitions() + test_prompts() + test_system_prompt()
              + test_normalize_argv() + test_renderer_plain()
+             + test_stream_error_reporting()
              + test_thinking_display() + test_math_layout()
              + test_render_content() + test_tps_estimator()
              + test_unload_housekeeping() + test_preload_model()

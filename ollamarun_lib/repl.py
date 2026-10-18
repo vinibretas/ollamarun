@@ -38,6 +38,7 @@ from .constants import (
     KeyBindings,
     PromptSession,
     console,
+    err_console,
     patch_stdout,
     pyperclip,
     tool_color,
@@ -643,8 +644,9 @@ class Repl:
                 return False
             self.client.unload(target)
         except OllamaError as exc:
-            console.print(f"[warn]could not unload {escape(target)}: "
-                          f"{escape(str(exc))}[/warn]", stderr=quiet)
+            (err_console if quiet else console).print(
+                f"[warn]could not unload {escape(target)}: "
+                f"{escape(str(exc))}[/warn]")
             return False
         if not quiet:
             console.print(f"[dim]unloaded {escape(target)}[/dim]")

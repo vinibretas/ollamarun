@@ -28,7 +28,7 @@ from rich.rule import Rule
 from rich.spinner import Spinner
 from rich.text import Text
 
-from .constants import CTRL_T, THINKING_MODES, tool_color
+from .constants import CTRL_T, THINKING_MODES, err_console, tool_color
 from .events import MESSAGE_DELTA, RuntimeEvent
 from .helpers import (CancelToken, diff_preview, format_context, human_chars,
                       human_duration, short_stamp)
@@ -568,9 +568,12 @@ class Renderer:
         if self.show_stats and result.stats and self.mode != "raw" \
                 and not self.use_pager:
             self.console.print(f"[dim]⏱  {format_stats(result.stats)}[/dim]")
-        if result.error:
-            self.console.print(f"[err]ollama error:[/err] {escape(result.error)}",
-                               stderr=self.mode == "raw" and sink is None)
+        if result.error and self.mode == "raw" and sink is None:
+            # Raw mode suppresses the runtime's `turn.error` console line
+            # (`quiet`) and writes the payload to stdout, so the error is
+            # reported here, on stderr. Every other mode is reported exactly
+            # once by that event line -- the way an immediate failure is.
+            err_console.print(f"[err]ollama error:[/err] {escape(result.error)}")
         return result
 
     def _pager_render(self, result: GenerationResult) -> None:
