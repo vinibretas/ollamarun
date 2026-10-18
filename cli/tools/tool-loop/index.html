@@ -794,6 +794,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The tool loop
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -810,6 +828,102 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#one-round-step-by-step" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One round, step by step
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-real-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A real loop
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-the-call-needs-approval" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When the call needs approval
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#failures-are-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Failures are results
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-model-actually-receives" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the model actually receives
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cancelling-a-turn" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cancelling a turn
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-next" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where next
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3486,91 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#one-round-step-by-step" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One round, step by step
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-real-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A real loop
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-the-call-needs-approval" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When the call needs approval
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#failures-are-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Failures are results
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-model-actually-receives" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the model actually receives
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cancelling-a-turn" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cancelling a turn
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-next" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where next
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3404,19 +3603,116 @@
 
 
 <h1 id="the-tool-loop">The tool loop<a class="headerlink" href="#the-tool-loop" title="Permanent link">&para;</a></h1>
-<p>Calls and results are kept in the session (so <code>/show</code>/<code>--show</code> replay them),
-a finished loop is separated from the committed answer by a centered
-<code>response</code> divider, and every call/result panel is colour-coded — one fixed
-colour per tool, a random palette colour (remembered for the run) for anything
-unmapped, with config <code>tool_colors</code> overrides. The result box wears the call's
-colour, prints ok/failed green/red in its title, and the <code>speak</code> tool's box
-names where the voice is generated and where it will be heard
-(<code>gpu-box → desk</code>, <code>(cached)</code> for a phrase served from disk).</p>
-<p>Invented tool names (<code>search</code>, <code>curl</code>, <code>mkdir</code>, ...) and call-id-prefixed ones
-(<code>call_fetch_url</code>) resolve onto the real tools through per-tool alias lists.</p>
-<p>The loop runs in rounds, bounded by config <code>tools_max_rounds</code> (default 8);
-approval rules decide what runs unattended — see
-<a href="../approvals/">Approvals and policy</a>.</p>
+<p>A turn with tools is a loop of <strong>rounds</strong>. Each round is one <code>/api/chat</code>
+request; between rounds the harness runs whatever the model asked for and
+feeds the results back.</p>
+<h2 id="one-round-step-by-step">One round, step by step<a class="headerlink" href="#one-round-step-by-step" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Request out.</strong> The payload carries the enabled tool schemas
+   (<code>build_chat_payload</code> in <code>client.py</code>), so the model can choose to call
+   one instead of answering.</li>
+<li><strong>Call in.</strong> When the reply contains <code>tool_calls</code>, each one is printed as
+   a coloured call panel with its arguments (pretty-printed JSON).</li>
+<li><strong>Decision.</strong> The call goes through the <a href="../approvals/">approval gate</a>:
+   auto, safe-listed, rule-covered, or asking you — a denied call is a
+   normal result, not an error.</li>
+<li><strong>Execution.</strong> The handler runs (<code>bash -lc</code> for <code>run_shell</code>, a short
+   Python program for <code>run_python</code>, direct file I/O for the file tools).</li>
+<li><strong>Result out.</strong> The result panel prints below the call panel, wearing the
+   same colour, with <code>ok</code>/<code>failed</code> and the duration in its title.</li>
+<li><strong>Next round.</strong> The call and its result are appended to the session as an
+   <code>assistant</code> message with <code>tool_calls</code> plus one <code>tool</code> message per result,
+   and the model is asked again — now with the results in context.</li>
+<li><strong>Done.</strong> A reply with no tool calls ends the turn. After a tool loop the
+   final answer is separated from the working rounds by a centered
+   <code>response</code> divider.</li>
+</ol>
+<p>Rounds are capped by <code>tools_max_rounds</code> (default 8). Past the cap the loop
+warns and appends <code>not executed: tool-call limit reached</code> results so the
+model still knows why nothing ran.</p>
+<h2 id="a-real-loop">A real loop<a class="headerlink" href="#a-real-loop" title="Permanent link">&para;</a></h2>
+<p>Here is a genuine (if over-eager) round — the model was told "say hello" and
+decided a shell command was the way to do it:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>llama3.2:3b ›
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>╭─ tool · run_shell ───────────────────────────────────────────────────────────╮
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>│ {                                                                            │
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>│   "command": "echo Hello!"                                                   │
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>│ }                                                                            │
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>╰──────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>running run_shell…
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>╭─ tool · run_shell · ok · 0.00s ──────────────────────────────────────────────╮
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>│ $ echo Hello!                                                                │
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>│ exit 0                                                                       │
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>│ Hello!                                                                       │
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>╰──────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>llama3.2:3b ›
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>How can I help you today?
+</code></pre></div>
+<p>Round 1 asked for <code>run_shell</code>; <code>echo</code> is on the safe list so it ran
+unattended; round 2 answered. The result panel tells the whole story: the
+command, its exit code and its output.</p>
+<h2 id="when-the-call-needs-approval">When the call needs approval<a class="headerlink" href="#when-the-call-needs-approval" title="Permanent link">&para;</a></h2>
+<p>This one modified state, so the harness stopped and asked (condensed):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>llama3.2:3b › Use write_file to write the text hello-from-the-model to /tmp/script-check.txt.
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>╭─ tool · write_file ─────────────────────────────────────────────────────────╮
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>│ { "append": false, "content": "hello-from-the-model",                        │
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>│   "path": "/tmp/script-check.txt" }                                          │
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>╰──────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>running write_file…
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>write_file needs confirmation: write_file modifies state
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>  1/y  run once
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>  2/a  always allow exactly this call
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>  3    always allow path: /tmp/script-check.txt (this session)
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>  4/A  auto-allow every later call  [CAREFUL]
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>  5/n  deny
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>choose (1): 1
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>╭─ tool · write_file · ok · 0.00s ─────────────────────────────────────────────╮
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>│ $ /tmp/script-check.txt (20 chars)                                           │
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>│ wrote 20 chars to /tmp/script-check.txt                                      │
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>╰──────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>llama3.2:3b ›
+<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a>The written text is indeed "hello-from-the-model" and its length is 20 characters.
+</code></pre></div>
+<p>The choices are numbered and typed; <code>y</code>/<code>a</code>/<code>A</code>/<code>n</code> are accepted as the
+letters for run / remember / auto / deny. Option 3 was a <strong>suggested
+generalized rule</strong> for that path, stored in the session. The gate is covered
+in <a href="../approvals/">Approvals and policy</a>.</p>
+<h2 id="failures-are-results">Failures are results<a class="headerlink" href="#failures-are-results" title="Permanent link">&para;</a></h2>
+<p>A tool failure does not break the turn — it becomes text the model reads.
+Here is an unattended one-shot trying to write a file without <code>-y</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>╭─ tool · write_file · failed ─────────────────────────────────────────────────╮
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>│ $ /tmp/unattended-demo.txt (5 chars)                                         │
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>│ tool not run: not auto-approved (write_file modifies state) and this run is  │
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>│ unattended                                                                   │
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>╰──────────────────────────────────────────────────────────────────────────────╯
+</code></pre></div>
+<p>The model now knows the write did not happen and can try something else,
+explain, or ask. With <code>-y</code> the same call runs (verified: the file is written
+and the answer says done).</p>
+<h2 id="what-the-model-actually-receives">What the model actually receives<a class="headerlink" href="#what-the-model-actually-receives" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Each result's text is what the handler produced — stdout and exit status
+  for <code>run_shell</code>, the program output for <code>run_python</code>, file content for
+  <code>read_file</code>.</li>
+<li><code>tools_max_output</code> (default 4000 chars) caps what goes back; a cut is
+  marked <code>…[truncated: N of M chars omitted]…</code>. The panel may show fewer
+  lines than the model got (<code>… N more lines (full output sent to the
+  model)</code>), so a long listing never floods your terminal.</li>
+<li><code>tools_timeout</code> (default 120 s) bounds a subprocess; a timeout is reported
+  like any other failure.</li>
+</ul>
+<h2 id="cancelling-a-turn">Cancelling a turn<a class="headerlink" href="#cancelling-a-turn" title="Permanent link">&para;</a></h2>
+<p>Ctrl+C stops the current turn. Subprocess-backed tools are killed by process
+group (through <code>run_cancellable()</code>), network tools are abandoned rather than
+waited on, and a destructive call that arrives after the stop is refused
+instead of run. Whatever completed before the cancel stays in the session.</p>
+<h2 id="where-next">Where next<a class="headerlink" href="#where-next" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../approvals/">Approvals and policy</a> — the decision table in full.</li>
+<li><a href="../reference/">Reference</a> — per-tool parameters and examples.</li>
+<li><a href="../../../api/agent/turns/">The API's version of this loop</a> — same runtime,
+  server-side, over SSE.</li>
+</ul>
 
 
 

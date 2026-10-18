@@ -3362,6 +3362,80 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-model-gets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the model gets
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-four-ways-a-call-is-handled" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The four ways a call is handled
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#seeing-the-state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Seeing the state
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-record" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The record
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-the-pieces-live" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where the pieces live
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3394,19 +3468,177 @@
 
 
 <h1 id="tools">Tools<a class="headerlink" href="#tools" title="Permanent link">&para;</a></h1>
-<p>With <code>--tools</code> (the default), the request carries the 23 built-in tool
-definitions (some capability-gated) and the model can call them through Ollama
-function calling.</p>
-<p>A few tools are wired to my own side projects: <code>speak</code>/<code>list_voices</code> drive
-<code>tts-remote</code> and the <code>chem_*</code> lookups go through <code>chemInventoryAPI</code>. They are
-capability-gated — they only appear when the CLI resolves — and mostly serve
-as examples of the extension mechanism: adding a tool (personal or general)
-is one JSON file under <code>ollamarun_lib/defs/tools/</code> plus a handler.</p>
+<p>With tools on — the default — every chat request carries the built-in tool
+definitions, and the model can call them through Ollama function calling. The
+harness is the difference between a chat that <em>says</em> it listed your files and
+one that actually did: calls are executed locally behind an approval gate,
+their results go back to the model as <code>tool</code> messages, and the loop repeats
+until the model answers without asking for anything else.</p>
 <ul>
-<li><a href="tool-loop/">The tool loop</a> — how calls, results and replay look.</li>
-<li><a href="reference/">Reference</a> — every built-in tool.</li>
-<li><a href="approvals/">Approvals and policy</a> — what runs unattended and what asks.</li>
-<li><a href="definitions/">Definitions</a> — the JSON format and per-user overrides.</li>
+<li><a href="tool-loop/">The tool loop</a> — what happens between a call and the answer.</li>
+<li><a href="approvals/">Approvals and policy</a> — the gate and its modes.</li>
+<li><a href="definitions/">Definitions</a> — the JSON the model sees, and how to change it.</li>
+<li><a href="reference/">Reference</a> — every tool with its parameters.</li>
+</ul>
+<h2 id="what-the-model-gets">What the model gets<a class="headerlink" href="#what-the-model-gets" title="Permanent link">&para;</a></h2>
+<p>The request carries one schema per <strong>enabled</strong> tool, built from the
+definition files: name, description and JSON-schema parameters. Which tools
+are offered depends on the host:</p>
+<table>
+<thead>
+<tr>
+<th>Condition</th>
+<th>Tools</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Always</td>
+<td><code>run_shell</code>, <code>run_python</code>, <code>read_file</code>, <code>write_file</code>, <code>edit_file</code>, <code>list_dir</code>, <code>make_dir</code>, <code>move_file</code>, <code>copy_file</code>, <code>delete_file</code>, <code>fetch_url</code>, <code>search_sessions</code>, <code>list_models</code>, <code>system_status</code>, <code>context_status</code>, <code>session_info</code></td>
+</tr>
+<tr>
+<td>The <code>ddgs</code> package resolves</td>
+<td><code>web_search</code></td>
+</tr>
+<tr>
+<td>A <code>tts-remote</code> CLI resolves</td>
+<td><code>speak</code>, <code>list_voices</code></td>
+</tr>
+<tr>
+<td>A <code>chemInventoryAPI</code> CLI resolves (config <code>chem_tools: true</code>)</td>
+<td><code>chem_search</code>, <code>chem_container</code>, <code>chem_locations</code></td>
+</tr>
+<tr>
+<td><code>ollamarun serve</code> runs an artifact store</td>
+<td><code>publish_artifact</code></td>
+</tr>
+</tbody>
+</table>
+<p>Each tool also has <strong>aliases</strong> for names models tend to invent — <code>/tools
+search off</code> disables <code>web_search</code>, and a call to <code>curl</code> or <code>mkdir</code> resolves
+onto the real tool before the registry is searched. <code>/tools NAME help</code> lists
+a tool's aliases.</p>
+<h2 id="the-four-ways-a-call-is-handled">The four ways a call is handled<a class="headerlink" href="#the-four-ways-a-call-is-handled" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Auto</strong> — read-only tools (<code>read_file</code>, <code>list_dir</code>, …) and the
+   <code>speak</code> tool never ask.</li>
+<li><strong>Safe list</strong> — allowlisted shell commands (<code>ls</code>, <code>cat</code>, <code>grep</code>, <code>rg</code>,
+   read-only git, …) and provably harmless Python run unattended.</li>
+<li><strong>Rules and remembered calls</strong> — a generalized rule or an exact remembered
+   call from this session runs without asking.</li>
+<li><strong>Ask</strong> — everything else asks in the REPL; in an unattended run it is
+   denied with a note, unless <code>-y/--yes</code> or <code>/tools policy auto</code> is in
+   effect.</li>
+</ol>
+<p>Details and the prompt itself: <a href="approvals/">Approvals and policy</a>.</p>
+<h2 id="seeing-the-state">Seeing the state<a class="headerlink" href="#seeing-the-state" title="Permanent link">&para;</a></h2>
+<p><code>/tools</code> is the dashboard — state, approval class and the policy line:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>llama3.2:3b › /tools
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>                          tools
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>╭─────────────────┬───────┬─────────────────────────────╮
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>│ tool            │ state │ approval                    │
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>├─────────────────┼───────┼─────────────────────────────┤
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>│ context_status  │ on    │ auto (read-only)            │
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>│ copy_file       │ on    │ rules, else asks            │
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>│ delete_file     │ on    │ rules, else asks            │
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>│ edit_file       │ on    │ rules, else asks            │
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>│ fetch_url       │ on    │ auto (read-only)            │
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>│ list_dir        │ on    │ auto (read-only)            │
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>│ list_models     │ on    │ auto (read-only)            │
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>│ make_dir        │ on    │ rules, else asks            │
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>│ move_file       │ on    │ rules, else asks            │
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>│ read_file       │ on    │ auto (read-only)            │
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>│ run_python      │ on    │ safe list, rules, else asks │
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>│ run_shell       │ on    │ safe list, rules, else asks │
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>│ search_sessions │ on    │ auto (read-only)            │
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>│ session_info    │ on    │ auto (read-only)            │
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>│ system_status   │ on    │ auto (read-only)            │
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>│ web_search      │ on    │ auto (read-only)            │
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>│ write_file      │ on    │ rules, else asks            │
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>╰─────────────────┴───────┴─────────────────────────────╯
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>policy allowlist · rules 0 (/tools rules) · max rounds 8 · timeout 120s · output cap 4000 chars
+</code></pre></div>
+<p>The same table appears whether the tools are gated by capability or disabled
+by you (<code>disabled</code>), and <code>/tools help</code> explains every form:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>╭──────────────────────────────┬──────────────────────────────────────────────────────╮
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>│ form                         │ what it does                                         │
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>├──────────────────────────────┼──────────────────────────────────────────────────────┤
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>│ (none) · list · status       │ table of tools with state and approval mode          │
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>│ on | off                     │ enable or disable the whole tool harness             │
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>│ policy auto|allowlist|ask    │ global approval policy                               │
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>│ enable NAME… | disable NAME… │ toggle several tools at once                         │
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>│ NAME on | off                │ toggle one tool, e.g. `/tools web_search off`        │
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>│ NAME help                    │ description, parameters (required/optional), aliases │
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>│ NAME call ARGS               │ run it yourself: call {"query": "x"} · call query=x  │
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>│ help [NAME]                  │ this reference, or one tool's page                   │
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>│ allow                        │ safe shell command allowlist                         │
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>│ rules [add|rm]               │ stored approval rules                                │
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>╰──────────────────────────────┴──────────────────────────────────────────────────────╯
+</code></pre></div>
+<h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tools</code></td>
+<td><code>true</code></td>
+<td>Offer tools at all.</td>
+</tr>
+<tr>
+<td><code>tools_policy</code></td>
+<td><code>allowlist</code></td>
+<td><code>allowlist</code>, <code>ask</code> or <code>auto</code> (see approvals).</td>
+</tr>
+<tr>
+<td><code>tools_shell_allow</code></td>
+<td><code>[]</code></td>
+<td>Extra commands for the shell allowlist.</td>
+</tr>
+<tr>
+<td><code>tools_timeout</code></td>
+<td>120</td>
+<td>Per-tool subprocess timeout, seconds.</td>
+</tr>
+<tr>
+<td><code>tools_max_output</code></td>
+<td>4000</td>
+<td>Chars of tool output that go back to the model.</td>
+</tr>
+<tr>
+<td><code>tools_max_rounds</code></td>
+<td>8</td>
+<td>Tool rounds per turn before the loop stops.</td>
+</tr>
+<tr>
+<td><code>tool_colors</code></td>
+<td><code>{}</code></td>
+<td>Per-tool panel colours, e.g. <code>{"run_shell": "green"}</code>.</td>
+</tr>
+</tbody>
+</table>
+<p><code>--tools</code>/<code>--no-tools</code> override for a run; <code>/tools on|off</code> for a session, and
+<code>/tools NAME on|off</code> per tool. Disabled tools are not sent to the model at
+all, so it does not waste a round calling something that cannot run.</p>
+<h2 id="the-record">The record<a class="headerlink" href="#the-record" title="Permanent link">&para;</a></h2>
+<p>Calls, results and approvals are stored on the session like any other
+message, so <code>--show</code> replays them the way they looked live, and exports
+include them. A tool loop that ends in an answer is separated from it by a
+centered <code>response</code> divider; a round that is still working keeps the plain
+rule.</p>
+<h2 id="where-the-pieces-live">Where the pieces live<a class="headerlink" href="#where-the-pieces-live" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Definitions</strong> (what the model sees): <code>ollamarun_lib/defs/tools/*.json</code>,
+  overridable per user — <a href="definitions/">Definitions</a>.</li>
+<li><strong>Approval policy</strong>: the allowlist, rules engine and <code>dangerous_command</code>
+  floor — <a href="approvals/">Approvals and policy</a>.</li>
+<li><strong>The loop</strong>: <code>runtime.py</code> drives rounds; <code>repl.py</code> renders them —
+  <a href="../../development/architecture/">Architecture</a>.</li>
 </ul>
 
 

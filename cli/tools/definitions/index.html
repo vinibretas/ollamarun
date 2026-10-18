@@ -850,6 +850,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Definitions
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -866,6 +884,91 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The format
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#capability-gates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Capability gates
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#aliases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Aliases
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#overrides" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overrides
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-truly-new-tool" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A truly new tool
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-sibling-prompts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The sibling: prompts
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3475,80 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The format
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#capability-gates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Capability gates
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#aliases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Aliases
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#overrides" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overrides
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-truly-new-tool" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A truly new tool
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-sibling-prompts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The sibling: prompts
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3404,23 +3581,173 @@
 
 
 <h1 id="tool-definitions">Tool definitions<a class="headerlink" href="#tool-definitions" title="Permanent link">&para;</a></h1>
-<p>The model-facing text lives in files, not code. Every tool is one JSON file
-under <code>ollamarun_lib/defs/tools/</code>, carrying:</p>
-<ul>
-<li><code>name</code>, the <code>description</code> and JSON-schema <code>parameters</code> the model sees;</li>
-<li><code>read_only</code> / <code>always_safe</code> safety flags (they feed the
-  <a href="../approvals/">approval policy</a>);</li>
-<li><code>requires</code> (<code>search</code> for <code>web_search</code>'s ddgs backend, <code>tts</code> for the speech
-  tools, <code>chem</code> for the inventory tools);</li>
-<li>the model-invented <code>aliases</code> that resolve onto it;</li>
-<li>the <code>handler</code> that runs it.</li>
-</ul>
-<p>A same-named file under <code>~/etc/config_files/ollamarun-defs/tools/</code> overrides
-the shipped one, so tool wording can be tuned without touching Python. Bad
-definition files warn and are skipped instead of breaking the harness.</p>
-<p>Adding a tool is one JSON file plus a handler — see
-<a href="../../../development/contributing/#where-to-change-what">Contributing</a>.
-Prompts are the other half of the model-facing text; see
+<p>What the model sees of a tool — its name, description and JSON-schema
+parameters — is data, not code. One JSON file per tool under
+<code>ollamarun_lib/defs/tools/</code>, and a same-named file in
+<code>~/etc/config_files/ollamarun-defs/tools/</code> overrides it.</p>
+<h2 id="the-format">The format<a class="headerlink" href="#the-format" title="Permanent link">&para;</a></h2>
+<p><code>read_file.json</code>, shipped verbatim:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p">{</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"read_file"</span><span class="p">,</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span><span class="nt">"description"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Read a text file (optionally a line range) from the local machine."</span><span class="p">,</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="nt">"parameters"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"object"</span><span class="p">,</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="nt">"properties"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">      </span><span class="nt">"path"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"string"</span><span class="p">,</span><span class="w"> </span><span class="nt">"description"</span><span class="p">:</span><span class="w"> </span><span class="s2">"file path"</span><span class="p">},</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">      </span><span class="nt">"offset"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"integer"</span><span class="p">,</span><span class="w"> </span><span class="nt">"description"</span><span class="p">:</span><span class="w"> </span><span class="s2">"first line (0-based)"</span><span class="p">},</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">      </span><span class="nt">"limit"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"integer"</span><span class="p">,</span><span class="w"> </span><span class="nt">"description"</span><span class="p">:</span><span class="w"> </span><span class="s2">"how many lines"</span><span class="p">}</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">    </span><span class="p">},</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">    </span><span class="nt">"required"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"path"</span><span class="p">]</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">  </span><span class="p">},</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">  </span><span class="nt">"handler"</span><span class="p">:</span><span class="w"> </span><span class="s2">"read_file"</span><span class="p">,</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">  </span><span class="nt">"read_only"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="p">}</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Required</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>yes</td>
+<td>The tool's name; must match <code>[A-Za-z_][A-Za-z0-9_]*</code>.</td>
+</tr>
+<tr>
+<td><code>description</code></td>
+<td>yes</td>
+<td>Model-facing text — say <em>what it does</em> and <em>when to use it</em>; this is the model's only documentation.</td>
+</tr>
+<tr>
+<td><code>parameters</code></td>
+<td>yes</td>
+<td>JSON schema with <code>type: "object"</code>, <code>properties</code>, optional <code>required</code>.</td>
+</tr>
+<tr>
+<td><code>handler</code></td>
+<td>yes</td>
+<td>The Python handler name, looked up in <code>tools.py</code>'s <code>HANDLERS</code>.</td>
+</tr>
+<tr>
+<td><code>read_only</code></td>
+<td>no</td>
+<td><code>true</code> = never asks; the calls are read-only by construction.</td>
+</tr>
+<tr>
+<td><code>always_safe</code></td>
+<td>no</td>
+<td><code>true</code> = never asks even though it does something (used by <code>speak</code>).</td>
+</tr>
+<tr>
+<td><code>requires</code></td>
+<td>no</td>
+<td>A capability gate; the tool only appears when it resolves.</td>
+</tr>
+<tr>
+<td><code>aliases</code></td>
+<td>no</td>
+<td>Invented names that resolve onto this tool.</td>
+</tr>
+</tbody>
+</table>
+<p><code>parameters</code> may be an empty object (<code>"properties": {}, "required": []</code>);
+the schema is what <code>build_tool_schemas()</code> hands to Ollama, so valid
+JSON-schema shapes work as they do anywhere.</p>
+<h2 id="capability-gates">Capability gates<a class="headerlink" href="#capability-gates" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th><code>requires</code></th>
+<th>The tool appears when</th>
+<th>Uninstalled tool's help says</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>search</code></td>
+<td><code>ddgs</code> is importable</td>
+<td><code>the ddgs package (pip install ddgs)</code></td>
+</tr>
+<tr>
+<td><code>tts</code></td>
+<td>a <code>tts-remote</code> command resolves</td>
+<td><code>the tts-remote command</code></td>
+</tr>
+<tr>
+<td><code>chem</code></td>
+<td>a <code>chemInventoryAPI</code> command resolves</td>
+<td><code>the chemInventoryAPI command (config: chem_inventory)</code></td>
+</tr>
+<tr>
+<td><code>artifacts</code></td>
+<td>a serve artifact store is injected</td>
+<td><code>the serve artifact store (ollamarun serve)</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>/tools NAME help</code> still works for an uninstalled tool — it shows the
+definition and what it needs.</p>
+<h2 id="aliases">Aliases<a class="headerlink" href="#aliases" title="Permanent link">&para;</a></h2>
+<p><code>aliases</code> maps the names models invent onto the real tool: <code>search</code> →
+<code>web_search</code>, <code>curl</code> → <code>fetch_url</code>, <code>mkdir</code> → <code>make_dir</code>, <code>recall</code> →
+<code>search_sessions</code>, and so on. Call-id-prefixed names (<code>call_fetch_url</code>) are
+also resolved by stripping the prefix and retrying. Aliases show up in
+<code>/tools NAME help</code> and complete in the REPL.</p>
+<h2 id="overrides">Overrides<a class="headerlink" href="#overrides" title="Permanent link">&para;</a></h2>
+<p>Put a same-named file in <code>~/etc/config_files/ollamarun-defs/tools/</code> and it
+replaces the shipped one (same <code>name</code>, whole definition). That is how you
+reword a tool for your own models, tighten a schema or add aliases without
+touching Python. Worked example — an override whose description starts with
+<code>CUSTOM OVERRIDE:</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gp">$ </span>mkdir<span class="w"> </span>-p<span class="w"> </span>~/etc/config_files/ollamarun-defs/tools
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="gp">$ </span>cat<span class="w"> </span>&gt;<span class="w"> </span>~/etc/config_files/ollamarun-defs/tools/read_file.json<span class="w"> </span>&lt;&lt;<span class="s1">'EOF'</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="go">{</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="go">  "name": "read_file",</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="go">  "description": "CUSTOM OVERRIDE: read a text file. Prefer this over run_shell cat.",</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="go">  "parameters": {</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="go">    "type": "object",</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="go">    "properties": {</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="go">      "path": {"type": "string", "description": "file path"},</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="go">      "offset": {"type": "integer", "description": "first line (0-based)"},</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="go">      "limit": {"type": "integer", "description": "how many lines"}</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="go">    },</span>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="go">    "required": ["path"]</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="go">  },</span>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="go">  "handler": "read_file",</span>
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="go">  "read_only": true</span>
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="go">}</span>
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="go">EOF</span>
+</code></pre></div>
+<p>Next session, the change is live:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>llama3.2:3b › /tools read_file help
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>read_file — on
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>CUSTOM OVERRIDE: read a text file. Prefer this over run_shell cat.
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>model calls it with read_file(path, offset?, limit?)
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>…
+</code></pre></div>
+<p>A broken file never breaks the harness — it warns and is skipped, and the
+shipped definition stays in effect:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>ignoring tool definition ~/etc/config_files/ollamarun-defs/tools/broken.json:
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>bad JSON: Expecting property name enclosed in double quotes: line 1 column 3 (char 2)
+</code></pre></div>
+<p>The loader reads the shipped directory first, then the override directory, so
+a later layer wins per file stem (<code>load_tool_definitions()</code>); duplicate tool
+names inside one load are also skipped with a warning.</p>
+<h2 id="a-truly-new-tool">A truly new tool<a class="headerlink" href="#a-truly-new-tool" title="Permanent link">&para;</a></h2>
+<p>Overriding only changes what exists: the <code>handler</code> must still be a function
+<code>tools.py</code> knows. Adding a <em>new</em> capability is therefore two steps — a JSON
+file plus the handler function and its <code>HANDLERS</code> entry in
+<code>ollamarun_lib/tools.py</code> — and the loader picks the file up automatically.
+The handlers page in
+<a href="../../../development/contributing/#where-to-change-what">Contributing</a> is the short
+version.</p>
+<h2 id="the-sibling-prompts">The sibling: prompts<a class="headerlink" href="#the-sibling-prompts" title="Permanent link">&para;</a></h2>
+<p>Tool wording is model-facing text; the system/title/summarize prompts are
+the other half of it, with the same override-directory mechanism — see
 <a href="../../../config/prompts/">Prompts</a>.</p>
 
 

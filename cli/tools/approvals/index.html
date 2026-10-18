@@ -822,6 +822,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Approvals and policy
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -838,6 +856,113 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-runs-unattended" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What runs unattended
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-ask" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The ask
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rules
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-floor-no-rule-covers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The floor no rule covers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shell-details" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Shell details
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#unattended-runs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unattended runs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#policy-modes-and-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Policy modes and configuration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#over-the-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Over the API
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3497,102 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-runs-unattended" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What runs unattended
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-ask" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The ask
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rules
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-floor-no-rule-covers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The floor no rule covers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shell-details" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Shell details
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#unattended-runs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unattended runs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#policy-modes-and-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Policy modes and configuration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#over-the-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Over the API
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3404,34 +3625,175 @@
 
 
 <h1 id="approvals-and-policy">Approvals and policy<a class="headerlink" href="#approvals-and-policy" title="Permanent link">&para;</a></h1>
-<p>Read-only tools run unattended, as do allowlisted shell commands
-(<code>ls</code>/<code>cat</code>/<code>grep</code>/<code>rg</code>, read-only <code>git</code>, ... — no substitutions or
-redirections) and provably-harmless Python. Everything else lists numbered
-choices — run once, always allow that exact call, or always allow a suggested
-generalized rule (<code>shell: mkdir -p :*</code>, <code>path: ~/proj/**</code>,
-<code>python: imports os</code>) stored for the session — and you type one. Unattended
-runs deny with a note unless <code>-y/--yes</code> or <code>/tools policy auto</code> is in effect.
-<code>dangerous_command()</code> is the floor no rule ever covers: substitutions,
-redirections, privilege/wrapper/interpreter commands, disk-level tools,
-catastrophic <code>rm</code> and pipes into an interpreter always prompt again.</p>
+<p>Nothing the model asks for runs just because it asked. Every call is
+classified, and only the clearly safe classes go unattended.</p>
+<h2 id="what-runs-unattended">What runs unattended<a class="headerlink" href="#what-runs-unattended" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Class</th>
+<th>Examples</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Read-only tools</td>
+<td><code>read_file</code>, <code>list_dir</code>, <code>fetch_url</code>, <code>web_search</code>, <code>search_sessions</code>, <code>list_models</code>, <code>system_status</code>, <code>context_status</code>, <code>session_info</code></td>
+<td><code>read_only: true</code> in the definition; nothing is modified.</td>
+</tr>
+<tr>
+<td><code>speak</code></td>
+<td>—</td>
+<td><code>always_safe: true</code> (speaking changes nothing).</td>
+</tr>
+<tr>
+<td>Safe-listed shell</td>
+<td><code>ls</code>, <code>cat</code>, <code>grep</code>, <code>rg</code>, <code>find</code>, <code>wc</code>, <code>file</code>, <code>stat</code>, <code>tree</code>, <code>du</code>, <code>df</code>, <code>sort</code>, <code>cut</code>, <code>tr</code>, <code>diff</code>, <code>echo</code>, <code>date</code>, <code>which</code>, <code>whoami</code>, <code>uname</code>, read-only <code>git</code></td>
+<td>Every segment of the pipeline is on the list, with no substitutions, redirections or grouping.</td>
+</tr>
+<tr>
+<td>Provably harmless Python</td>
+<td><code>print(6*7)</code></td>
+<td>Only safe modules/nodes; no filesystem, network, imports of <code>os</code>/<code>sys</code>, calls like <code>open</code>/<code>eval</code>.</td>
+</tr>
+<tr>
+<td>Rule-covered calls</td>
+<td>a remembered exact call, a <code>shell:</code>/<code>path:</code>/<code>python:</code> rule</td>
+<td>You granted it earlier this session.</td>
+</tr>
+<tr>
+<td>Policy <code>auto</code>, or <code>-y/--yes</code></td>
+<td>—</td>
+<td>Everything runs; the sharpest tool in the box.</td>
+</tr>
+</tbody>
+</table>
+<p>Everything else <strong>asks</strong> in the REPL and is <strong>denied with a note</strong> in an
+unattended run.</p>
+<h2 id="the-ask">The ask<a class="headerlink" href="#the-ask" title="Permanent link">&para;</a></h2>
+<p>The prompt lists numbered choices — run once, remember exactly this call,
+one line per suggested generalized rule, auto-allow, deny:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>write_file needs confirmation: write_file modifies state
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  1/y  run once
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>  2/a  always allow exactly this call
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>  3    always allow path: /tmp/script-check.txt (this session)
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>  4/A  auto-allow every later call  [CAREFUL]
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>  5/n  deny
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>choose (1): 1
+</code></pre></div>
+<p>Type a number or the letter; Enter takes option 1. Choosing a rule prints a
+<code>allowed by rule …</code> note on later calls it covers.</p>
+<h2 id="rules">Rules<a class="headerlink" href="#rules" title="Permanent link">&para;</a></h2>
+<p>A rule is a session-scoped grant, stored in the session under <code>tool_rules</code>
+(and <code>tool_allow</code> for exact remembered calls). Four kinds:</p>
+<table>
+<thead>
+<tr>
+<th>Kind</th>
+<th>Covers</th>
+<th>Label</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>call</code></td>
+<td>exactly one call, by fingerprint</td>
+<td><code>exactly this call</code></td>
+</tr>
+<tr>
+<td><code>shell</code></td>
+<td>one command's literal prefix; an implicit <code>:*</code> tail</td>
+<td><code>shell: mkdir -p :*</code></td>
+</tr>
+<tr>
+<td><code>path</code></td>
+<td>one tool's path argument, by glob relative to the directory it ran in</td>
+<td><code>path: ~/proj/**</code></td>
+</tr>
+<tr>
+<td><code>python</code></td>
+<td>a <code>run_python</code> snippet importing/using only the listed module roots</td>
+<td><code>python: imports math, statistics</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>/tools rules</code> lists them; <code>/tools rules add KIND PATTERN</code> stores one by
+hand and <code>/tools rules rm N</code> removes it. Suggestions are built from the call
+being approved (<code>suggest_rules</code> in <code>tools.py</code>), so the number of choices
+varies — a compound shell command, for example, only ever offers the
+exact-call grant.</p>
+<h2 id="the-floor-no-rule-covers">The floor no rule covers<a class="headerlink" href="#the-floor-no-rule-covers" title="Permanent link">&para;</a></h2>
+<p><code>dangerous_command()</code> is the set of things a <code>shell</code> rule may never soften;
+they prompt again every time, even under a stored rule:</p>
 <ul>
-<li><code>/tools</code> — harness-wide <code>on|off</code>, <code>policy MODE</code>, <code>enable</code>/<code>disable NAME…</code>,
-  <code>allow</code>, <code>rules</code>, plus per-tool control with <code>/tools NAME on|off|help|call
-  ARGS</code> (NAME also takes the invented aliases, e.g. <code>/tools search off</code>).
-  <code>help</code> is generated from the tool's definition JSON — description, every
-  parameter with its type and whether it is required or optional, aliases,
-  approval behaviour, and what an uninstalled tool needs — and <code>call</code> runs
-  the tool yourself through the same approval gate and result panel as a
-  model call (<code>call {"query": "x"}</code>, <code>call query=x max_results=3</code>, or a bare
-  value when a single parameter is required); a manual call never touches the
-  conversation. <code>/tools help</code> (and <code>/help tools</code>) is the reference.</li>
-<li><code>--tools</code> / <code>--no-tools</code> for a single run; config <code>tools</code>, <code>tools_policy</code>,
-  <code>tools_shell_allow</code>, <code>tools_timeout</code>, <code>tools_max_output</code>, <code>tools_max_rounds</code>
-  (default 8), <code>tool_colors</code></li>
+<li>variable or backtick substitution (<code>$…</code>, <code>`…`</code>),</li>
+<li>output/input redirection (<code>&gt;</code>, <code>&lt;</code>) and grouping/brace expansion (<code>()</code>, <code>{}</code>),</li>
+<li>pipes into an interpreter (<code>curl … | sh</code>, <code>… | python3</code>),</li>
+<li>privilege/wrapper commands (<code>sudo</code>, <code>doas</code>, <code>su</code>, <code>env</code>, <code>xargs</code>, <code>nice</code>,
+  <code>nohup</code>, <code>timeout</code>, …),</li>
+<li>interpreters themselves (<code>sh</code>, <code>bash</code>, <code>python</code>, <code>node</code>, …),</li>
+<li>disk/power/network level tools (<code>dd</code>, <code>mkfs</code>, <code>mount</code>, <code>shutdown</code>,
+  <code>iptables</code>, <code>nc</code>, …),</li>
+<li>a recursive <code>rm</code> aimed at a whole root (<code>/</code>, <code>~</code>, <code>*</code>, <code>.</code>, …).</li>
 </ul>
-<p>The API surface has its own approval model — a turn parks undecided calls and
-a client resolves them. See
-<a href="../../../api/agent/approvals/">Agent API approvals</a>.</p>
+<p>The same floor keeps unsafe Python out: <code>open</code>, <code>exec</code>, <code>eval</code>, <code>os</code>, <code>sys</code>,
+<code>subprocess</code>, <code>socket</code>, network/OS modules and friends always prompt.</p>
+<h2 id="shell-details">Shell details<a class="headerlink" href="#shell-details" title="Permanent link">&para;</a></h2>
+<p><code>shell_safety()</code> splits a command line on <code>|</code>, <code>||</code>, <code>&amp;&amp;</code>, <code>;</code>, <code>&amp;</code> and
+newlines and checks <strong>every</strong> segment: each must be on the allowlist and free
+of the floor above. <code>git</code> is allowed only for read-only subcommands
+(<code>status</code>, <code>log</code>, <code>diff</code>, <code>show</code>, …; <code>git config</code> only through <code>--get</code>
+/<code>--list</code>-style flags). <code>tools_shell_allow</code> in the config adds commands of
+your own to the allowlist (remember: best-effort last).</p>
+<p>Python's version splits a snippet into imports, calls and attribute access;
+its allowlist of modules (math, json, re, statistics, …) is what the
+<code>safe list</code> covers. Everything else asks.</p>
+<h2 id="unattended-runs">Unattended runs<a class="headerlink" href="#unattended-runs" title="Permanent link">&para;</a></h2>
+<p>A non-interactive run (piped output, no terminal) cannot ask, so an
+otherwise-askable call is denied as a result:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>╭─ tool · write_file · failed ─────────────────────────────────────────────────╮
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>│ $ /tmp/unattended-demo.txt (5 chars)                                         │
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>│ tool not run: not auto-approved (write_file modifies state) and this run is  │
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>│ unattended                                                                   │
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>╰──────────────────────────────────────────────────────────────────────────────╯
+</code></pre></div>
+<p>The model sees that and reacts. <code>-y/--yes</code> makes everything run (verified:
+the same call writes the file and the answer arrives); <code>/tools policy auto</code>
+does the same for a session. <code>--tools</code> / <code>--no-tools</code> switch the harness off
+entirely for a run.</p>
+<h2 id="policy-modes-and-configuration">Policy modes and configuration<a class="headerlink" href="#policy-modes-and-configuration" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key / command</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/tools policy auto\|allowlist\|ask</code></td>
+<td>Global mode. <code>ask</code> asks for <em>everything</em> not always-safe; <code>allowlist</code> is the default; <code>auto</code> approves everything.</td>
+</tr>
+<tr>
+<td><code>--yes</code> / <code>-y</code></td>
+<td>Per-run auto approval (also silences <code>--delete</code>).</td>
+</tr>
+<tr>
+<td><code>tools_policy</code>, <code>tools_shell_allow</code>, <code>tools_timeout</code>, <code>tools_max_output</code>, <code>tools_max_rounds</code></td>
+<td>Config defaults for the above. See <a href="../#configuration">Tools</a>.</td>
+</tr>
+<tr>
+<td><code>/tools NAME on\|off</code>, <code>/tools enable\|disable NAME…</code></td>
+<td>Take tools out of the model's menu.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="over-the-api">Over the API<a class="headerlink" href="#over-the-api" title="Permanent link">&para;</a></h2>
+<p>The <a href="../../../api/agent/approvals/">agent API</a> runs the same engine, but its
+policy is never <code>auto</code>: sessions submit with <code>approval: "interactive"</code> to
+park undecided calls for a client decision, or <code>approval: "policy"</code> to let
+the allowlist/rules decide and deny the rest with a note.</p>
 
 
 
