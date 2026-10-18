@@ -3414,17 +3414,33 @@
 <tbody>
 <tr>
 <td><code>GET /v1/models</code></td>
-<td>installed models as OpenAI model objects</td>
+<td>Installed models as OpenAI model objects.</td>
 </tr>
 <tr>
 <td><code>GET /v1/models/{id}</code></td>
-<td>one model (404 + error envelope when unknown)</td>
+<td>One model (<code>404</code> + error envelope when unknown).</td>
 </tr>
 </tbody>
 </table>
-<p>Model selection is gated everywhere by the
-<a href="../../security/#model-allowlist"><code>serve_models</code> allowlist</a>: a model outside it
-answers exactly like an unknown one (<code>404 model_not_found</code>).</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:11440/v1/models
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="go">{"object": "list", "data": [{"id": "llama3.2:3b", "object": "model",</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="go"> "created": 1789360880, "owned_by": "ollamarun"}, …]}</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:11440/v1/models/llama3.2:3b
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="go">{"id": "llama3.2:3b", "object": "model", "created": 1789360880,</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="go"> "owned_by": "ollamarun"}</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:11440/v1/models/nope:latest
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="go">{"error": {"message": "model 'nope:latest' not found", "type": "invalid_request_error",</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="go"> "param": "model", "code": "model_not_found"}}</span>
+</code></pre></div>
+<p><code>created</code> is the model's modified time (Unix seconds); <code>owned_by</code> is always
+<code>ollamarun</code>. The list is fetched from the upstream <code>/api/tags</code>, normalized to
+tagged names and cached briefly, so a newly pulled model appears without
+restarting the server.</p>
+<p>The <a href="../../security/#model-allowlist">serve_models allowlist</a> filters this
+endpoint exactly like every other — a model outside it behaves like an
+unknown id (<code>404 model_not_found</code>), not a permission error.</p>
 
 
 

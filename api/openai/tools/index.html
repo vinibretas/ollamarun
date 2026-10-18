@@ -2101,6 +2101,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool calls
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -2117,6 +2135,36 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#semantics-worth-knowing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Semantics worth knowing
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3420,25 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#semantics-worth-knowing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Semantics worth knowing
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3405,19 +3472,80 @@
 
 <h1 id="tool-calls">Tool calls<a class="headerlink" href="#tool-calls" title="Permanent link">&para;</a></h1>
 <p>Client <code>tools</code> are passed to the backend and returned as standard
-<code>tool_calls</code> with <code>finish_reason: "tool_calls"</code> — they are never executed
-here, so this endpoint cannot trigger the agent harness. Full agent turns
-live under the native <a href="../../agent/turns/"><code>/v1/agent/*</code> endpoints</a>.</p>
-<ul>
-<li><code>tool_choice</code> accepts <code>auto</code>, <code>none</code> or a specific function;
-  <code>tool_choice: "required"</code> is rejected (the backend cannot force a call).</li>
-<li><code>parallel_tool_calls</code> is honored: a <code>false</code> returns only the first tool call
-  the backend produced (the backend cannot be told to emit a single call, so
-  this is a truncation, not model steering).</li>
-<li><code>strict: true</code> on a function tool is rejected because the backend does not
-  enforce tool-argument schemas (<code>strict: false</code> is a no-op). See
-  <a href="../errors/">Errors</a>.</li>
-</ul>
+<code>tool_calls</code> with <code>finish_reason: "tool_calls"</code>. They are <strong>never executed
+here</strong> — this endpoint cannot trigger the agent harness, sandboxes or
+approvals; full agent turns live under the native
+<a href="../../agent/turns/"><code>/v1/agent/turns</code></a> endpoint.</p>
+<p>A real request/response (llama3.2:3b asked for the weather with one function
+declared):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:11440/v1/chat/completions<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">    </span>-H<span class="w"> </span><span class="s1">'Content-Type: application/json'</span><span class="w"> </span>-d<span class="w"> </span><span class="err">'</span><span class="o">{</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="go">      "model": "llama3.2:3b",</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="go">      "messages": [{"role": "user", "content": "What is the weather in Porto Alegre? Use the tool."}],</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="go">      "tools": [{"type": "function", "function": {</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="go">        "name": "get_weather", "description": "Get the weather for a city",</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="go">        "parameters": {"type": "object", "properties": {"city": {"type": "string"}},</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="go">                       "required": ["city"]}}}],</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="go">      "temperature": 0}'</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"chatcmpl-2ecb878a39e04dc3aa0d3d31"</span><span class="p">,</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">"object"</span><span class="p">:</span><span class="w"> </span><span class="s2">"chat.completion"</span><span class="p">,</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="nt">"model"</span><span class="p">:</span><span class="w"> </span><span class="s2">"llama3.2:3b"</span><span class="p">,</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span><span class="nt">"choices"</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="nt">"index"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="nt">"message"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">      </span><span class="nt">"role"</span><span class="p">:</span><span class="w"> </span><span class="s2">"assistant"</span><span class="p">,</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">      </span><span class="nt">"content"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">      </span><span class="nt">"tool_calls"</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">        </span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"call_elpr4nhe"</span><span class="p">,</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">        </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"function"</span><span class="p">,</span>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">        </span><span class="nt">"function"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"get_weather"</span><span class="p">,</span><span class="w"> </span><span class="nt">"arguments"</span><span class="p">:</span><span class="w"> </span><span class="s2">"{\"city\": \"Porto Alegre\"}"</span><span class="p">}</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">      </span><span class="p">}]</span>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">    </span><span class="p">},</span>
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">    </span><span class="nt">"finish_reason"</span><span class="p">:</span><span class="w"> </span><span class="s2">"tool_calls"</span>
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">  </span><span class="p">}],</span>
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">  </span><span class="nt">"usage"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"prompt_tokens"</span><span class="p">:</span><span class="w"> </span><span class="mi">163</span><span class="p">,</span><span class="w"> </span><span class="nt">"completion_tokens"</span><span class="p">:</span><span class="w"> </span><span class="mi">17</span><span class="p">,</span><span class="w"> </span><span class="nt">"total_tokens"</span><span class="p">:</span><span class="w"> </span><span class="mi">180</span><span class="p">}</span>
+<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="p">}</span>
+</code></pre></div>
+<p>Note <code>arguments</code> is a JSON <strong>string</strong> (OpenAI's shape), and <code>content</code> is
+<code>null</code> when the model only calls tools. Sending the <code>tool</code> results back works
+like any OpenAI client: append the assistant message with its <code>tool_calls</code>,
+then one <code>{"role": "tool", "tool_call_id": …, "content": …}</code> per call — the
+mapper converts the history to Ollama's shape.</p>
+<h2 id="semantics-worth-knowing">Semantics worth knowing<a class="headerlink" href="#semantics-worth-knowing" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Detail</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tool_choice</code></td>
+<td><code>auto</code>, <code>none</code>, or a specific function are forwarded. <code>"required"</code> is rejected (<code>400</code>) — the backend cannot force a call.</td>
+</tr>
+<tr>
+<td><code>parallel_tool_calls: false</code></td>
+<td>Truncates the response to the <strong>first</strong> tool call. The backend cannot be told to emit only one, so this is a filter, not steering.</td>
+</tr>
+<tr>
+<td><code>strict: true</code> on a function</td>
+<td>Rejected (<code>400</code>): tool-argument schemas are not enforced by the backend (<code>strict: false</code> is a no-op). <code>response_format</code> schemas <em>are</em> enforced, via Ollama's grammar.</td>
+</tr>
+<tr>
+<td>Streaming</td>
+<td>Tool calls arrive as one indexed array chunk on <code>delta.tool_calls</code>, then <code>finish_reason: "tool_calls"</code>.</td>
+</tr>
+<tr>
+<td>Aliases</td>
+<td>None here — the function names are yours; the server never maps them onto its own tool registry.</td>
+</tr>
+</tbody>
+</table>
+<p>For a client that wants the harness — real execution, approvals, sessions —
+use <code>POST /v1/agent/turns</code> with <code>"settings": {"tools": true}</code>.</p>
 
 
 

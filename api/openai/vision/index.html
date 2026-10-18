@@ -2185,6 +2185,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Vision
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -2201,6 +2219,36 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-capability-gate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The capability gate
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3420,25 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-capability-gate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The capability gate
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3406,14 +3473,49 @@
 <h1 id="vision">Vision<a class="headerlink" href="#vision" title="Permanent link">&para;</a></h1>
 <p><code>image_url</code> content parts accept <code>data:</code> URIs or http(s) URLs (fetched with
 explicit timeouts, at most 3 redirects and a 10 MiB cap — the SSRF caveat is
-the locked trusted-network boundary), are validated against the model's
-<code>capabilities</code> and refused with <code>model_does_not_support_images</code> when vision is
-absent.</p>
-<p>A <code>{"type": "file", "file_id": "art_…"}</code> part resolves an uploaded artifact:
-text-ish files are inlined as a <code>&lt;file name="…"&gt;</code> block, images go through the
-same vision gate, and other binaries are described but never pretended to be
-processed — see <a href="../../agent/artifacts/">Artifacts</a>.</p>
-<p>The CLI takes images too — <code>--image PATH</code> / <code>/image PATH… | clear</code>.</p>
+the locked trusted-network boundary). A <code>{"type": "file", "file_id":
+"art_…"}</code> part resolves an uploaded artifact instead; text-ish files are
+inlined as a <code>&lt;file name="…"&gt;</code> block, images go through the same vision
+gate, and other binaries are described but never pretended to be processed —
+see <a href="../../agent/artifacts/">Artifacts</a>.</p>
+<p>A real request and answer (red square, <code>minicpm-v4.6:1b</code>):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span><span class="nv">B64</span><span class="o">=</span><span class="k">$(</span>base64<span class="w"> </span>-w0<span class="w"> </span>red.png<span class="k">)</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:11440/v1/chat/completions<span class="w"> </span>-H<span class="w"> </span><span class="s1">'Content-Type: application/json'</span><span class="w"> </span>-d<span class="w"> </span><span class="s2">"{</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="go">    \"model\": \"minicpm-v4.6:1b\",</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="go">    \"messages\": [{\"role\": \"user\", \"content\": [</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="go">      {\"type\": \"text\", \"text\": \"What color fills this image? Reply with one word.\"},</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="go">      {\"type\": \"image_url\", \"image_url\": {\"url\": \"data:image/png;base64,$B64\"}}]}],</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="go">    \"max_tokens\": 256}"</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">"choices"</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">"index"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">"message"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">      </span><span class="nt">"role"</span><span class="p">:</span><span class="w"> </span><span class="s2">"assistant"</span><span class="p">,</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">      </span><span class="nt">"content"</span><span class="p">:</span><span class="w"> </span><span class="s2">"red"</span><span class="p">,</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">      </span><span class="nt">"reasoning_content"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Got it, let's look at the image. The image is filled with a red color. …"</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="p">},</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="nt">"finish_reason"</span><span class="p">:</span><span class="w"> </span><span class="s2">"stop"</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">  </span><span class="p">}],</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">  </span><span class="err">…</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="p">}</span>
+</code></pre></div>
+<p>Two practical notes from that run: the model's thinking came back as
+<code>reasoning_content</code> (non-standard, ignorable), and 32 max tokens were not
+enough — the thinking consumed the budget and <code>content</code> came back empty with
+<code>finish_reason: "length"</code>. Give a multimodal thinking model headroom.</p>
+<h2 id="the-capability-gate">The capability gate<a class="headerlink" href="#the-capability-gate" title="Permanent link">&para;</a></h2>
+<p>Content parts are validated against the model's <code>capabilities</code>, so a
+text-only model is refused before inference:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="gp">$ </span>…<span class="w"> </span>-d<span class="w"> </span><span class="err">'</span><span class="o">{</span><span class="s2">"model"</span>:<span class="w"> </span><span class="s2">"llama3.2:3b"</span>,<span class="w"> </span><span class="s2">"messages"</span>:<span class="w"> </span><span class="o">[{</span><span class="s2">"role"</span>:<span class="w"> </span><span class="s2">"user"</span>,<span class="w"> </span><span class="s2">"content"</span>:<span class="w"> </span><span class="o">[</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="go">      {"type": "text", "text": "Color?"},</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="go">      {"type": "image_url", "image_url": {"url": "data:image/png;base64,…"}}]}]}'</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="go">{"error": {"message": "this model does not support image input",</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="go"> "type": "invalid_request_error", "param": "messages",</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="go"> "code": "model_does_not_support_images"}}          # HTTP 400</span>
+</code></pre></div>
+<p>The CLI takes images too — <code>--image PATH</code> / <code>/image PATH… | clear</code> — see
+[Images and vision(../../cli/images.md).</p>
 
 
 

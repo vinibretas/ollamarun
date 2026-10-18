@@ -2514,6 +2514,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Example clients
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -2530,6 +2548,47 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#examplesopenai_clientpy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        examples/openai_client.py
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#examplesagent_clientpy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        examples/agent_client.py
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3370,6 +3429,36 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#examplesopenai_clientpy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        examples/openai_client.py
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#examplesagent_clientpy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        examples/agent_client.py
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3402,26 +3491,70 @@
 
 
 <h1 id="example-clients">Example clients<a class="headerlink" href="#example-clients" title="Permanent link">&para;</a></h1>
-<p>Two reference clients under <code>examples/</code> double as integration checks — both
-print a <code>PASS</code>/<code>SKIP</code>/<code>FAIL</code> line per step and exit non-zero on a failure:</p>
-<ul>
-<li><code>examples/openai_client.py</code> — the official <code>openai</code> SDK against the <code>/v1</code>
-  surface: the model list, a completion, streaming with usage, embeddings
-  (the SDK's default base64 encoding), <code>n = 2</code> and a tools request. Needs
-  the SDK (<code>pip install --user openai</code>); pass a chat model:</li>
-</ul>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span>python3<span class="w"> </span>examples/openai_client.py<span class="w"> </span>--model<span class="w"> </span>qwen3:8b
+<p>Two reference clients under <code>examples/</code> double as integration checks against
+a running <code>ollamarun serve</code>. Both print a <code>PASS</code>/<code>SKIP</code>/<code>FAIL</code> line per step
+and exit non-zero when a step fails.</p>
+<h2 id="examplesopenai_clientpy"><code>examples/openai_client.py</code><a class="headerlink" href="#examplesopenai_clientpy" title="Permanent link">&para;</a></h2>
+<p>The official <code>openai</code> SDK against the <code>/v1</code> surface: the model list, a
+non-streaming completion, streaming with usage, embeddings, <code>n = 2</code>, and a
+tools request that the server must accept without executing. Run against a
+chat model:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span>python3<span class="w"> </span>examples/openai_client.py<span class="w"> </span>--base-url<span class="w"> </span>http://127.0.0.1:38573/v1<span class="w"> </span>--model<span class="w"> </span>llama3.2:3b
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="go">openai_client · SDK 2.29.0 · http://127.0.0.1:38573/v1</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="go">PASS  the model list answers</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="go">      using model llama3.2:3b</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="go">PASS  a non-streaming completion returns content and usage</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="go">PASS  streaming deltas arrive and usage closes the stream</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="go">SKIP  embeddings return one vector per input — llama3.2:3b is not an embedding model</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="go">PASS  n=2 returns two indexed choices</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="go">PASS  a tools request is accepted (the server never executes it)</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="go">      the model asked for get_weather({"city": "Sao Paulo"})</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="go">all checks passed</span>
 </code></pre></div>
-<ul>
-<li><code>examples/agent_client.py</code> — the native agent flow over plain HTTP:
-  submit a turn, follow the typed SSE stream, resolve a parked approval,
-  read the session summary. <code>--mode interactive --approve run</code> exercises
-  the approval path; <code>--session-id</code> continues an existing session:</li>
-</ul>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gp">$ </span>python3<span class="w"> </span>examples/agent_client.py<span class="w"> </span>--prompt<span class="w"> </span><span class="s2">"List the files in /tmp"</span>
+<p>The embeddings step needs an embedding model, so a chat-model run reports
+<code>SKIP</code> there — by design. Point it at an embedding model to exercise that
+step; the chat steps then fail with the sanitized backend 502 (an embedding
+model cannot chat), which is the expected outcome of that trade:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gp">$ </span>python3<span class="w"> </span>examples/openai_client.py<span class="w"> </span>--base-url<span class="w"> </span>…<span class="w"> </span>--model<span class="w"> </span>nomic-embed-text
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="go">PASS  embeddings return one vector per input</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="go">FAIL  a non-streaming completion returns content and usage</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="go">      InternalServerError("Error code: 502 - {'error': {'message': 'the model</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="go">      backend failed to complete the request', …}}")</span>
 </code></pre></div>
-<p>Both take <code>--base-url</code> for a remote or non-default listener (the OpenAI one
-wants the <code>/v1</code> suffix).</p>
+<p>Options: <code>--base-url</code> (the <code>/v1</code> suffix included), <code>--model</code> (defaults to the
+first listed), <code>--api-key</code> (sent and ignored), <code>--timeout</code>.</p>
+<h2 id="examplesagent_clientpy"><code>examples/agent_client.py</code><a class="headerlink" href="#examplesagent_clientpy" title="Permanent link">&para;</a></h2>
+<p>The native agent flow over plain HTTP: submit a turn, follow the typed event
+stream, resolve a parked approval, print the session summary. The default
+policy mode runs allowlisted/read-only tools and denies the rest:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="gp">$ </span>python3<span class="w"> </span>examples/agent_client.py<span class="w"> </span>--base-url<span class="w"> </span>http://127.0.0.1:38573<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">      </span>--model<span class="w"> </span>llama3.2:3b<span class="w"> </span>--prompt<span class="w"> </span><span class="s2">"List the files in the current directory and tell me how many there are."</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="go">turn turn_07f31de8504b · session 20261018-133348-fc8d · model llama3.2:3b · approval policy</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="go">tool · list_dir {"path": "."}</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="go">  → ok ['/tmp/…/serve-ws (2 entries)']</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="go">There are 2 files in the current directory.</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="go">status completed · rounds 1 · tokens 642</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="go">answer There are 2 files in the current directory.</span>
+</code></pre></div>
+<p><code>--mode interactive --approve run</code> exercises the approval path (the client
+parks, prints the decision request, posts the decision, and continues):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="gp">$ </span>python3<span class="w"> </span>examples/agent_client.py<span class="w"> </span>--base-url<span class="w"> </span>…<span class="w"> </span>--model<span class="w"> </span>llama3.2:3b<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">      </span>--mode<span class="w"> </span>interactive<span class="w"> </span>--approve<span class="w"> </span>run<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">      </span>--prompt<span class="w"> </span><span class="s2">"Use write_file to write the text from-the-client to client-demo.txt, then confirm."</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="go">turn turn_459cb29e505b · session 20261018-133515-cdb4 · model llama3.2:3b · approval interactive</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="go">tool · write_file {"append": false, "content": "from-the-client", "path": "client-demo.txt"}</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="go">approval required write_file modifies state</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="go">      resolved as run (200)</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="go">  → ok ['wrote 15 chars to /tmp/…/serve-ws/client-demo.txt']</span>
+</code></pre></div>
+<p>(The file really was written — checked on disk afterwards.) Other options:
+<code>--session-id</code> to continue an existing session instead of creating one,
+<code>--approve {run,remember,rule,auto,deny}</code>, <code>--no-persist</code> for an ephemeral
+turn, <code>--json</code> for machine output, <code>--timeout</code>.</p>
+<p>Both clients are covered by the test suite (<code>test_examples</code>, against a fake
+stack), so they cannot rot silently — and they are the shortest way to check
+a live deployment by hand.</p>
 
 
 

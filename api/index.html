@@ -3378,6 +3378,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#everything-the-api-can-be" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Everything the API can be
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#compatibility-testing" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3422,52 +3433,107 @@
 
 
 <h1 id="api-overview">API overview<a class="headerlink" href="#api-overview" title="Permanent link">&para;</a></h1>
-<p><code>ollamarun serve</code> runs a local HTTP API in front of Ollama, so any OpenAI
-client can use the local models. The listener is LAN-accessible by default
-(<code>0.0.0.0:11440</code>); <code>--bind IP</code> / <code>--port N</code> narrow or change it and are
-separate from the upstream <code>--host</code> / <code>--remote</code>, which pick the Ollama
-machine:</p>
+<p><code>ollamarun serve</code> puts an HTTP API in front of Ollama from the same process
+that runs the CLI. Two surfaces share the listener:</p>
+<ul>
+<li>the <strong><a href="openai/models/">OpenAI API</a></strong> — <code>GET /v1/models</code>,
+  <code>POST /v1/chat/completions</code>, <code>POST /v1/embeddings</code>: model turns only, a
+  stateless translation proxy any OpenAI client can talk to;</li>
+<li>the <strong><a href="agent/turns/">native agent API</a></strong> — full agent turns with the
+  tool loop, approvals, sessions, artifacts and context fits.</li>
+</ul>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span>ollamarun<span class="w"> </span>serve<span class="w"> </span><span class="o">[</span>--bind<span class="w"> </span>IP<span class="o">]</span><span class="w"> </span><span class="o">[</span>--port<span class="w"> </span>N<span class="o">]</span><span class="w"> </span><span class="o">[</span>--host<span class="w"> </span>HOST<span class="w"> </span><span class="p">|</span><span class="w"> </span>--remote<span class="w"> </span>NAME<span class="o">]</span><span class="w"> </span><span class="o">[</span>--keep-loaded<span class="o">]</span>
 </code></pre></div>
+<p>Starting it prints what is in force — the real banner from a
+<code>--port 0</code> run:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>ollamarun serve · 2.0 · OpenAI-compatible + agent API
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>  listening http://0.0.0.0:38573 (all interfaces)
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>  upstream  http://127.0.0.1:11434
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>  workspace /home/you/code/ollamarun
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>  models /v1/models · chat /v1/chat/completions · agent turns /v1/agent/turns ·
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>sessions /v1/sessions
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>trusted-network-only: no authentication — never expose this port to the internet
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>Ctrl-C stops the server (active turns are cancelled; loaded models are kept)
+</code></pre></div>
+<p><code>--bind</code>/<code>--port</code> choose the listener (port 0 picks an ephemeral one);
+<code>--host</code>/<code>--remote</code> pick the Ollama machine; the two are independent. The
+workspace line is the <a href="security/#tool-workspace">tool jail</a>.</p>
 <div class="admonition warning">
 <p class="admonition-title">Trusted-network-only</p>
 <p>The service has no authentication, and the bind address is its only
 boundary. Keep it on the LAN/tailnet and never expose the port to the
 public internet.</p>
 </div>
-<p>Two surfaces share the process:</p>
-<ul>
-<li><strong><a href="openai/models/">OpenAI API</a></strong> — <code>GET /v1/models</code>, <code>POST
-  /v1/chat/completions</code> and <code>POST /v1/embeddings</code>: model turns only, a
-  stateless translation proxy.</li>
-<li><strong><a href="agent/turns/">Agent API</a></strong> — full agent turns with the internal tool
-  loop, approvals, sessions, files/artifacts and context fits.</li>
-</ul>
 <h2 id="lifecycle">Lifecycle<a class="headerlink" href="#lifecycle" title="Permanent link">&para;</a></h2>
-<p><strong>Disconnects and cancellation.</strong> A dropped event stream is an unsubscribe —
-the turn keeps running (its results land in the session) unless it asked for
-<code>"cancel_on_disconnect": true</code>. <code>POST .../cancel</code> cancels explicitly: it
-aborts the in-flight generation, kills cancellable subprocesses, resolves a
-waiting approval as cancelled and persists the terminal state.</p>
-<p>Shutdown is an ordered lifecycle: the listener stops accepting, new turns and
-fits are refused (<code>503 server_shutting_down</code>), parked approvals resolve as
-cancelled, in-flight HTTP handlers drain within <code>serve_shutdown_timeout</code>, and
+<p><strong>Disconnects.</strong> A dropped event stream is an <em>unsubscribe</em>, not a
+cancellation — the turn keeps running and its results land in the session.
+Both sides of that were checked live:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>--- default: turn_ef28e7b2a20d
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>  client dropped the stream: ConnectionError
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>  status after disconnect: completed (checked 8s)
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>--- cancel_on_disconnect: turn_9ac3c55775b0
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>  client dropped the stream: ConnectionError
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>  status after disconnect: cancelled (checked 2s)
+</code></pre></div>
+<p>A turn that asks for <code>"cancel_on_disconnect": true</code> cancels when its stream
+drops; otherwise it finishes. <code>POST /v1/agent/turns/{id}/cancel</code> is the
+explicit path — it aborts the in-flight generation, kills cancellable
+subprocesses, resolves a parked approval as cancelled and persists the
+terminal state.</p>
+<p><strong>Shutdown</strong> is ordered: the listener stops accepting, new turns and fits are
+refused (<code>503 server_shutting_down</code>), parked approvals resolve as cancelled,
+in-flight HTTP handlers drain within <code>serve_shutdown_timeout</code>, and
 <code>serve_unload_on_exit</code> (default true) unloads only the models this server
 actually used — embedding models stay resident and a parallel CLI session's
 models are never touched (<code>--keep-loaded</code> disables it).</p>
+<h2 id="everything-the-api-can-be">Everything the API can be<a class="headerlink" href="#everything-the-api-can-be" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Knob</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>serve_agent: false</code></td>
+<td>Inference + files only; the native routes are not registered (<code>404</code>). The banner says <code>agent routes disabled</code>.</td>
+</tr>
+<tr>
+<td><code>serve_models: ["qwen3*"]</code></td>
+<td>An allowlist; a model outside it answers exactly like an unknown one (<code>404 model_not_found</code>) everywhere — list, lookup, chat, sessions, turns, fits.</td>
+</tr>
+<tr>
+<td><code>serve_workspace: DIR</code></td>
+<td>The tool path jail (default: the directory serve started in).</td>
+</tr>
+<tr>
+<td><code>serve_fit: off\|estimate\|probe</code></td>
+<td>Gates the fit surface.</td>
+</tr>
+</tbody>
+</table>
+<p>Both switches were exercised live: with <code>serve_agent: false</code> and
+<code>serve_models: ["qwen3*"]</code>, the model list showed only the qwen3 entries,
+<code>llama3.2:3b</code> answered <code>404 model_not_found</code>, <code>POST /v1/agent/turns</code> was
+<code>404 unknown endpoint</code>, and <code>POST /v1/files</code> still answered <code>201</code>. Details
+on <a href="security/">Security and limits</a>.</p>
 <h2 id="compatibility-testing">Compatibility testing<a class="headerlink" href="#compatibility-testing" title="Permanent link">&para;</a></h2>
-<p>The surface is pinned by the project's test suite, which a client can trust as
-the compatibility contract: a required round-trip through the official
-<code>openai</code> SDK (models, embeddings in both encodings, completions with <code>n &gt; 1</code>,
-streaming with usage, typed tool calls, the 400 mappings, a mid-stream
-failure) plus the deterministic request/response matrix and a real-process
-smoke of <code>ollamarun serve</code> — <code>python3 test_ollamarun.py</code>, with <code>--live</code> adding
-a real-backend pass (models, completions, embeddings, one agent turn).</p>
-<p>The next pages:</p>
+<p>The surface is pinned by the project's test suite, which a client can trust
+as the contract: a required round-trip through the official <code>openai</code> SDK
+(models, embeddings in both encodings, completions with <code>n &gt; 1</code>, streaming
+with usage, typed tool calls, the 400 mappings, a mid-stream failure), the
+deterministic request/response matrix, and a real-process smoke of
+<code>ollamarun serve</code> — <code>python3 test_ollamarun.py</code>, with <code>--live</code> adding a
+real-backend pass.</p>
+<p>Next pages:</p>
 <ul>
 <li><a href="security/">Security and limits</a> — the <code>serve_*</code> boundaries.</li>
-<li><a href="example-clients/">Example clients</a> — two runnable reference clients.</li>
-<li><a href="../config/file/">Config file</a> — the full <code>serve_*</code> key matrix.</li>
+<li><a href="openai/models/">OpenAI API</a> — models, chat, streaming, tools, errors.</li>
+<li><a href="agent/turns/">Agent API</a> — full turns, events, approvals, sessions,
+  artifacts, fits.</li>
+<li><a href="example-clients/">Example clients</a> — two runnable references.</li>
+<li><a href="../config/file/#serve-keys">Config file</a> — every <code>serve_*</code> key.</li>
 </ul>
 
 

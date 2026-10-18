@@ -2213,6 +2213,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Errors
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -2229,6 +2247,58 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#unknown-and-unsupported-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unknown and unsupported fields
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#unknown-models-and-upstream-failures" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unknown models and upstream failures
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-is-never-in-a-response" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is never in a response
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3442,47 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#unknown-and-unsupported-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unknown and unsupported fields
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#unknown-models-and-upstream-failures" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unknown models and upstream failures
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-is-never-in-a-response" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is never in a response
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3404,31 +3515,85 @@
 
 
 <h1 id="errors">Errors<a class="headerlink" href="#errors" title="Permanent link">&para;</a></h1>
-<p>Request validation is strict, and every rejection is a structured error
-rather than a silent ignore: unknown fields anywhere (top level, tools,
-<code>tool_choice</code>, <code>response_format</code> wrappers), <code>n</code> outside 1..8 or non-integer
-(each emulated choice is a full generation), <code>logprobs</code>/<code>top_logprobs</code>,
-<code>logit_bias</code>, <code>audio</code>, non-text <code>modalities</code> and <code>tool_choice: "required"</code> are
-rejected with <code>400</code>s; <code>strict: true</code> on a function tool is rejected because
-the backend does not enforce tool-argument schemas (<code>strict: false</code> is a
-no-op).</p>
-<p><code>json_schema</code> enforcement uses Ollama's grammar (<code>format</code>); only the <code>schema</code>
-object is forwarded.</p>
-<p>Errors use the OpenAI envelope with proper status codes (400/404/405/408/413/502);
-upstream failures surface as stable <code>model_not_found</code> / <code>backend_unreachable</code>
-/ <code>backend_error</code> messages, oversized bodies and stalled uploads are rejected
-before parsing, and responses never carry tracebacks or internal paths —
-<code>--debug</code> logs requests, upstream detail and tracebacks to
-<code>~/etc/logs/ollamarun.log</code>.</p>
-<p>Everything the backend cannot do is rejected permanently:</p>
-<ul>
-<li><code>logprobs</code>/<code>top_logprobs</code> — Ollama exposes no token probabilities.</li>
-<li><code>logit_bias</code> — no backend equivalent.</li>
-<li><code>audio</code> and non-text modalities — Ollama has no audio modality.</li>
-<li><code>tool_choice: "required"</code> — the backend cannot force a call.</li>
-<li><code>strict: true</code> tool schemas — tool-argument schemas are not enforced
-  (<code>response_format</code> schemas are, through Ollama's <code>format</code> grammar).</li>
-</ul>
+<p>Request validation is strict: every rejection is a structured error with the
+OpenAI envelope, never a silent ignore. The captures below are verbatim
+responses.</p>
+<h2 id="unknown-and-unsupported-fields">Unknown and unsupported fields<a class="headerlink" href="#unknown-and-unsupported-fields" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span>…<span class="w"> </span>-d<span class="w"> </span><span class="s1">'{"model": "llama3.2:3b", "messages": […], "bogus": 1}'</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="go">{"error": {"message": "unknown field: bogus", "type": "invalid_request_error",</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="go"> "param": "bogus", "code": "unknown_field"}}                       # HTTP 400</span>
+</code></pre></div>
+<p>Unknown fields are rejected everywhere they can appear — top level, inside
+tools, <code>tool_choice</code>, <code>response_format</code> wrappers.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gp">$ </span>…<span class="w"> </span>-d<span class="w"> </span><span class="s1">'{…, "n": 9}'</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="go">{"error": {"message": "n is limited to 8 emulated generations", "type":</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="go"> "invalid_request_error", "param": "n", "code": "unsupported_value"}}</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="gp">$ </span>…<span class="w"> </span>-d<span class="w"> </span><span class="s1">'{…, "logprobs": true}'</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="go">{"error": {"message": "logprobs is not supported", "type":</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="go"> "invalid_request_error", "param": "logprobs", "code": "unsupported_parameter"}}</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="gp">$ </span>…<span class="w"> </span>-d<span class="w"> </span><span class="s1">'{…, "tool_choice": "required"}'</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="go">{"error": {"message": "tool_choice must be \"auto\", \"none\" or a specific function</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="go"> (the backend cannot force a call)", "type": "invalid_request_error",</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="go"> "param": "tool_choice", "code": "unsupported_value"}}</span>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="gp">$ </span>…<span class="w"> </span>-d<span class="w"> </span><span class="s1">'{…, "tools": [{…, "strict": true}]}'</span>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="go">{"error": {"message": "strict tool schemas are not supported (the backend does not</span>
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="go"> enforce tool-argument schemas)", "type": "invalid_request_error",</span>
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="go"> "param": "tools[0].function.strict", "code": "unsupported_parameter"}}</span>
+</code></pre></div>
+<p>Also rejected: <code>logit_bias</code>, <code>audio</code>, non-text <code>modalities</code>, malformed
+message shapes, and non-integer <code>n</code>.</p>
+<h2 id="unknown-models-and-upstream-failures">Unknown models and upstream failures<a class="headerlink" href="#unknown-models-and-upstream-failures" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="p">{</span><span class="nt">"error"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"message"</span><span class="p">:</span><span class="w"> </span><span class="s2">"model 'nope:latest' not found"</span><span class="p">,</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w"> </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"invalid_request_error"</span><span class="p">,</span><span class="w"> </span><span class="nt">"param"</span><span class="p">:</span><span class="w"> </span><span class="s2">"model"</span><span class="p">,</span><span class="w"> </span><span class="nt">"code"</span><span class="p">:</span><span class="w"> </span><span class="s2">"model_not_found"</span><span class="p">}}</span>
+</code></pre></div>
+<p><code>model_not_found</code> (404) is also what a model outside the
+<a href="../../security/#model-allowlist">allowlist</a> answers. The server distinguishes:</p>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Means</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_not_found</code></td>
+<td>Unknown model or outside the allowlist.</td>
+</tr>
+<tr>
+<td><code>backend_unreachable</code></td>
+<td>The Ollama machine could not be reached (502).</td>
+</tr>
+<tr>
+<td><code>backend_error</code></td>
+<td>The backend failed the request (502), sanitized — raw detail goes to the <code>--debug</code> log.</td>
+</tr>
+<tr>
+<td><code>model_does_not_support_images</code> / <code>…embeddings</code></td>
+<td>Capability gates.</td>
+</tr>
+<tr>
+<td><code>input_too_large</code></td>
+<td>A resolved-input limit (413).</td>
+</tr>
+<tr>
+<td><code>not_found</code></td>
+<td>Unknown endpoint (404) — including agent routes when <code>serve_agent: false</code>.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-is-never-in-a-response">What is never in a response<a class="headerlink" href="#what-is-never-in-a-response" title="Permanent link">&para;</a></h2>
+<p>Status codes are used properly (400/404/405/408/413/502), and responses
+never carry tracebacks or internal paths. Oversized bodies and stalled
+uploads are rejected before parsing; malformed chunked framing is a
+structured 400. <code>--debug</code> logs requests, upstream detail and tracebacks to
+<code>~/etc/logs/ollamarun.log</code> for the operator — not the client.</p>
+<p>The same envelope shape is used by the <a href="../../agent/turns/">agent API</a>; its
+typed errors (<code>session_busy</code> 409, <code>rate_limit_error</code> 429, expired turns 410)
+are listed on <a href="../../agent/turns/#records-and-limits">Turns</a>.</p>
 
 
 

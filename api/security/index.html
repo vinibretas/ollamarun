@@ -3567,10 +3567,9 @@ public internet.</p>
 <p><code>ollamarun serve</code> is meant to run on the trusted network under the user's own
 service management (the <code>serve_*</code> keys cover the listener, limits and
 shutdown; the startup banner prints the surface in effect). There is
-deliberately no authentication yet — the bind address is the only boundary,
-so the port must never reach the public internet. When authentication lands
-it wraps these routes without reshaping them: it is a transport concern, and
-never a substitute for the tool-approval gate.</p>
+deliberately no authentication yet — the bind address is the only boundary.
+When authentication lands it wraps these routes without reshaping them: it is
+a transport concern, and never a substitute for the tool-approval gate.</p>
 <h2 id="limits">Limits<a class="headerlink" href="#limits" title="Permanent link">&para;</a></h2>
 <p>The JSON body cap is <code>serve_body_limit</code> (default 32 MiB), and it applies to
 <code>Content-Length</code> and chunked bodies alike: a chunked upload is decoded with
@@ -3597,20 +3596,36 @@ model list, lookup, chat completions, session creation and model edits, agent
 turns (a stored session whose model fell out of the list is refused before it
 runs) and the fit endpoints — and a model outside it answers exactly like an
 unknown one (<code>404 model_not_found</code>).</p>
+<p>Checked live with <code>serve_models: ["qwen3*"]</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:PORT/v1/models<span class="w"> </span><span class="p">|</span><span class="w"> </span>…<span class="w">                 </span><span class="c1"># only qwen3* entries</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:PORT/v1/models/llama3.2:3b
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="go">{"error": {"message": "model 'llama3.2:3b' not found", "type": "invalid_request_error",</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="go"> "param": "model", "code": "model_not_found"}}          # HTTP 404</span>
+</code></pre></div>
 <h2 id="tool-workspace">Tool workspace<a class="headerlink" href="#tool-workspace" title="Permanent link">&para;</a></h2>
 <p>Serve runs its tool context jailed to <code>serve_workspace</code> (default: the
 directory serve started in, printed in the banner): relative paths in the
 file tools resolve under it, resolved escapes — symlinks included — are
 refused, and the <code>run_shell</code>/<code>run_python</code> working directories follow the same
-rule. This is an argument and default-working-directory policy, <strong>not</strong>
-subprocess confinement: an approved command can still reach whatever the
-process user can. The CLI keeps its previous behavior.</p>
+rule. A model asking for a path outside gets a refusal as the tool result:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="go">tool · list_dir {"path": "/tmp"}</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="go">  → error ['refused: /tmp is outside the workspace root (/home/you/serve-dir)']</span>
+</code></pre></div>
+<p>This is an argument and default-working-directory policy, <strong>not</strong> subprocess
+confinement: an approved command can still reach whatever the process user
+can. The CLI keeps its previous behavior.</p>
 <h2 id="feature-switches">Feature switches<a class="headerlink" href="#feature-switches" title="Permanent link">&para;</a></h2>
 <p><code>serve_agent: false</code> runs the process as an inference server: the native
-routes (turns, approvals, sessions, fits) are not registered at all (404),
-while models, chat completions and the <code>/v1/files</code> + <code>/v1/artifacts/*</code>
-endpoints keep serving — the OpenAI surface can still send <code>file</code> parts. One
-model policy applies to every route: see the allowlist above.</p>
+routes (turns, approvals, sessions, fits) are not registered at all, while
+models, chat completions and the <code>/v1/files</code> + <code>/v1/artifacts/*</code> endpoints
+keep serving — the OpenAI surface can still send <code>file</code> parts. The banner
+spells it out (<code>files /v1/files (agent routes disabled)</code>), and the refusal
+is a plain 404:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:PORT/v1/agent/turns<span class="w"> </span>-H<span class="w"> </span><span class="s1">'Content-Type: application/json'</span><span class="w"> </span>-d<span class="w"> </span><span class="s1">'{…}'</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="go">{"error": {"message": "unknown endpoint: POST /v1/agent/turns",</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="go"> "type": "invalid_request_error", "param": null, "code": "not_found"}}   # HTTP 404</span>
+</code></pre></div>
+<p>One model policy applies to every route: see the allowlist above.</p>
 <p>Every key with its default, range and zero semantics is listed in
 <a href="../../config/file/#serve-keys">Config file</a>.</p>
 
