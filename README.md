@@ -601,6 +601,79 @@ afterwards. A subscription without `?after=`/`Last-Event-ID` is live-only —
 nothing is replayed, so a finished turn yields an empty stream; catching-up
 clients pass `after=0` or read the status snapshot instead.
 
+Concrete requests — a new session seeds the history, an existing one gets the
+delta (`persist` defaults to true) — and the turn's URLs come back immediately:
+
+```console
+$ curl -s http://127.0.0.1:11440/v1/agent/turns \
+    -H 'Content-Type: application/json' -d '{
+      "session_id": "ses_…",
+      "messages": [{"role": "user", "content": "now file it under reports"}],
+      "settings": {"approval": "interactive"}
+    }'
+{"id": "trn_…", "object": "turn", "session_id": "ses_…", "status": "queued",
+ "created_at": "…", "status_url": "/v1/agent/turns/trn_…",
+ "events_url": "/v1/agent/turns/trn_…/events",
+ "cancel_url": "/v1/agent/turns/trn_…/cancel"}
+
+$ curl -s http://127.0.0.1:11440/v1/agent/turns \
+    -H 'Content-Type: application/json' -d '{
+      "model": "qwen3:8b",
+      "messages": [{"role": "user", "content": "Summarize this repo"}],
+      "persist": false,
+      "settings": {"max_rounds": 4, "system": "One paragraph, no lists.",
+                   "num_ctx": "max-gpu", "gpu_layers": "80%"}
+    }'
+```
+
+Follow it over SSE — each frame is named after its event type and carries a
+`<turn_id>:<seq>` id, so a reconnect resumes with `?after=N` or
+`Last-Event-ID`:
+
+```console
+$ curl -N 'http://127.0.0.1:11440/v1/agent/turns/trn_…/events?after=0'
+id: trn_…:1
+event: turn.started
+data: {"id": "trn_…:1", "seq": 1, "type": "turn.started", "turn_id": "trn_…",
+       "session_id": "ses_…", "ts": "…",
+       "data": {"model": "qwen3:8b", "session_id": "ses_…"}}
+id: trn_…:2
+event: message.delta
+data: {"id": "trn_…:2", "seq": 2, "type": "message.delta", "turn_id": "trn_…",
+       "session_id": "ses_…", "ts": "…",
+       "data": {"channel": "content", "text": "The repo is"}}
+id: trn_…:3
+event: tool.call
+data: {"id": "trn_…:3", "seq": 3, "type": "tool.call", "turn_id": "trn_…",
+       "session_id": "ses_…", "ts": "…", "data": {"name": "run_shell",
+       "args": {"command": "ls -la"}, "detail": "ls -la", "round": 1}}
+id: trn_…:4
+event: tool.result
+data: {"id": "trn_…:4", "seq": 4, "type": "tool.result", "turn_id": "trn_…",
+       "session_id": "ses_…", "ts": "…", "data": {"name": "run_shell",
+       "ok": true, "text": "total 42\n…", "duration": 0.03, …}}
+id: trn_…:5
+event: turn.completed
+data: {"id": "trn_…:5", "seq": 5, "type": "turn.completed", "turn_id": "trn_…",
+       "session_id": "ses_…", "ts": "…",
+       "data": {"content": "…", "tool_calls": 1, "rounds": 2, "stats": {…}, …}}
+```
+
+The snapshot endpoint gives the same result with no stream (and a finished
+turn has no live events, so this — or `?after=0` — is how a late client
+catches up):
+
+```console
+$ curl -s http://127.0.0.1:11440/v1/agent/turns/trn_…
+{"id": "trn_…", "object": "turn", "session_id": "ses_…", "status": "completed",
+ "seq": 5, "result": {"status": "completed", "content": "…", "rounds": 2,
+ "usage": {"prompt_tokens": 412, "completion_tokens": 96, "total_tokens": 508},
+ "artifacts": [], "fit": null}, "error": null}
+
+$ curl -s -X POST http://127.0.0.1:11440/v1/agent/turns/trn_…/cancel
+{"id": "trn_…", "object": "turn", "cancel_requested": true, "status": "running"}
+```
+
 **Approvals.** `settings.approval` decides who answers:
 
 - `"policy"` (the default) applies the configured tool policy — allowlisted
@@ -615,6 +688,35 @@ clients pass `after=0` or read the status snapshot instead.
   `409`. An unanswered approval times out (config `serve_approval_timeout`,
   default 300 s) as **denied**: the tool result says `not run: approval
   timed out` and the model continues.
+
+The parked event carries everything needed to decide (the client already saw
+it on the stream, as `approval.required`):
+
+```json
+{"name": "run_shell", "args": {"command": "rm -rf build"},
+ "detail": "rm -rf build", "fingerprint": "…", "reason": "catastrophic rm",
+ "approval_id": "apr_…",
+ "suggestions": [{"kind": "shell", "pattern": "rm -rf build",
+                  "base": "", "created": "…"}]}
+```
+
+The decision is one POST — the body's `action` picks the outcome:
+
+```console
+$ curl -s http://127.0.0.1:11440/v1/agent/approvals/apr_… \
+    -H 'Content-Type: application/json' -d '{"action": "run"}'
+{"id": "apr_…", "object": "approval", "turn_id": "trn_…", "session_id": "ses_…",
+ "name": "run_shell", "status": "resolved", "action": "run", "run": true,
+ "note": "confirmed", "resolved_at": "…"}
+```
+
+| Request body | Effect |
+| --- | --- |
+| `{"action": "run"}` | Run this call once |
+| `{"action": "remember"}` | Run it, remembering the exact call for the session |
+| `{"action": "rule", "rule": {"kind": "shell", "pattern": "make :*"}}` | Run it and store a generalized rule (`call`, `shell`, `path` or `python`) |
+| `{"action": "auto"}` | Allow everything for the rest of this turn |
+| `{"action": "deny"}` | Refuse it; the model gets a not-run note |
 
 **Disconnects and cancellation.** A dropped event stream is an
 unsubscribe — the turn keeps running (its results land in the session)
@@ -662,9 +764,29 @@ record:
  "session_id": null, "created_at": "…", "url": "/v1/artifacts/art_…"}
 ```
 
+```console
+$ B64=$(base64 -w0 report.txt)
+$ curl -s http://127.0.0.1:11440/v1/files \
+    -H 'Content-Type: application/json' \
+    -d "{\"filename\": \"report.txt\", \"media_type\": \"text/plain\",
+         \"data_base64\": \"$B64\"}"
+{"id": "art_…", "url": "/v1/artifacts/art_…", …}
+
+$ curl -s -o report.txt http://127.0.0.1:11440/v1/artifacts/art_…   # download
+$ curl -s http://127.0.0.1:11440/v1/artifacts/art_…/meta           # the ref
+```
+
 Messages reference it as `{"type": "file", "file_id": "art_…"}` — in
 agent-turn content arrays and in OpenAI messages alike; a missing or
-expired id is a structured `404 artifact_not_found` before inference.
+expired id is a structured `404 artifact_not_found` before inference:
+
+```json
+{"role": "user", "content": [
+  {"type": "text", "text": "Summarize this report"},
+  {"type": "file", "file_id": "art_…"}
+]}
+```
+
 Artifacts are **immutable snapshots** (the hash and size come from the
 stored bytes), live under `~/etc/data/ollamarun/artifacts/` (opaque ids,
 index-driven lookup, sanitized display names only, and a resolved-root
@@ -692,6 +814,21 @@ accept `num_ctx` (a positive integer, refused past the model's trained
 maximum) and `gpu_layers` (`N`, `P%`, `+N`/`-N`, `all`, `cpu` or `auto`; a
 change unloads the resident model, exactly like `/gpu-layers`).
 
+```console
+$ curl -s http://127.0.0.1:11440/v1/sessions \
+    -H 'Content-Type: application/json' \
+    -d '{"model": "qwen3:8b", "title": "build log triage", "tags": ["infra"]}'
+{"id": "ses_…", "object": "session", "title": "build log triage",
+ "model": "qwen3:8b", "host": "http://127.0.0.1:11434", "tags": ["infra"],
+ "messages": 0, "turns": 0, "system": null, "artifacts": [],
+ "active_turn_id": null, "created_at": "…", "updated_at": "…"}
+
+$ curl -s -X PATCH http://127.0.0.1:11440/v1/sessions/ses_… \
+    -H 'Content-Type: application/json' \
+    -d '{"num_ctx": 32768, "gpu_layers": "80%",
+         "parameters": {"temperature": 0.4}}'
+```
+
 Fitting comes in two speeds. `POST /v1/agent/fit` estimates synchronously
 (no model loads) — `{model?, session_id?, mode: "gpu"|"cpu", cpu_percent,
 gpu_layers?, apply?}` — and returns the `num_ctx`, the bound and a report
@@ -710,6 +847,31 @@ never a blocking probe — persists the fitted context and reports it as a
 typed `session.fit` event and `result.fit` on the turn status; a failed fit
 leaves the context unchanged. `serve_fit` gates the whole surface:
 `"probe"` (default), `"estimate"` (no probing) or `"off"`.
+
+```console
+# estimate only -- never loads the model; `apply` writes it to the session
+$ curl -s http://127.0.0.1:11440/v1/agent/fit \
+    -H 'Content-Type: application/json' \
+    -d '{"session_id": "ses_…", "mode": "gpu", "apply": true}'
+{"object": "fit", "model": "qwen3:8b", "mode": "gpu", "num_ctx": 131072,
+ "source": "estimate", "bound": "max_gpu", "gpu_layers": null, "applied": true,
+ "report": {"weights_bytes": …, "kv_per_token": …, "free_bytes": …, …}}
+
+# verify by loading: an asynchronous probe job (202), then poll it
+$ curl -s http://127.0.0.1:11440/v1/agent/fits \
+    -H 'Content-Type: application/json' \
+    -d '{"session_id": "ses_…", "mode": "cpu", "cpu_percent": 80}'
+{"id": "fit_…", "object": "fit", "status": "queued", "session_id": "ses_…",
+ "mode": "cpu", "probe": true, "apply": false, "warnings": [],
+ "status_url": "/v1/agent/fits/fit_…",
+ "cancel_url": "/v1/agent/fits/fit_…/cancel"}
+
+$ curl -s http://127.0.0.1:11440/v1/agent/fits/fit_…
+{"id": "fit_…", "object": "fit", "status": "completed",
+ "progress": {"stage": "probe", "mode": "cpu", "ctx": 65536},
+ "applied": false, "result": {"model": "qwen3:8b", "mode": "cpu",
+ "num_ctx": 65536, "source": "probe", "bound": "max_cpu", …}}
+```
 
 **Deployment and auth.** `ollamarun serve` is meant to run on the trusted
 network under the user's own service management (the `serve_*` keys cover
