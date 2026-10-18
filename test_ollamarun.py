@@ -226,6 +226,42 @@ def test_file_mentions() -> int:
         else:
             print(f"FAIL  size guard: {included!r} {warnings!r}")
             failures += 1
+
+        text, included, warnings = orun.expand_file_mentions(
+            "Summarize @note.txt. One word.", base=base, max_kb=64)
+        if len(included) == 1 and included[0].endswith("note.txt") and not warnings \
+                and "hello file" in text:
+            print("PASS  expand_file_mentions strips a sentence-final period")
+        else:
+            print(f"FAIL  sentence-final period: {included!r} {warnings!r}")
+            failures += 1
+
+        text, included, warnings = orun.expand_file_mentions(
+            "See (@note.txt) and @note.txt, then @note.txt!", base=base, max_kb=64)
+        if len(included) == 3 and not warnings \
+                and all(path.endswith("note.txt") for path in included):
+            print("PASS  expand_file_mentions strips closing punctuation")
+        else:
+            print(f"FAIL  closing punctuation: {included!r} {warnings!r}")
+            failures += 1
+
+        odd = base / "odd.txt."
+        odd.write_text("punctuation is part of the name\n")
+        _, included, warnings = orun.expand_file_mentions(
+            "@odd.txt.", base=base, max_kb=64)
+        if included == [str(odd)] and not warnings:
+            print("PASS  a real trailing-punctuation filename resolves as typed")
+        else:
+            print(f"FAIL  raw-vs-stripped filename: {included!r} {warnings!r}")
+            failures += 1
+
+        _, included, warnings = orun.expand_file_mentions(
+            "@missing.txt.", base=base, max_kb=64)
+        if not included and warnings and warnings[0] == "@missing.txt.: no such file":
+            print("PASS  a genuine miss still warns with the mention as typed")
+        else:
+            print(f"FAIL  genuine miss: {included!r} {warnings!r}")
+            failures += 1
     return failures
 
 
