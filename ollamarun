@@ -2,6 +2,15 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 2.4
+
+Summary of changes in this version:
+  - Machine-readable stdout is byte-verbatim. `--json`, `--csv` and
+    `--markdown` (the list/search/show/export flags and the chat/embedding
+    `--json` modes) write straight to stdout instead of through the rich
+    console, so a long title, answer or field is never soft-wrapped with a
+    real newline that corrupts the payload.
+
 Version: 2.3
 
 Summary of changes in this version:

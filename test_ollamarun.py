@@ -8,6 +8,7 @@ Run: python3 test_ollamarun.py
 """
 import base64
 import contextlib
+import csv
 import importlib.util
 import inspect
 import io
@@ -3704,46 +3705,46 @@ def test_emit_and_cli_functions() -> int:
             failures += 1
 
         args_json = orun.build_parser().parse_args(["--list", "--json"])
-        with orun.console.capture() as cap:
+        with contextlib.redirect_stdout(io.StringIO()) as out:
             orun.cli_list(args_json, store)
         try:
-            data = json.loads(cap.get())
+            data = json.loads(out.getvalue())
         except ValueError:
             data = None
         if isinstance(data, list) and data and data[0]["title"] == "alpha":
             print("PASS  cli_list --json emits parseable JSON")
         else:
-            print(f"FAIL  cli_list --json: {cap.get()!r}")
+            print(f"FAIL  cli_list --json: {out.getvalue()!r}")
             failures += 1
 
         args_csv = orun.build_parser().parse_args(["--list", "--csv"])
-        with orun.console.capture() as cap:
+        with contextlib.redirect_stdout(io.StringIO()) as out:
             orun.cli_list(args_csv, store)
-        out = cap.get()
-        if out.splitlines()[0].split(",")[0] == "id" and "alpha" in out:
+        text = out.getvalue()
+        if text.splitlines()[0].split(",")[0] == "id" and "alpha" in text:
             print("PASS  cli_list --csv emits a CSV header")
         else:
-            print(f"FAIL  cli_list --csv: {out!r}")
+            print(f"FAIL  cli_list --csv: {text!r}")
             failures += 1
 
         args_search = orun.build_parser().parse_args(["--search", "find", "--markdown"])
-        with orun.console.capture() as cap:
+        with contextlib.redirect_stdout(io.StringIO()) as out:
             code = orun.cli_search(args_search, store)
-        out = cap.get()
-        if code == 0 and out.startswith("| id |") and "alpha" in out:
+        text = out.getvalue()
+        if code == 0 and text.startswith("| id |") and "alpha" in text:
             print("PASS  cli_search --markdown emits a markdown table")
         else:
-            print(f"FAIL  cli_search markdown: {out!r}")
+            print(f"FAIL  cli_search markdown: {text!r}")
             failures += 1
 
         args_export = orun.build_parser().parse_args(
             ["--export", session.id, "--export-format", "json"])
-        with orun.console.capture() as cap:
+        with contextlib.redirect_stdout(io.StringIO()) as out:
             code = orun.cli_export(args_export, store)
-        if code == 0 and '"title": "alpha"' in cap.get():
+        if code == 0 and '"title": "alpha"' in out.getvalue():
             print("PASS  cli_export --export-format json")
         else:
-            print(f"FAIL  cli_export json: {cap.get()!r}")
+            print(f"FAIL  cli_export json: {out.getvalue()!r}")
             failures += 1
 
         args_missing = orun.build_parser().parse_args(["--show", "no-such-session"])
@@ -3754,6 +3755,104 @@ def test_emit_and_cli_functions() -> int:
         else:
             print(f"FAIL  cli_show missing: {cap.get()!r}")
             failures += 1
+    return failures
+
+
+def test_machine_output_verbatim() -> int:
+    """Machine-readable stdout must be byte-verbatim, never wrapped (#42)."""
+    failures = 0
+
+    def check(name, condition, detail=""):
+        nonlocal failures
+        if condition:
+            print(f"PASS  {name}")
+        else:
+            print(f"FAIL  {name}: {detail}")
+            failures += 1
+
+    def machine(call):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            code = call()
+        return code, out.getvalue()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "sessions",
+                                  index_path=Path(tmp) / "index.json")
+        long_title = "a long session title " + "x" * 200
+        session = orun.Session.create("m1", "http://h", title=long_title)
+        session.add_message("user", "hello")
+        store.save(session)
+
+        args = orun.build_parser().parse_args(["--list", "--json"])
+        _, out = machine(lambda: orun.cli_list(args, store))
+        try:
+            data = json.loads(out)
+            ok = isinstance(data, list) and bool(data) and data[0]["title"] == long_title
+        except ValueError:
+            ok = False
+        check("--list --json parses with a long title", ok, out[:120])
+
+        args = orun.build_parser().parse_args(["--list", "--csv"])
+        _, out = machine(lambda: orun.cli_list(args, store))
+        rows = list(csv.reader(io.StringIO(out)))
+        check("--list --csv keeps one row per session",
+              len(rows) == 2 and rows[1][1] == long_title, out[:120])
+
+        args = orun.build_parser().parse_args(["--list", "--markdown"])
+        _, out = machine(lambda: orun.cli_list(args, store))
+        rows = out.splitlines()
+        check("--list --markdown keeps the row on one line",
+              len(rows) == 3 and long_title in rows[2], out[:120])
+
+        args = orun.build_parser().parse_args(["--show", session.id, "--json"])
+        _, out = machine(lambda: orun.cli_show(args, store, dict(orun.DEFAULT_CONFIG)))
+        try:
+            ok = json.loads(out)["title"] == long_title
+        except (ValueError, KeyError):
+            ok = False
+        check("--show --json is parseable", ok, out[:120])
+
+        args = orun.build_parser().parse_args(
+            ["--export", session.id, "--export-format", "json"])
+        _, out = machine(lambda: orun.cli_export(args, store))
+        try:
+            ok = json.loads(out)["title"] == long_title
+        except (ValueError, KeyError):
+            ok = False
+        check("--export json is parseable", ok, out[:120])
+
+        args = orun.build_parser().parse_args(
+            ["--export", session.id, "--export-format", "md"])
+        _, out = machine(lambda: orun.cli_export(args, store))
+        check("--export md keeps the long line intact", long_title in out, out[:120])
+
+        class EmbedClient:
+            def embed(self, model, inputs, *, truncate=True, dimensions=None,
+                      options=None):
+                return {"embeddings": [[0.1, 0.2]], "note": "y" * 300}
+
+        code, out = machine(lambda: orun.run_embed(
+            EmbedClient(), "m", "p", truncate=True, dimensions=None, json_out=True))
+        try:
+            payload = json.loads(out)
+            ok = code == 0 and payload["note"] == "y" * 300
+        except ValueError:
+            ok = False
+        check("embedding --json is verbatim", ok, out[:120])
+
+        client = _FakeClient(chat_once_reply="z" * 300)
+        args = orun.build_parser().parse_args(["m1", "--json", "--no-tools", "--no-save"])
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store,
+                         orun.Session.create("m1", client.base))
+        repl._build_prompt_session = lambda: None
+        code, out = machine(lambda: orun.run_once(
+            args, dict(orun.DEFAULT_CONFIG), client, store, repl.session, "hello", repl))
+        try:
+            payload = json.loads(out)
+            ok = code == 0 and payload["message"]["content"] == "z" * 300
+        except (ValueError, KeyError):
+            ok = False
+        check("chat --json is verbatim", ok, out[:120])
     return failures
 
 
@@ -7703,6 +7802,7 @@ if __name__ == "__main__":
              + test_ram_helpers() + test_cpu_fit() + test_cmd_num_ctx_max_cpu()
              + test_model_profile()
              + test_emit_and_cli_functions()
+             + test_machine_output_verbatim()
              + test_build_parser_flags() + test_parser_intermixed()
              + test_remote_hosts()
              + test_pull_and_disk_helpers() + test_ensure_model()

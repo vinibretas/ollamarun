@@ -14,6 +14,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -760,6 +761,20 @@ def human_tokens(value: Optional[int]) -> str:
     if value is None:
         return "?"
     return str(value) if value < 1000 else f"{value / 1000:.3f}k"
+
+
+def stdout_text(text: str) -> None:
+    """Write machine-readable text to stdout verbatim -- never through rich.
+
+    The shared console soft-wraps at the terminal width (80 when piped), which
+    inserts real newlines inside JSON strings, CSV fields and markdown rows.
+    These formats must reach a pipe byte-for-byte, so write directly and only
+    add the trailing newline `print` would have added.
+    """
+    sys.stdout.write(text)
+    if not text.endswith("\n"):
+        sys.stdout.write("\n")
+    sys.stdout.flush()
 
 
 def format_context(used: Optional[int], total: Optional[int]) -> str:
