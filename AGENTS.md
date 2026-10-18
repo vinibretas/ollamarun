@@ -445,7 +445,9 @@ a module's own docstring for what lives there before editing:
    `cmd_num_ctx` are their only callers (`resolve_num_ctx` is reused by
    `main()` in `cli.py` for `--num-ctx`). `ApprovalPicker` and its runners are
    re-exported from `ui.py` for compatibility.
-19. **`tui.py`** — the optional Textual front end (`--ui tui`): the app
+19. **`tui.py`** — the optional Textual front end (`--ui tui`), deprecated:
+   it will be rewritten as a pure `ollamarun serve` API client instead of
+   reaching into the runtime in-process. Current code: the app
    (transcript pane / rule / status bar / always-on `PromptInput`),
    `TuiStreamSink` (the `StreamSink` that paints the streaming answer),
    `TranscriptWriter` (a file-like sink capturing everything printed through

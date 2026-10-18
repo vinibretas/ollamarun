@@ -55,6 +55,10 @@ manage sessions and files — because that is the same loop the terminal drives.
 See [Agent API](#agent-api-turns-events-approvals-sessions) for the surface it
 will build on.
 
+The existing Textual TUI is deprecated in the same light: it will be
+rewritten as a pure client of that API instead of reaching into the runtime
+in-process, so every front end speaks one interface.
+
 ## Status
 
 Early, single-developer and moving. Built against one Linux box and a small
@@ -76,9 +80,9 @@ deal — expect the structure to keep changing as the learning continues.
 - **Sessions that persist.** One atomic JSON per conversation plus an index
   under `~/etc/data/ollamarun/`, with search, export (md/json/html), branch,
   tags and `trash-put` deletes.
-- **Two front ends.** The prompt_toolkit inline REPL (default) or `--ui tui`:
-  transcript pane, status bar, and an input box that stays usable while the
-  model works.
+- **Two front ends.** The prompt_toolkit inline REPL (default) or `--ui tui`
+  (deprecated — see [Front ends](#front-ends)): transcript pane, status bar,
+  and an input box that stays usable while the model works.
 - **Any machine on the tailnet.** `--remote NAME` runs all inference and model
   management on another machine — a name defined in config `remote_hosts`, or
   any `host[:port]` — while sessions, files and tools stay local.
@@ -106,8 +110,8 @@ $ ./ollamarun qwen3:8b                        # interactive REPL
 ```
 
 Optional extras: `pylatexenc` (inline-math fallback), `textual` (the
-`--ui tui` front end), `ddgs` (the `web_search` tool). The test suite
-additionally needs `openai` and `pyflakes`:
+deprecated `--ui tui` front end), `ddgs` (the `web_search` tool). The test
+suite additionally needs `openai` and `pyflakes`:
 
 ```console
 $ pip install --user openai pyflakes
@@ -260,6 +264,11 @@ history (unless `OLLAMA_NOHISTORY` is set) and Ctrl+G to open
 `$OLLAMA_EDITOR` on the current input. See [Slash commands](#slash-commands).
 
 ### TUI (`--ui tui`)
+
+> **Deprecated.** The Textual front end still works, but it is not the future:
+> it talks to the runtime in-process, and it will be rewritten as a pure client
+> of the `ollamarun serve` API — the same direction as the planned web UI. The
+> inline REPL is the supported front end meanwhile.
 
 `--ui tui` (config `"ui": "tui"`, or `--ui auto` to use it when the optional
 `textual` package is installed) separates the interactive session into panes:
