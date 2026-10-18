@@ -8,6 +8,28 @@ from typing import Optional
 
 _FILE_MENTION_RE = re.compile(r"(?<!\w)@([^\s@]+)")
 
+#: Sentence punctuation a mention may run into (`@notes.txt.`); the path is
+#: tried exactly as typed first, then with these stripped, so a file whose
+#: name really ends in punctuation still resolves.
+_MENTION_TRAILING = ".,;:!?)]}>'\"…"
+
+
+def _mention_file(raw: str, base: Path) -> Optional[Path]:
+    """The file a mention capture names, or None.
+
+    The raw path wins; the fallback strips trailing sentence punctuation
+    before deciding "no such file", leaving the punctuation in the prompt.
+    """
+    for candidate_text in (raw, raw.rstrip(_MENTION_TRAILING)):
+        if not candidate_text:
+            continue
+        candidate = Path(os.path.expanduser(candidate_text))
+        if not candidate.is_absolute():
+            candidate = base / candidate
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
 
 def expand_file_mentions(text: str, base: Optional[Path] = None,
                          max_kb: int = 256) -> tuple[str, list[str], list[str]]:
@@ -18,10 +40,8 @@ def expand_file_mentions(text: str, base: Optional[Path] = None,
     appended: list[str] = []
     for match in _FILE_MENTION_RE.finditer(text):
         raw = match.group(1)
-        candidate = Path(os.path.expanduser(raw))
-        if not candidate.is_absolute():
-            candidate = base / candidate
-        if not candidate.exists() or not candidate.is_file():
+        candidate = _mention_file(raw, base)
+        if candidate is None:
             warnings.append(f"@{raw}: no such file")
             continue
         try:

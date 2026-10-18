@@ -2,6 +2,15 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 2.6
+
+Summary of changes in this version:
+  - An `@file` mention no longer swallows trailing sentence punctuation:
+    `@/tmp/notes.txt.` inlines `notes.txt` and leaves the `.` in the
+    prompt, with the path as typed still tried first so a file whose name
+    really ends in punctuation keeps resolving. The mentions page now
+    describes the rule instead of the old failure.
+
 Version: 2.5
 
 Summary of changes in this version:

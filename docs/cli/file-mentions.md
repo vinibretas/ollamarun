@@ -7,7 +7,11 @@ without a tool call.
 
 ## Syntax
 
-- `@` immediately before a path; the path runs to the next whitespace.
+- `@` immediately before a path; the path runs to the next whitespace. A
+  sentence-final `.`/`,`/`)` and friends right after the mention is **not**
+  part of the path: it stays in the prompt while the file resolves without it
+  (`@/tmp/notes.txt.` inlines `notes.txt`). A file whose name really ends in
+  punctuation is still resolved as typed first.
 - `~` expands to your home; relative paths resolve against the working
   directory the harness runs in.
 - Several mentions in one prompt are all inlined.
@@ -36,16 +40,17 @@ With this file:
 $ printf 'The fjord holds a copper coin of moon.\nSecond line, unremarkable.\n' > /tmp/notes.txt
 ```
 
-Ask about it — note the space before the `?`, which is what ends the path:
+Ask about it — the sentence-final `?` stays in the prompt and does not
+become part of the path (a space is optional there):
 
 ```console
-$ ollamarun --no-tools --no-save llama3.2:3b "What is the first line of @/tmp/notes.txt ? Reply with just that line, verbatim."
+$ ollamarun --no-tools --no-save llama3.2:3b "What is the first line of @/tmp/notes.txt? Reply with just that line, verbatim."
 llama3.2:3b ›
 The fjord holds a copper coin of moon.
 ```
 
 A missing file and an over-limit file both warn and are skipped (the model
-simply does not get them):
+simply does not get them); the warning keeps the mention as you typed it:
 
 ```console
 $ ollamarun --no-tools --no-save llama3.2:3b "Summarize @/tmp/nope.txt in one word."
@@ -69,20 +74,19 @@ window — the [context counter](../cli/rendering/footer.md) and
 [`/context`](../cli/context/overview.md) show the damage, and
 [compaction](../cli/context/compaction.md) can trim older messages.
 
-!!! warning "Punctuation ends the mention"
+!!! tip "Punctuation after a mention"
 
-    The path ends only at whitespace, so a sentence-final `.`/`,`/`)` right
-    after the mention becomes part of the filename and the file is not
-    inlined:
+    A sentence-final `.`/`,`/`)` right after the mention is kept in the
+    prompt, not treated as part of the filename, so natural sentences work:
 
     ```console
     $ ollamarun --no-tools --no-save llama3.2:3b "Summarize @/tmp/notes.txt. One word."
-    @/tmp/notes.txt.: no such file
+    llama3.2:3b ›
+    Moon
     ```
 
-    Put a space between the path and the punctuation
-    (`@/tmp/notes.txt .`) or reorder the sentence. Tracked as
-    [issue #39](https://github.com/vinibretas/ollamarun/issues/39).
+    A file whose name genuinely ends in punctuation (say `notes.txt.`) is
+    resolved as typed first, so it still wins over the stripped fallback.
 
 ## Where it fits
 
