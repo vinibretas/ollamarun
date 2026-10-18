@@ -11,13 +11,8 @@ $ ollamarun                             # no model: picker, then the REPL
 
 With a prompt the run is one generation and exits; without one it is the
 interactive [REPL](../cli/repl.md) (a piped stdin counts as the prompt too).
-
-!!! warning "Keep flags out of the middle"
-
-    A flag between `MODEL` and `PROMPT` — `ollamarun llama3.2:3b --no-tools
-    "hi"` — is an argument-parsing error (`unrecognized arguments: hi`).
-    Put the flags before the model or after the prompt, as above.
-    (Tracked as [issue #37](https://github.com/vinibretas/ollamarun/issues/37).)
+Flags may sit anywhere relative to `MODEL` and `PROMPT` — `ollamarun
+llama3.2:3b --no-tools "hi"` runs exactly like the forms above.
 
 The reference below is the same surface as `ollamarun --help`, grouped by
 what the flags are for.

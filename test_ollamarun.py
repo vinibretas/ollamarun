@@ -3850,6 +3850,72 @@ def test_build_parser_flags() -> int:
     return failures
 
 
+def test_parser_intermixed() -> int:
+    """Flags may sit between MODEL and PROMPT (#37)."""
+    failures = 0
+    parser = orun.build_parser()
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "sessions",
+                                  index_path=Path(tmp) / "index.json")
+        cases = [
+            ("a flag between model and prompt",
+             ["qwen3:0.6b", "--no-tools", "hi"],
+             lambda a: a.model == "qwen3:0.6b" and a.prompt == ["hi"] and a.no_tools),
+            ("several flags between model and prompt",
+             ["qwen3:0.6b", "--no-tools", "--no-save", "hi"],
+             lambda a: a.prompt == ["hi"] and a.no_tools and a.no_save),
+            ("a flag with a value between model and prompt",
+             ["m1", "--num-ctx", "4096", "hi"],
+             lambda a: a.prompt == ["hi"] and a.num_ctx == "4096"),
+            ("a repeatable flag between model and prompt",
+             ["m1", "--image", "a.png", "hi"],
+             lambda a: a.prompt == ["hi"] and a.image == ["a.png"]),
+            ("keepalive between model and prompt",
+             ["m1", "--keepalive", "2h", "hi"],
+             lambda a: a.prompt == ["hi"] and a.keepalive == "2h"),
+            ("option between model and prompt",
+             ["m1", "--option", "temperature=0.2", "hi"],
+             lambda a: a.prompt == ["hi"] and a.option == ["temperature=0.2"]),
+            ("format between model and prompt",
+             ["m1", "--format", "json", "hi"],
+             lambda a: a.prompt == ["hi"] and a.format == "json"),
+            ("flags first still parse",
+             ["--no-tools", "m1", "hi"],
+             lambda a: a.model == "m1" and a.prompt == ["hi"] and a.no_tools),
+            ("flags last still parse",
+             ["m1", "hi", "--no-tools"],
+             lambda a: a.model == "m1" and a.prompt == ["hi"] and a.no_tools),
+            ("a flag value is not mistaken for a prompt",
+             ["m1", "--render", "plain"],
+             lambda a: a.model == "m1" and a.prompt == [] and a.render == "plain"),
+            ("inspection flags with no positionals",
+             ["--list", "--json"],
+             lambda a: a.list and a.json and a.model is None),
+            ("an optional-value flag keeps consuming its value",
+             ["m1", "--think", "hi"],
+             lambda a: a.model == "m1" and a.prompt == [] and a.think == "hi"),
+            ("multi-word prompts collect",
+             ["m1", "tell", "me", "more"],
+             lambda a: a.prompt == ["tell", "me", "more"]),
+            ("-c prompt followed by a flag",
+             ["-c", "hello world", "--render", "plain"],
+             lambda a: a.continue_ == "__latest__" and a.model == "hello world"
+             and a.render == "plain"),
+        ]
+        for name, argv, ok in cases:
+            try:
+                args = orun.parse_cli_args(parser, argv, store)
+                passed = bool(ok(args))
+            except SystemExit:
+                passed = False
+            if passed:
+                print(f"PASS  parse_cli_args {name}")
+            else:
+                print(f"FAIL  parse_cli_args {name}: {argv!r}")
+                failures += 1
+    return failures
+
+
 def test_remote_hosts() -> int:
     failures = 0
     config = dict(orun.DEFAULT_CONFIG)
@@ -7627,7 +7693,8 @@ if __name__ == "__main__":
              + test_ram_helpers() + test_cpu_fit() + test_cmd_num_ctx_max_cpu()
              + test_model_profile()
              + test_emit_and_cli_functions()
-             + test_build_parser_flags() + test_remote_hosts()
+             + test_build_parser_flags() + test_parser_intermixed()
+             + test_remote_hosts()
              + test_pull_and_disk_helpers() + test_ensure_model()
              + test_model_sort() + test_model_picker_sort()
              + test_model_command_sort() + test_sort_flag()
