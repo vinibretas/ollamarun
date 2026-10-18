@@ -349,12 +349,14 @@ def test_session_store() -> int:
             print(f"FAIL  search: {hits}")
             failures += 1
 
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            html = orun.export_html(loaded)
         if orun.export_markdown(loaded).startswith("# first") \
                 and '"schema": 1' in orun.export_json(loaded) \
-                and "<html" in orun.export_html(loaded):
+                and "<html" in html and out.getvalue() == "":
             print("PASS  exports md/json/html")
         else:
-            print("FAIL  exports")
+            print(f"FAIL  exports: stdout={out.getvalue()!r}")
             failures += 1
 
         other = orun.Session.create("m2", "http://127.0.0.1:11434", title="second")
