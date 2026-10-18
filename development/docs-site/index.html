@@ -3230,6 +3230,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Docs site
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -3246,6 +3264,69 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#how-the-pages-relate-to-the-repository" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How the pages relate to the repository
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#examples-are-live-verified" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Examples are live-verified
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#building-and-deploying" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Building and deploying
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#adding-a-page" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Adding a page
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3370,6 +3451,58 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#how-the-pages-relate-to-the-repository" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How the pages relate to the repository
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#examples-are-live-verified" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Examples are live-verified
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#building-and-deploying" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Building and deploying
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#adding-a-page" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Adding a page
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3406,15 +3539,15 @@
 <code>docs/</code> holds one page per feature, grouped by surface — <code>cli/</code>, <code>api/</code>,
 <code>tui/</code>, <code>web-ui/</code> — with global material in <code>getting-started/</code>, <code>config/</code>,
 <code>project/</code>, <code>development/</code> and <code>design/</code>. Collections that are one feature
-(the slash commands, the tools) get a single reference page with a section per
-item.</p>
-<p>Two kinds of pages:</p>
+(the slash commands, the tools) get a single reference page with a section
+per item.</p>
+<h2 id="how-the-pages-relate-to-the-repository">How the pages relate to the repository<a class="headerlink" href="#how-the-pages-relate-to-the-repository" title="Permanent link">&para;</a></h2>
 <ul>
-<li>Feature pages mirror the README's material page by page — the README is the
-  GitHub front page, the site is the browsable version — so a behavior change
-  updates both.</li>
-<li>A few pages are snippet includes of the repository's own files, so they
-  cannot drift from their sources:</li>
+<li><strong>Feature pages are the browsable reference.</strong> <code>README.md</code> stays the
+  GitHub front page — short, scannable, linking here for depth. When a
+  behavior changes, update both: the README paragraph and the site page.</li>
+<li><strong>A few pages are snippet includes</strong> of the repository's own files, so
+  they cannot drift:</li>
 </ul>
 <table>
 <thead>
@@ -3438,19 +3571,47 @@ item.</p>
 </tr>
 </tbody>
 </table>
+<p>Edit the source files, never a generated page, and keep the snippet
+- <strong>Command and tool text lives in the repository</strong>, not duplicated: the
+  slash-command reference mirrors <code>COMMAND_INFO</code>, the tool reference mirrors
+  <code>defs/tools/*.json</code>, and the config reference mirrors <code>DEFAULT_CONFIG</code>
+  (<code>ollamarun_lib/constants.py</code>). Change those files and the pages must
+  follow.</p>
+<h2 id="examples-are-live-verified">Examples are live-verified<a class="headerlink" href="#examples-are-live-verified" title="Permanent link">&para;</a></h2>
+<p>Every example block in this site was executed against a running harness
+before it landed — commands, flags, API calls and their outputs. When you
+change behavior, re-run the examples on the affected pages; a stale example
+is a bug in the docs, same as a broken link.</p>
+<p>Small conventions that keep the examples honest:</p>
+<ul>
+<li><code>console</code> blocks show real commands; output is trimmed with <code>…</code> where a
+  full capture would be noise, never invented.</li>
+<li>Outputs that depend on machine state (model names, timings, ids) use
+  representative values and say so where it matters.</li>
+<li>Long animated terminal moments (the live view) are shown as the final
+  frame, not the redraw storm.</li>
+</ul>
+<h2 id="building-and-deploying">Building and deploying<a class="headerlink" href="#building-and-deploying" title="Permanent link">&para;</a></h2>
 <p>Install the tooling (<code>mkdocs-material</code> pulls in <code>mkdocs</code> and
 <code>pymdown-extensions</code>; on a PEP 668 box add <code>--break-system-packages</code>, which
-still only touches the user site) and build:</p>
+still only touches the user site):</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span>pip<span class="w"> </span>install<span class="w"> </span>--user<span class="w"> </span>mkdocs-material
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="gp">$ </span>mkdocs<span class="w"> </span>serve<span class="w">            </span><span class="c1"># live preview on http://127.0.0.1:8000</span>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="gp">$ </span>mkdocs<span class="w"> </span>build<span class="w"> </span>--strict<span class="w">   </span><span class="c1"># warnings fail the build; run before deploying</span>
 </code></pre></div>
-<p>Deploying is <code>mkdocs gh-deploy</code>: it builds the site and pushes the <code>gh-pages</code>
-branch, which GitHub Pages serves at <a href="https://vinibretas.github.io/ollamarun/">https://vinibretas.github.io/ollamarun/</a>.</p>
-<p>To add a page, put it under its surface (or <code>getting-started/</code>/<code>config/</code> for
-global material), register it in <code>mkdocs.yml</code>'s <code>nav</code>, and prefer an include
-over copying text. Feature pages created as stubs carry a single
-<code>*This page is not written yet.*</code> line; replace it when the page is written.</p>
+<p>Deploying is <code>mkdocs gh-deploy</code>: it builds the site and pushes the
+<code>gh-pages</code> branch, which GitHub Pages serves at
+<a href="https://vinibretas.github.io/ollamarun/">https://vinibretas.github.io/ollamarun/</a>.</p>
+<h2 id="adding-a-page">Adding a page<a class="headerlink" href="#adding-a-page" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Put the file under its surface (<code>docs/cli/</code>, <code>docs/api/</code>, …) or the
+   global directories.</li>
+<li>Register it in <code>mkdocs.yml</code>'s <code>nav</code>.</li>
+<li>Prefer a snippet include over copied text when the repository already has
+   the source; otherwise write the page in the feature style above.</li>
+<li><code>mkdocs build --strict</code> — the link/anchor validation fails on broken
+   references, which is the point.</li>
+</ol>
 
 
 
