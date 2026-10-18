@@ -2997,7 +2997,7 @@
   <span class="md-ellipsis">
     
   
-    Development
+    Project
   
 
     
@@ -3010,6 +3010,157 @@
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/license/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    License
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/acknowledgements/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Acknowledgements
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3134,10 +3285,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
             
   
   
@@ -3155,8 +3306,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3253,7 +3404,20 @@
 
 
 <h1 id="storage">Storage<a class="headerlink" href="#storage" title="Permanent link">&para;</a></h1>
-<p><em>This page is not written yet.</em></p>
+<p>Every conversation is one atomic JSON file plus <code>index.json</code> under
+<code>~/etc/data/ollamarun/sessions/</code> (prompt history in <code>~/etc/data/ollamarun/</code>,
+honoring <code>OLLAMA_NOHISTORY</code>); this is a session store, not a cache — nothing
+is deleted without going through <code>trash-put</code>.</p>
+<ul>
+<li><code>--no-save</code> keeps a run out of the store entirely; <code>--json</code>/<code>--raw</code> cover
+  scripting.</li>
+<li><code>/set</code>, <code>/show</code>, <code>/load</code>, <code>/save</code> (<code>/api/create</code>), <code>/clear</code>, <code>/new</code>, <code>/bye</code>
+  mirror ollama's REPL; <code>/undo</code>, <code>/retry</code>, <code>/edit</code>, <code>/branch</code>, <code>/context</code>,
+  <code>/summarize</code>, <code>/image</code>, <code>/copy</code>, <code>/export</code>, <code>/stats</code>, <code>/title</code>, <code>/tag</code>,
+  <code>/sessions</code> and the rest are described in <a href="../../commands/">Slash commands</a>.</li>
+</ul>
+<p>Paths and the debug log are listed under
+<a href="../../../config/data-and-logs/">Data and logs</a>.</p>
 
 
 
@@ -3327,6 +3491,10 @@
   <div class="md-footer-meta md-typeset">
     <div class="md-footer-meta__inner md-grid">
       <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Apache-2.0 — provided as is, with no warranty.
+    </div>
   
   
     Made with

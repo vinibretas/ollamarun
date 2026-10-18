@@ -2997,7 +2997,7 @@
   <span class="md-ellipsis">
     
   
-    Development
+    Project
   
 
     
@@ -3010,6 +3010,157 @@
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/license/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    License
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/acknowledgements/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Acknowledgements
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3134,10 +3285,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
             
   
   
@@ -3155,8 +3306,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3253,7 +3404,19 @@
 
 
 <h1 id="probes-and-calibration">Probes and calibration<a class="headerlink" href="#probes-and-calibration" title="Permanent link">&para;</a></h1>
-<p><em>This page is not written yet.</em></p>
+<p><code>--probe</code> turns an estimate into a measurement: candidates are actually
+loaded and each real GPU split is read back from <code>/api/ps</code>, solving the
+measured bytes-per-token line for the capacity. Both <a href="../max-gpu/">max-gpu</a> and
+<a href="../max-cpu/">max-cpu</a> take it (<code>/num-ctx --max-gpu --probe</code>,
+<code>/num-ctx --max-cpu N --probe</code>).</p>
+<p>Resident and probe measurements calibrate future estimates using a
+conservative per-token slope and fixed overhead; the profile formula remains
+the fallback. The bounded cache is scoped to model digest, host, hardware,
+placement and KV settings, expires after 180 days, and is stored at
+<code>~/etc/data/ollamarun/ctxfit-calibration.json</code>.</p>
+<p>Config knobs: <code>max_gpu_margin_mb</code> (1 GiB), <code>max_gpu_overhead_mb</code> (0; the fit
+margin already covers llama.cpp's projected buffers), <code>max_gpu_probes</code> (10),
+<code>max_cpu_overhead_mb</code> (256 MiB) and <code>max_cpu_probes</code> (10).</p>
 
 
 
@@ -3327,6 +3490,10 @@
   <div class="md-footer-meta md-typeset">
     <div class="md-footer-meta__inner md-grid">
       <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Apache-2.0 — provided as is, with no warranty.
+    </div>
   
   
     Made with

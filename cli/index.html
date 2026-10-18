@@ -2985,7 +2985,7 @@
   <span class="md-ellipsis">
     
   
-    Development
+    Project
   
 
     
@@ -2998,6 +2998,157 @@
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../project/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../project/license/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    License
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../project/acknowledgements/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Acknowledgements
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3122,10 +3273,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
             
   
   
@@ -3143,8 +3294,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3241,7 +3392,43 @@
 
 
 <h1 id="cli-overview">CLI overview<a class="headerlink" href="#cli-overview" title="Permanent link">&para;</a></h1>
-<p><em>This page is not written yet.</em></p>
+<p><code>ollamarun</code> is the terminal harness. Every <code>ollama run</code> flag (ollama 0.34) is
+accepted and extended, so it still doubles as a drop-in replacement for the
+CLI it started as: run it one-shot with a prompt, or with none for the
+interactive REPL.</p>
+<ul>
+<li><strong>Agent loop, not a pipe.</strong> The model calls tools through Ollama function
+  calling — shell, Python, files, web, your saved sessions, system stats,
+  speech, the chemical inventory — in multi-round loops. Read-only calls run
+  unattended; everything else asks, with numbered choices and remembered
+  rules. See <a href="tools/">Tools</a>.</li>
+<li><strong>Rendering that keeps up.</strong> Markdown re-renders while tokens stream,
+  display math is laid out in 2D Unicode by a self-contained engine, thinking
+  streams live in a collapsible panel, and a <code>~tok/s · ctx</code> footer ticks with
+  every token (<code>--no-tps</code>/<code>/tps</code> switch it off). See
+  <a href="rendering/markdown/">Streaming markdown</a>.</li>
+<li><strong>Sessions that persist.</strong> One atomic JSON per conversation plus an index
+  under <code>~/etc/data/ollamarun/</code>, with search, export (md/json/html), branch,
+  tags and <code>trash-put</code> deletes. See <a href="sessions/storage/">Storage</a>.</li>
+<li><strong>Two front ends.</strong> The prompt_toolkit inline REPL (default) or <code>--ui tui</code>
+  (deprecated — see <a href="../tui/">TUI</a>): transcript pane, status bar, and
+  an input box that stays usable while the model works.</li>
+<li><strong>Any machine on the tailnet.</strong> <code>--remote NAME</code> runs all inference and model
+  management on another machine — a name defined in config <code>remote_hosts</code>, or
+  any <code>host[:port]</code> — while sessions, files and tools stay local. See
+  <a href="remote/">Remote inference</a>.</li>
+<li><strong>Context and placement fitting.</strong> <code>/num-ctx --max-gpu</code> finds the largest
+  window that stays fully on the GPU, <code>/num-ctx --max-cpu N</code> fills DRAM to N%,
+  <code>--probe</code> verifies by loading and calibrates later estimates, and
+  <code>/gpu-layers</code> pins layer counts. See
+  <a href="context/overview/">Context and placement</a>.</li>
+<li><strong>Model-facing text is data.</strong> Tool definitions and prompts live as
+  JSON/Markdown under <code>ollamarun_lib/defs/</code>, overridable per user without
+  touching Python. See <a href="tools/definitions/">Tool definitions</a> and
+  <a href="../config/prompts/">Prompts</a>.</li>
+</ul>
+<p>Start with <a href="usage/">Usage and flags</a>, or jump straight to
+<a href="repl/">The REPL</a>.</p>
 
 
 
@@ -3315,6 +3502,10 @@
   <div class="md-footer-meta md-typeset">
     <div class="md-footer-meta__inner md-grid">
       <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Apache-2.0 — provided as is, with no warranty.
+    </div>
   
   
     Made with

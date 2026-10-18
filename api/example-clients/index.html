@@ -2995,7 +2995,7 @@
   <span class="md-ellipsis">
     
   
-    Development
+    Project
   
 
     
@@ -3008,6 +3008,157 @@
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../project/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../project/license/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    License
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../project/acknowledgements/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Acknowledgements
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3132,10 +3283,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
             
   
   
@@ -3153,8 +3304,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3251,7 +3402,26 @@
 
 
 <h1 id="example-clients">Example clients<a class="headerlink" href="#example-clients" title="Permanent link">&para;</a></h1>
-<p><em>This page is not written yet.</em></p>
+<p>Two reference clients under <code>examples/</code> double as integration checks — both
+print a <code>PASS</code>/<code>SKIP</code>/<code>FAIL</code> line per step and exit non-zero on a failure:</p>
+<ul>
+<li><code>examples/openai_client.py</code> — the official <code>openai</code> SDK against the <code>/v1</code>
+  surface: the model list, a completion, streaming with usage, embeddings
+  (the SDK's default base64 encoding), <code>n = 2</code> and a tools request. Needs
+  the SDK (<code>pip install --user openai</code>); pass a chat model:</li>
+</ul>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span>python3<span class="w"> </span>examples/openai_client.py<span class="w"> </span>--model<span class="w"> </span>qwen3:8b
+</code></pre></div>
+<ul>
+<li><code>examples/agent_client.py</code> — the native agent flow over plain HTTP:
+  submit a turn, follow the typed SSE stream, resolve a parked approval,
+  read the session summary. <code>--mode interactive --approve run</code> exercises
+  the approval path; <code>--session-id</code> continues an existing session:</li>
+</ul>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gp">$ </span>python3<span class="w"> </span>examples/agent_client.py<span class="w"> </span>--prompt<span class="w"> </span><span class="s2">"List the files in /tmp"</span>
+</code></pre></div>
+<p>Both take <code>--base-url</code> for a remote or non-default listener (the OpenAI one
+wants the <code>/v1</code> suffix).</p>
 
 
 
@@ -3325,6 +3495,10 @@
   <div class="md-footer-meta md-typeset">
     <div class="md-footer-meta__inner md-grid">
       <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Apache-2.0 — provided as is, with no warranty.
+    </div>
   
   
     Made with

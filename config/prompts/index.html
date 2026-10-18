@@ -2995,7 +2995,7 @@
   <span class="md-ellipsis">
     
   
-    Development
+    Project
   
 
     
@@ -3008,6 +3008,157 @@
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../project/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../project/license/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    License
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../project/acknowledgements/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Acknowledgements
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3132,10 +3283,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
             
   
   
@@ -3153,8 +3304,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3251,7 +3402,23 @@
 
 
 <h1 id="prompts">Prompts<a class="headerlink" href="#prompts" title="Permanent link">&para;</a></h1>
-<p><em>This page is not written yet.</em></p>
+<p>The model-facing text lives in files, not code:</p>
+<ul>
+<li><code>ollamarun_lib/defs/prompts/</code> — <code>system.md</code> (the built-in default system
+  prompt), <code>system_tools.md</code> (the tool, web-search, math-in-code and
+  tool-result rules, appended when tools are on), <code>title.md</code> and
+  <code>summarize.md</code> (both take the text to wrap as <code>{{content}}</code>).</li>
+</ul>
+<p>A same-named file under <code>~/etc/config_files/ollamarun-defs/prompts/</code> overrides
+the shipped one, so prompts can be tuned without touching Python.</p>
+<p>Every request carries a system prompt: the session's own (<code>--system</code>,
+<code>--system-file</code>, config <code>system</code>, <code>/system TEXT</code>) when set, the built-in
+default otherwise. <code>--no-system</code> / config <code>system: ""</code> / <code>/system off</code> send
+none, <code>/system clear</code> returns to the default, and <code>/system</code> alone shows what
+is in effect. It is sent as a leading system message and never enters the
+saved history.</p>
+<p>Tool wording is the other half of the model-facing text — see
+<a href="../../cli/tools/definitions/">Tool definitions</a>.</p>
 
 
 
@@ -3325,6 +3492,10 @@
   <div class="md-footer-meta md-typeset">
     <div class="md-footer-meta__inner md-grid">
       <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Apache-2.0 — provided as is, with no warranty.
+    </div>
   
   
     Made with

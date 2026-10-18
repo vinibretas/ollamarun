@@ -2997,7 +2997,7 @@
   <span class="md-ellipsis">
     
   
-    Development
+    Project
   
 
     
@@ -3010,6 +3010,157 @@
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/license/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    License
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/acknowledgements/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Acknowledgements
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3134,10 +3285,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
             
   
   
@@ -3155,8 +3306,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3253,7 +3404,27 @@
 
 
 <h1 id="max-gpu">max-gpu<a class="headerlink" href="#max-gpu" title="Permanent link">&para;</a></h1>
-<p><em>This page is not written yet.</em></p>
+<p><code>--max-gpu</code> picks the largest context that still keeps the model fully on the
+GPU. The model is profiled first: <code>/api/show</code>'s GGUF metadata supplies the
+per-layer KV geometry (hybrid attention, sliding windows and their per-layer
+key/value dims, MLA's compressed latent, recurrent <code>ssm.*</code> state) and the
+parameter count, <code>/api/tags</code> supplies the on-disk size and quantization, and
+the two are cross-checked (<code>params × bytes/param</code>; the model row in the report
+names all of it). Free VRAM (nvidia-smi, locally or over one ssh probe for
+<code>--remote</code> machines) is then reduced by llama.cpp's fit margin
+(<code>max_gpu_margin_mb</code>, 1 GiB by default); the separate <code>max_gpu_overhead_mb</code>
+reserve defaults to 0 because the fit margin already covers the buffers
+llama.cpp projects. Resident models' VRAM is credited back (it returns when
+they reload at the new context), and a pinned
+<a href="../gpu-layers/">gpu-layers</a> is honoured: the output layer and the topmost
+blocks are counted as the offloaded share, and the non-block weights (token
+embeddings, output layer, vision projector) are estimated rather than split
+evenly.</p>
+<p><code>--probe</code> then verifies by loading candidates and reading each real GPU split
+back from <code>/api/ps</code>, solving the measured bytes-per-token line for the
+capacity, and leaves the model warm at the largest 100%-GPU context — see
+<a href="../probes/">Probes and calibration</a>.</p>
+<p>From the REPL: <code>/num-ctx --max-gpu [--probe]</code>.</p>
 
 
 
@@ -3327,6 +3498,10 @@
   <div class="md-footer-meta md-typeset">
     <div class="md-footer-meta__inner md-grid">
       <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Apache-2.0 — provided as is, with no warranty.
+    </div>
   
   
     Made with

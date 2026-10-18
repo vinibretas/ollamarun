@@ -2997,7 +2997,7 @@
   <span class="md-ellipsis">
     
   
-    Development
+    Project
   
 
     
@@ -3010,6 +3010,157 @@
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/license/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    License
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/acknowledgements/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Acknowledgements
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3134,10 +3285,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
             
   
   
@@ -3155,8 +3306,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3253,7 +3404,34 @@
 
 
 <h1 id="approvals-and-policy">Approvals and policy<a class="headerlink" href="#approvals-and-policy" title="Permanent link">&para;</a></h1>
-<p><em>This page is not written yet.</em></p>
+<p>Read-only tools run unattended, as do allowlisted shell commands
+(<code>ls</code>/<code>cat</code>/<code>grep</code>/<code>rg</code>, read-only <code>git</code>, ... — no substitutions or
+redirections) and provably-harmless Python. Everything else lists numbered
+choices — run once, always allow that exact call, or always allow a suggested
+generalized rule (<code>shell: mkdir -p :*</code>, <code>path: ~/proj/**</code>,
+<code>python: imports os</code>) stored for the session — and you type one. Unattended
+runs deny with a note unless <code>-y/--yes</code> or <code>/tools policy auto</code> is in effect.
+<code>dangerous_command()</code> is the floor no rule ever covers: substitutions,
+redirections, privilege/wrapper/interpreter commands, disk-level tools,
+catastrophic <code>rm</code> and pipes into an interpreter always prompt again.</p>
+<ul>
+<li><code>/tools</code> — harness-wide <code>on|off</code>, <code>policy MODE</code>, <code>enable</code>/<code>disable NAME…</code>,
+  <code>allow</code>, <code>rules</code>, plus per-tool control with <code>/tools NAME on|off|help|call
+  ARGS</code> (NAME also takes the invented aliases, e.g. <code>/tools search off</code>).
+  <code>help</code> is generated from the tool's definition JSON — description, every
+  parameter with its type and whether it is required or optional, aliases,
+  approval behaviour, and what an uninstalled tool needs — and <code>call</code> runs
+  the tool yourself through the same approval gate and result panel as a
+  model call (<code>call {"query": "x"}</code>, <code>call query=x max_results=3</code>, or a bare
+  value when a single parameter is required); a manual call never touches the
+  conversation. <code>/tools help</code> (and <code>/help tools</code>) is the reference.</li>
+<li><code>--tools</code> / <code>--no-tools</code> for a single run; config <code>tools</code>, <code>tools_policy</code>,
+  <code>tools_shell_allow</code>, <code>tools_timeout</code>, <code>tools_max_output</code>, <code>tools_max_rounds</code>
+  (default 8), <code>tool_colors</code></li>
+</ul>
+<p>The API surface has its own approval model — a turn parks undecided calls and
+a client resolves them. See
+<a href="../../../api/agent/approvals/">Agent API approvals</a>.</p>
 
 
 
@@ -3327,6 +3505,10 @@
   <div class="md-footer-meta md-typeset">
     <div class="md-footer-meta__inner md-grid">
       <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Apache-2.0 — provided as is, with no warranty.
+    </div>
   
   
     Made with

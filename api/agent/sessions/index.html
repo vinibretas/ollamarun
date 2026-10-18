@@ -2997,7 +2997,7 @@
   <span class="md-ellipsis">
     
   
-    Development
+    Project
   
 
     
@@ -3010,6 +3010,157 @@
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/license/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    License
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/acknowledgements/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Acknowledgements
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3134,10 +3285,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
             
   
   
@@ -3155,8 +3306,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3253,7 +3404,46 @@
 
 
 <h1 id="sessions">Sessions<a class="headerlink" href="#sessions" title="Permanent link">&para;</a></h1>
-<p><em>This page is not written yet.</em></p>
+<p>The durable record behind turns — the same JSON session store the CLI uses:</p>
+<table>
+<thead>
+<tr>
+<th>Endpoint</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET</code>/<code>POST /v1/sessions</code></td>
+<td>list / create sessions</td>
+</tr>
+<tr>
+<td><code>GET</code>/<code>PATCH</code>/<code>DELETE /v1/sessions/{id}</code></td>
+<td>inspect, edit (title/model/system/tags/parameters/<code>num_ctx</code>/<code>gpu_layers</code>) or trash a session; edits and deletes are refused (409 <code>session_busy</code>) while a turn or fit runs</td>
+</tr>
+</tbody>
+</table>
+<p>A session's context size and GPU placement are first-class fields:
+<code>PATCH /v1/sessions/{id}</code> (and the turn <code>settings</code>) accept <code>num_ctx</code> (a
+positive integer, refused past the model's trained maximum) and <code>gpu_layers</code>
+(<code>N</code>, <code>P%</code>, <code>+N</code>/<code>-N</code>, <code>all</code>, <code>cpu</code> or <code>auto</code>; a change unloads the resident
+model, exactly like <code>/gpu-layers</code>).</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:11440/v1/sessions<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">    </span>-H<span class="w"> </span><span class="s1">'Content-Type: application/json'</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span>-d<span class="w"> </span><span class="s1">'{"model": "qwen3:8b", "title": "build log triage", "tags": ["infra"]}'</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="go">{"id": "ses_…", "object": "session", "title": "build log triage",</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="go"> "model": "qwen3:8b", "host": "http://127.0.0.1:11434", "tags": ["infra"],</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="go"> "messages": 0, "turns": 0, "system": null, "artifacts": [],</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="go"> "active_turn_id": null, "created_at": "…", "updated_at": "…"}</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>PATCH<span class="w"> </span>http://127.0.0.1:11440/v1/sessions/ses_…<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">    </span>-H<span class="w"> </span><span class="s1">'Content-Type: application/json'</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">    </span>-d<span class="w"> </span><span class="err">'</span><span class="o">{</span><span class="s2">"num_ctx"</span>:<span class="w"> </span><span class="m">32768</span>,<span class="w"> </span><span class="s2">"gpu_layers"</span>:<span class="w"> </span><span class="s2">"80%"</span>,
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="go">         "parameters": {"temperature": 0.4}}'</span>
+</code></pre></div>
+<p>Session history lives under <code>~/etc/data/ollamarun/sessions/</code> — see
+<a href="../../../cli/sessions/storage/">Storage</a>. Context fitting over the API is on
+<a href="../fits/">Context fits</a>.</p>
 
 
 
@@ -3327,6 +3517,10 @@
   <div class="md-footer-meta md-typeset">
     <div class="md-footer-meta__inner md-grid">
       <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Apache-2.0 — provided as is, with no warranty.
+    </div>
   
   
     Made with

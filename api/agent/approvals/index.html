@@ -2997,7 +2997,7 @@
   <span class="md-ellipsis">
     
   
-    Development
+    Project
   
 
     
@@ -3010,6 +3010,157 @@
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/license/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    License
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/acknowledgements/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Acknowledgements
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3134,10 +3285,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
             
   
   
@@ -3155,8 +3306,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3253,7 +3404,66 @@
 
 
 <h1 id="approvals">Approvals<a class="headerlink" href="#approvals" title="Permanent link">&para;</a></h1>
-<p><em>This page is not written yet.</em></p>
+<p><code>settings.approval</code> decides who answers a tool call:</p>
+<ul>
+<li><code>"policy"</code> (the default) applies the configured tool policy — allowlisted
+  and rule-covered calls run, everything else is denied with a note. The
+  serve policy is never <code>auto</code>; <code>--yes</code> remains the only CLI auto path.</li>
+<li><code>"interactive"</code> parks genuinely undecided calls: the turn enters
+  <code>waiting_approval</code> and emits <code>approval.required</code> with the <code>approval_id</code>,
+  the call, the reason and suggested rules.</li>
+</ul>
+<p><code>POST /v1/agent/approvals/{id}</code> resolves a parked decision. The first decision
+wins; duplicates get <code>409</code>. An unanswered approval times out (config
+<code>serve_approval_timeout</code>, default 300 s) as <strong>denied</strong>: the tool result says
+<code>not run: approval timed out</code> and the model continues.</p>
+<p>The parked event carries everything needed to decide (the client already saw
+it on the stream, as <code>approval.required</code>):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p">{</span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"run_shell"</span><span class="p">,</span><span class="w"> </span><span class="nt">"args"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"command"</span><span class="p">:</span><span class="w"> </span><span class="s2">"rm -rf build"</span><span class="p">},</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w"> </span><span class="nt">"detail"</span><span class="p">:</span><span class="w"> </span><span class="s2">"rm -rf build"</span><span class="p">,</span><span class="w"> </span><span class="nt">"fingerprint"</span><span class="p">:</span><span class="w"> </span><span class="s2">"…"</span><span class="p">,</span><span class="w"> </span><span class="nt">"reason"</span><span class="p">:</span><span class="w"> </span><span class="s2">"catastrophic rm"</span><span class="p">,</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w"> </span><span class="nt">"approval_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"apr_…"</span><span class="p">,</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w"> </span><span class="nt">"suggestions"</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">"kind"</span><span class="p">:</span><span class="w"> </span><span class="s2">"shell"</span><span class="p">,</span><span class="w"> </span><span class="nt">"pattern"</span><span class="p">:</span><span class="w"> </span><span class="s2">"rm -rf build"</span><span class="p">,</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">                  </span><span class="nt">"base"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span><span class="w"> </span><span class="nt">"created"</span><span class="p">:</span><span class="w"> </span><span class="s2">"…"</span><span class="p">}]}</span>
+</code></pre></div>
+<p>The decision is one POST — the body's <code>action</code> picks the outcome:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:11440/v1/agent/approvals/apr_…<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">    </span>-H<span class="w"> </span><span class="s1">'Content-Type: application/json'</span><span class="w"> </span>-d<span class="w"> </span><span class="s1">'{"action": "run"}'</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="go">{"id": "apr_…", "object": "approval", "turn_id": "trn_…", "session_id": "ses_…",</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="go"> "name": "run_shell", "status": "resolved", "action": "run", "run": true,</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="go"> "note": "confirmed", "resolved_at": "…"}</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Request body</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>{"action": "run"}</code></td>
+<td>Run this call once</td>
+</tr>
+<tr>
+<td><code>{"action": "remember"}</code></td>
+<td>Run it, remembering the exact call for the session</td>
+</tr>
+<tr>
+<td><code>{"action": "rule", "rule": {"kind": "shell", "pattern": "make :*"}}</code></td>
+<td>Run it and store a generalized rule (<code>call</code>, <code>shell</code>, <code>path</code> or <code>python</code>)</td>
+</tr>
+<tr>
+<td><code>{"action": "auto"}</code></td>
+<td>Allow everything for the rest of this turn</td>
+</tr>
+<tr>
+<td><code>{"action": "deny"}</code></td>
+<td>Refuse it; the model gets a not-run note</td>
+</tr>
+</tbody>
+</table>
+<p>The rules are the same engine the CLI uses — see
+<a href="../../../cli/tools/approvals/">Approvals and policy</a>.</p>
 
 
 
@@ -3327,6 +3537,10 @@
   <div class="md-footer-meta md-typeset">
     <div class="md-footer-meta__inner md-grid">
       <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Apache-2.0 — provided as is, with no warranty.
+    </div>
   
   
     Made with

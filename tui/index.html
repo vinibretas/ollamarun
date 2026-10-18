@@ -2985,7 +2985,7 @@
   <span class="md-ellipsis">
     
   
-    Development
+    Project
   
 
     
@@ -2998,6 +2998,157 @@
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../project/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../project/license/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    License
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../project/acknowledgements/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Acknowledgements
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3122,10 +3273,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
             
   
   
@@ -3143,8 +3294,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3241,7 +3392,38 @@
 
 
 <h1 id="textual-tui-deprecated">Textual TUI (deprecated)<a class="headerlink" href="#textual-tui-deprecated" title="Permanent link">&para;</a></h1>
-<p><em>This page is not written yet.</em></p>
+<blockquote>
+<p><strong>Deprecated.</strong> The Textual front end still works, but it is not the future:
+it talks to the runtime in-process, and it will be rewritten as a pure client
+of the <code>ollamarun serve</code> API — the same direction as the planned web UI. The
+inline REPL is the supported front end meanwhile.</p>
+</blockquote>
+<p><code>--ui tui</code> (config <code>"ui": "tui"</code>, or <code>--ui auto</code> to use it when the optional
+<code>textual</code> package is installed) separates the interactive session into panes:
+the transcript up top, a rule, a status bar (spinner + state, model and remote,
+thinking/tools/render modes, context tokens and %, live tok/s, queued count,
+key hints) and an input box that stays available while the model works.</p>
+<ul>
+<li><strong>Type while it works.</strong> Enter queues the message and it is handed to the
+  model at the next sub-task boundary — right after a tool result, or in a
+  follow-up round when an answer finishes streaming — so the model continues
+  with the new information instead of dropping what it was doing. Commands
+  that only read state or change display knobs run immediately; the rest
+  queue and run once the turn ends, in order (<code>/queue</code> shows/edits the list).</li>
+<li><strong>Ctrl+B</strong> sends what is typed right now: it cuts a streaming answer short
+  but never kills a tool that is already running (the command keeps running
+  and the model gets its result with your message in the next round).</li>
+<li><strong>Esc Esc</strong> stops the turn (the first Esc arms it). The partial answer is
+  kept as a cancelled message and anything queued then runs as the next turn.</li>
+<li><strong>Ctrl+T</strong> thinking, <strong>Ctrl+G</strong> <code>$EDITOR</code>, <strong>Ctrl+L</strong> clear the transcript,
+  <strong>Ctrl+Q</strong> quit (a second press when busy or with queued items), Tab
+  completion and Up/Down history shared with the inline REPL. Tool approvals
+  ask in a modal (<code>y</code>/<code>a</code>/<code>n</code>/<code>A</code>).</li>
+</ul>
+<p><code>OLLAMARUN_TUI_FULLSCREEN=1</code> runs the app on the alternate screen (the
+transcript disappears on exit instead of staying in the terminal), and
+<code>OLLAMA_TUI_DISABLE</code> keeps <code>--ui tui</code> on the inline REPL. The inline REPL is
+also the fallback whenever Textual is missing or the output is not a terminal.</p>
 
 
 
@@ -3315,6 +3497,10 @@
   <div class="md-footer-meta md-typeset">
     <div class="md-footer-meta__inner md-grid">
       <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Apache-2.0 — provided as is, with no warranty.
+    </div>
   
   
     Made with

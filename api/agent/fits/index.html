@@ -2997,7 +2997,7 @@
   <span class="md-ellipsis">
     
   
-    Development
+    Project
   
 
     
@@ -3010,6 +3010,157 @@
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/license/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    License
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/acknowledgements/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Acknowledgements
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3134,10 +3285,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
             
   
   
@@ -3155,8 +3306,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3253,7 +3404,50 @@
 
 
 <h1 id="context-fits">Context fits<a class="headerlink" href="#context-fits" title="Permanent link">&para;</a></h1>
-<p><em>This page is not written yet.</em></p>
+<p>Context and placement over the API come in two speeds.</p>
+<p><code>POST /v1/agent/fit</code> estimates synchronously (no model loads) —
+<code>{model?, session_id?, mode: "gpu"|"cpu", cpu_percent, gpu_layers?, apply?}</code>
+— and returns the <code>num_ctx</code>, the bound and a report (parameters, weights,
+per-token KV, machine budget); <code>apply: true</code> writes it to the session.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp"># </span>estimate<span class="w"> </span>only<span class="w"> </span>--<span class="w"> </span>never<span class="w"> </span>loads<span class="w"> </span>the<span class="w"> </span>model<span class="p">;</span><span class="w"> </span><span class="sb">`</span>apply<span class="sb">`</span><span class="w"> </span>writes<span class="w"> </span>it<span class="w"> </span>to<span class="w"> </span>the<span class="w"> </span>session
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:11440/v1/agent/fit<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span>-H<span class="w"> </span><span class="s1">'Content-Type: application/json'</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span>-d<span class="w"> </span><span class="s1">'{"session_id": "ses_…", "mode": "gpu", "apply": true}'</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="go">{"object": "fit", "model": "qwen3:8b", "mode": "gpu", "num_ctx": 131072,</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="go"> "source": "estimate", "bound": "max_gpu", "gpu_layers": null, "applied": true,</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="go"> "report": {"weights_bytes": …, "kv_per_token": …, "free_bytes": …, …}}</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="gp"># </span>verify<span class="w"> </span>by<span class="w"> </span>loading:<span class="w"> </span>an<span class="w"> </span>asynchronous<span class="w"> </span>probe<span class="w"> </span>job<span class="w"> </span><span class="o">(</span><span class="m">202</span><span class="o">)</span>,<span class="w"> </span><span class="k">then</span><span class="w"> </span>poll<span class="w"> </span>it
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:11440/v1/agent/fits<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">    </span>-H<span class="w"> </span><span class="s1">'Content-Type: application/json'</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">    </span>-d<span class="w"> </span><span class="s1">'{"session_id": "ses_…", "mode": "cpu", "cpu_percent": 80}'</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="go">{"id": "fit_…", "object": "fit", "status": "queued", "session_id": "ses_…",</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="go"> "mode": "cpu", "probe": true, "apply": false, "warnings": [],</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="go"> "status_url": "/v1/agent/fits/fit_…",</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="go"> "cancel_url": "/v1/agent/fits/fit_…/cancel"}</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:11440/v1/agent/fits/fit_…
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="go">{"id": "fit_…", "object": "fit", "status": "completed",</span>
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="go"> "progress": {"stage": "probe", "mode": "cpu", "ctx": 65536},</span>
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="go"> "applied": false, "result": {"model": "qwen3:8b", "mode": "cpu",</span>
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="go"> "num_ctx": 65536, "source": "probe", "bound": "max_cpu", …}}</span>
+</code></pre></div>
+<p><code>POST /v1/agent/fits</code> starts the same fit as an asynchronous probe job that
+verifies the boundary by actually loading the model: <code>202</code> with the job id
+and warnings (other resident models or active turns make it slower; prior
+measurements on this host make it faster), <code>GET /v1/agent/fits/{id}</code> for
+status/progress/result, <code>POST .../cancel</code> to stop it. A job with a session
+holds it — turns, edits and a second fit get <code>409 session_busy</code> with
+<code>active_fit_id</code> — a global cap (<code>serve_max_active_fits</code>) answers <code>429</code>, and
+completed jobs live until <code>serve_fit_ttl</code>.</p>
+<p>Turn <code>settings.num_ctx</code> also accepts <code>"max-gpu"</code> / <code>"max-cpu"</code> (with
+<code>settings.cpu_percent</code>): the turn estimates at start — never a blocking probe
+— persists the fitted context and reports it as a typed <code>session.fit</code> event
+and <code>result.fit</code> on the turn status; a failed fit leaves the context
+unchanged.</p>
+<p><code>serve_fit</code> gates the whole surface: <code>"probe"</code> (default), <code>"estimate"</code> (no
+probing) or <code>"off"</code>.</p>
+<p>The CLI equivalents are in <a href="../../../cli/context/overview/">Context and placement</a>.</p>
 
 
 
@@ -3327,6 +3521,10 @@
   <div class="md-footer-meta md-typeset">
     <div class="md-footer-meta__inner md-grid">
       <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Apache-2.0 — provided as is, with no warranty.
+    </div>
   
   
     Made with

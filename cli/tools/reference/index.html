@@ -2997,7 +2997,7 @@
   <span class="md-ellipsis">
     
   
-    Development
+    Project
   
 
     
@@ -3010,6 +3010,157 @@
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/license/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    License
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../project/acknowledgements/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Acknowledgements
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3134,10 +3285,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
             
   
   
@@ -3155,8 +3306,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3253,7 +3404,118 @@
 
 
 <h1 id="tool-reference">Tool reference<a class="headerlink" href="#tool-reference" title="Permanent link">&para;</a></h1>
-<p><em>This page is not written yet.</em></p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>What it does</th>
+<th>Needs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>run_shell</code></td>
+<td>Run a shell command (<code>bash -lc</code>), return output and exit code</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>run_python</code></td>
+<td>Execute a short Python 3 program; the model is told to compute with it, never mentally</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>read_file</code></td>
+<td>Read a text file, optionally a line range</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>write_file</code></td>
+<td>Write or append text, creating the file</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>edit_file</code></td>
+<td>Replace one exact fragment (unique match unless <code>replace_all</code>), atomic write keeping the mode; the call panel shows a coloured diff before approval</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>list_dir</code></td>
+<td>Directory listing with sizes and modification times</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>make_dir</code></td>
+<td><code>mkdir -p</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>move_file</code> / <code>copy_file</code></td>
+<td>Move/copy; refuse an existing destination unless <code>overwrite=true</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>delete_file</code></td>
+<td>Move to the trash (<code>trash-put</code>) — never a permanent unlink</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>publish_artifact</code></td>
+<td>Publish a generated file (from <code>run_shell</code>/<code>run_python</code>) as a downloadable artifact; the file tools publish their own results automatically</td>
+<td><code>ollamarun serve</code> artifact store</td>
+</tr>
+<tr>
+<td><code>fetch_url</code></td>
+<td>Fetch one exact URL as readable content — HTML to text plus the page's links, JSON pretty-printed, PDFs text-extracted; a URL already fetched in the session is answered from cache, and failures come back as one actionable line</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>web_search</code></td>
+<td>Search the web for titles/URLs/snippets (cached; search-engine <code>q=</code> URLs are rerouted here)</td>
+<td><code>ddgs</code> package</td>
+</tr>
+<tr>
+<td><code>search_sessions</code></td>
+<td>Search your saved ollamarun conversations (titles, models, messages, thinking)</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>list_models</code></td>
+<td>Installed models; loaded ones marked with VRAM and unload time (<code>loaded_only</code> for just the residents)</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>system_status</code></td>
+<td>RAM, GPU VRAM and model-disk space of the machine running Ollama (ssh-probed under <code>--remote</code>; <code>target="local"</code> for this machine)</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>context_status</code></td>
+<td>The context budget in use: window (labelled source), tokens the last request carried, free space, message counts, wrap-up note past 80%</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>session_info</code></td>
+<td>Date/time, session id/title, model size/quantization/capabilities, server + cwd, parameters, thinking/render modes, system-prompt status, tool policy and remaining rounds</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>speak</code> / <code>list_voices</code></td>
+<td>Speak text aloud through tts-remote (fire-and-forget), or list its voices</td>
+<td>tts-remote</td>
+</tr>
+<tr>
+<td><code>chem_search</code> / <code>chem_container</code> / <code>chem_locations</code></td>
+<td>Read-only chemical-inventory lookups through the <code>chemInventoryAPI</code> CLI</td>
+<td>chemInventoryAPI</td>
+</tr>
+</tbody>
+</table>
+<p><code>web_search</code> only appears when <code>ddgs</code> is installed, the speech tools when
+<code>tts-remote</code> is available, the chem tools when <code>chemInventoryAPI</code> resolves
+(config <code>chem_inventory</code> names a different path, <code>chem_tools: false</code> hides
+them), and <code>publish_artifact</code> when <code>ollamarun serve</code> runs an artifact store
+(the CLI has none). A tool's <code>requires</code> capability gates it the same way for
+user-added definitions.</p>
 
 
 
@@ -3327,6 +3589,10 @@
   <div class="md-footer-meta md-typeset">
     <div class="md-footer-meta__inner md-grid">
       <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Apache-2.0 — provided as is, with no warranty.
+    </div>
   
   
     Made with

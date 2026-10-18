@@ -2995,7 +2995,7 @@
   <span class="md-ellipsis">
     
   
-    Development
+    Project
   
 
     
@@ -3008,6 +3008,157 @@
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../project/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../project/license/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    License
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../project/acknowledgements/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Acknowledgements
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3132,10 +3283,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
             
   
   
@@ -3153,8 +3304,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -3251,7 +3402,168 @@
 
 
 <h1 id="slash-commands">Slash commands<a class="headerlink" href="#slash-commands" title="Permanent link">&para;</a></h1>
-<p><em>This page is not written yet.</em></p>
+<p>Dispatched in the REPL and the TUI; <code>/help</code> also lists the shortcuts (<code>/?</code>).</p>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/help, /? [topic]</code></td>
+<td>Show commands (topic: shortcuts)</td>
+</tr>
+<tr>
+<td><code>/set parameter NAME VALUE \| system TEXT</code></td>
+<td>Session parameters / system prompt</td>
+</tr>
+<tr>
+<td><code>/show [info\|license\|modelfile\|parameters\|system\|template]</code></td>
+<td>Model details</td>
+</tr>
+<tr>
+<td><code>/load [MODEL\|SESSION]</code></td>
+<td>Load a saved session or switch model</td>
+</tr>
+<tr>
+<td><code>/save NAME</code></td>
+<td>Create an Ollama model from this session</td>
+</tr>
+<tr>
+<td><code>/pull [MODEL]</code></td>
+<td>Pull a model onto this host (updates if present)</td>
+</tr>
+<tr>
+<td><code>/clear</code></td>
+<td>Forget the context, keep settings, start a new session</td>
+</tr>
+<tr>
+<td><code>/new</code></td>
+<td>Start a brand new session</td>
+</tr>
+<tr>
+<td><code>/sessions [filter]</code></td>
+<td>Browse and switch saved sessions</td>
+</tr>
+<tr>
+<td><code>/title [TEXT\|--auto]</code></td>
+<td>Show or set the session title</td>
+</tr>
+<tr>
+<td><code>/tag [list\|add TAG…\|rm TAG]</code></td>
+<td>Session tags</td>
+</tr>
+<tr>
+<td><code>/model, /models [NAME\|--list\|--sort KEY]</code></td>
+<td>Switch model, list or sort the installed models</td>
+</tr>
+<tr>
+<td><code>/ps</code></td>
+<td>Show resident models (ollama ps)</td>
+</tr>
+<tr>
+<td><code>/num-ctx [N \| --max-gpu [--probe] \| --max-cpu N [--probe]]</code></td>
+<td>Context window: N, the largest that keeps the GPU, or N% of DRAM</td>
+</tr>
+<tr>
+<td><code>/gpu-layers [N\|N%\|+N\|-N\|all\|cpu\|auto]</code></td>
+<td>GPU layers for this model</td>
+</tr>
+<tr>
+<td><code>/params</code></td>
+<td>Show session parameters</td>
+</tr>
+<tr>
+<td><code>/tools [on\|off\|policy MODE\|enable\|disable NAME…\|NAME on\|off\|NAME help\|NAME call ARGS\|allow\|rules\|help]</code></td>
+<td>Tool harness, per-tool control (aliases resolve), generated help pages and direct calls</td>
+</tr>
+<tr>
+<td><code>/tts [on\|off\|voice NAME\|lang CODE\|tools on\|off\|voices]</code></td>
+<td>Auto-speak via tts-remote</td>
+</tr>
+<tr>
+<td><code>/think [on\|off\|low\|medium\|high]</code></td>
+<td>Thinking mode</td>
+</tr>
+<tr>
+<td><code>/thinking [show\|collapse\|hide\|toggle\|full]</code></td>
+<td>Thinking display (Ctrl+T while streaming)</td>
+</tr>
+<tr>
+<td><code>/system [TEXT\|clear\|off]</code></td>
+<td>Show or set the system prompt (built-in default when unset)</td>
+</tr>
+<tr>
+<td><code>/undo</code></td>
+<td>Drop the last exchange</td>
+</tr>
+<tr>
+<td><code>/retry</code></td>
+<td>Regenerate the last response</td>
+</tr>
+<tr>
+<td><code>/edit</code></td>
+<td>Edit the last message in <code>$EDITOR</code> and resend</td>
+</tr>
+<tr>
+<td><code>/branch [TITLE]</code></td>
+<td>Fork this conversation into a new session</td>
+</tr>
+<tr>
+<td><code>/context</code></td>
+<td>Context-window usage</td>
+</tr>
+<tr>
+<td><code>/summarize</code></td>
+<td>Compact older messages into a summary</td>
+</tr>
+<tr>
+<td><code>/image PATH… \| clear</code></td>
+<td>Attach images to the next message</td>
+</tr>
+<tr>
+<td><code>/render [markdown\|plain\|raw]</code></td>
+<td>Response rendering mode</td>
+</tr>
+<tr>
+<td><code>/math [on\|off]</code></td>
+<td>LaTeX→Unicode math conversion</td>
+</tr>
+<tr>
+<td><code>/pager [on\|off]</code></td>
+<td>Page long transcripts</td>
+</tr>
+<tr>
+<td><code>/tps [on\|off]</code></td>
+<td>Tokens/s footer while streaming</td>
+</tr>
+<tr>
+<td><code>/copy [N]</code></td>
+<td>Copy the last response (or its Nth code block)</td>
+</tr>
+<tr>
+<td><code>/export [--format md\|json\|html] [FILE]</code></td>
+<td>Export this session</td>
+</tr>
+<tr>
+<td><code>/stats</code></td>
+<td>Session and last-generation stats</td>
+</tr>
+<tr>
+<td><code>/queue [list\|clear\|rm N]</code></td>
+<td>Messages and commands typed while busy</td>
+</tr>
+<tr>
+<td><code>/bye, /exit</code></td>
+<td>Leave</td>
+</tr>
+</tbody>
+</table>
+<p>Auto-speak: <code>--speak</code> / config <code>tts_auto</code> / <code>/tts on</code> read every final answer
+aloud through <code>tts-remote say --markdown</code> (fire-and-forget; the <code>speaking</code>
+line ends with the same <code>X → Y</code> as the tool's result box).</p>
 
 
 
@@ -3325,6 +3637,10 @@
   <div class="md-footer-meta md-typeset">
     <div class="md-footer-meta__inner md-grid">
       <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Apache-2.0 — provided as is, with no warranty.
+    </div>
   
   
     Made with
