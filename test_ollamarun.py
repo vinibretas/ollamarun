@@ -696,8 +696,17 @@ def test_normalize_argv() -> int:
         cases = [
             ("bare -c with prompt", ["-c", "hello world", "--render", "plain"],
              ["--continue=__latest__", "hello world", "--render", "plain"]),
-            ("-c with session title", ["-c", "named session", "hi"],
+            ("-c with session title and prompt", ["-c", "named session", "hi"],
              ["-c", "named session", "hi"]),
+            ("-c with a title equal to the whole prompt", ["-c", "named session"],
+             ["--continue=__latest__", "named session"]),
+            ("-c with a title substring", ["-c", "named"],
+             ["--continue=__latest__", "named"]),
+            ("-c with a title and only flags after it", ["-c", "named session", "--no-save"],
+             ["--continue=__latest__", "named session", "--no-save"]),
+            ("-c with a title, flags and a prompt",
+             ["-c", "named session", "--render", "plain", "hi"],
+             ["-c", "named session", "--render", "plain", "hi"]),
             ("-c with prefix", ["-c", session.id[:12], "hi"],
              ["-c", session.id[:12], "hi"]),
             ("-c with id-like miss", ["-c", "20260101-000000-dead", "hi"],
@@ -705,8 +714,9 @@ def test_normalize_argv() -> int:
             ("-c followed by option", ["-c", "--render", "plain", "hi"],
              ["-c", "--render", "plain", "hi"]),
         ]
+        parser = orun.build_parser()
         for name, argv, expected in cases:
-            got = orun.normalize_argv(argv, store)
+            got = orun.normalize_argv(argv, store, parser)
             if got == expected:
                 print(f"PASS  normalize_argv {name}")
             else:

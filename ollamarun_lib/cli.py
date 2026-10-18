@@ -658,8 +658,13 @@ def resolve_session(args: argparse.Namespace, config: dict[str, Any],
     return session
 
 
-def looks_like_session(store: SessionStore, ref: str) -> bool:
-    """True when ref is an exact id, an id prefix, or a session title."""
+def looks_like_session(store: SessionStore, ref: str, *, title: bool = True) -> bool:
+    """True when ref is an exact id, an id prefix, or an exact session title.
+
+    Titles are derived from prompts, so a title only counts when the caller
+    knows a separate prompt follows (`title=False` turns that match off):
+    a token that merely equals (or contains) a title is still a prompt.
+    """
     if not ref or ref.startswith("-"):
         return False
     try:
@@ -669,18 +674,61 @@ def looks_like_session(store: SessionStore, ref: str) -> bool:
             return True
     except OSError:
         return False
+    if not title:
+        return False
     lowered = ref.lower()
-    return any(lowered in (entry.get("title") or "").lower() for entry in store.entries())
+    return any(lowered == (entry.get("title") or "").lower() for entry in store.entries())
 
 
-def normalize_argv(argv: Optional[list[str]], store: SessionStore) -> Optional[list[str]]:
+def prompt_remains(parser: argparse.ArgumentParser, argv: list[str], index: int) -> bool:
+    """True when argv still carries a positional (prompt) token after `index`.
+
+    Options are skipped along with the values they consume (including
+    `--flag=value` and `nargs='?'`), so `--no-save` counts as no prompt while
+    `--render plain hi` leaves `hi`. `--` ends option parsing. Used by the
+    `-c` disambiguation: a title is only a session reference when a separate
+    prompt remains after it.
+    """
+    actions = getattr(parser, "_option_string_actions", {})
+    position = index
+    while position < len(argv):
+        token = argv[position]
+        if token == "--":
+            return position + 1 < len(argv)
+        if token.startswith("-") and token != "-":
+            head, _, inline = token.partition("=")
+            action = actions.get(head)
+            if action is not None:
+                position += 1
+                if inline or action.nargs == 0:
+                    continue
+                if action.nargs is None:
+                    position += 1
+                    continue
+                if action.nargs == "?":
+                    if position < len(argv) and not argv[position].startswith("-"):
+                        position += 1
+                    continue
+                while position < len(argv) and not argv[position].startswith("-"):
+                    position += 1
+                continue
+        return True
+    return False
+
+
+def normalize_argv(argv: Optional[list[str]], store: SessionStore,
+                   parser: Optional[argparse.ArgumentParser] = None
+                   ) -> Optional[list[str]]:
     """Keep `-c/--continue` from swallowing a following prompt.
 
     `-c PROMPT` should mean "continue the latest session with PROMPT", while
-    `-c SESSION_ID PROMPT` should continue that session. argparse's nargs='?'
+    `-c SESSION PROMPT` should continue that session. argparse's nargs='?'
     cannot tell them apart, so a value is kept only when it resolves to a
-    saved session (or looks like a session id), and a bare `-c` followed by
-    anything else is rewritten to an explicit `--continue=__latest__`.
+    saved session -- an exact id, an id prefix, or an exact title *with a
+    separate prompt token remaining after it* (see prompt_remains; titles
+    come from prompts, so one equal to the prompt itself is not a
+    reference). Everything else is rewritten to an explicit
+    `--continue=__latest__`, leaving the token in place as the prompt.
     """
     if argv is None:
         argv = sys.argv[1:]
@@ -692,7 +740,9 @@ def normalize_argv(argv: Optional[list[str]], store: SessionStore) -> Optional[l
                 and not argv[index + 1].startswith("-"):
             candidate = argv[index + 1]
             id_like = re.fullmatch(r"\d{4,8}-\d{3,6}[-\w]*", candidate) is not None
-            if looks_like_session(store, candidate) or id_like:
+            follows = (prompt_remains(parser, argv, index + 2) if parser is not None
+                       else index + 2 < len(argv))
+            if looks_like_session(store, candidate, title=follows) or id_like:
                 out += [token, candidate]
                 index += 2
                 continue
@@ -745,9 +795,11 @@ def parse_cli_args(parser: argparse.ArgumentParser, argv: list[str],
     `parse_args` stops collecting positionals at the first optional, so
     `ollamarun MODEL --flag PROMPT` left PROMPT unrecognized (#37);
     `parse_intermixed_args` collects both interspersed blocks. The `-c`
-    disambiguation runs first, on the raw argv.
+    disambiguation runs first, on the raw argv -- with the parser in hand so
+    a title reference is only accepted when a real prompt token follows.
     """
-    return parser.parse_intermixed_args(normalize_argv(argv, store or SessionStore()))
+    return parser.parse_intermixed_args(
+        normalize_argv(argv, store or SessionStore(), parser))
 
 
 def main(argv: Optional[list[str]] = None) -> int:
