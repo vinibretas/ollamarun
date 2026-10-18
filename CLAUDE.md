@@ -99,7 +99,10 @@ docstring convention) — it is binding, not optional, for edits in this repo.
   `repl._prompt_approval`'s compatibility re-export — are exempt).
 - No build/lint config exists. Verify manually: `./ollamarun --help`,
   `./ollamarun serve --help`, or a real one-shot call against a running
-  Ollama (`./ollamarun MODEL "prompt"`).
+  Ollama (`./ollamarun MODEL "prompt"`). The reference clients
+  (`python3 examples/openai_client.py`,
+  `python3 examples/agent_client.py`) double as end-to-end checks against a
+  running `ollamarun serve`.
 - The entry-point script is executable and shebang-pinned to
   `#! /bin/python3.10` (system Python). Do not use stdlib features newer
   than 3.10 without a try/except fallback (see the `HAS_PYLATEXENC`/
@@ -617,6 +620,11 @@ hint only, the way `renderer.py` does for `Session` (defined later, in
   README's selected-keys list; user config merges over the defaults.
 - **New inspection output** (`--list`-style): build it into a `cli_*`
   function and route through `emit()` (`emit.py`), never a hand-rolled table.
+- **New example client**: `examples/` holds the runnable reference clients
+  (the official-SDK one and the native-agent one); they double as the
+  `test_examples` regression against the fake stack and are covered by the
+  pyflakes gate, so keep them clean, runnable and mirrored in the README's
+  Example clients section.
 - **New interactive prompt/hook**: extend the `Ui` protocol and `ConsoleUi`
   in `ui.py`, then implement it in `TuiUi` (`tui.py`) — nothing below the
   `repl.py` layer may know which front end is running. Set `interactive`
@@ -713,8 +721,11 @@ the model allowlist, the `serve_agent` route groups, the shutdown order
 and the tracked unload. `test_serve_process` spawns the real `ollamarun
 serve` binary against a stub upstream (banner-discovered address, a
 completion, a SIGTERM mid-stream drain, a clean exit, the tracked unload),
-`test_turn_mode_isolation` pins the model-turn-vs-agent-turn contrast, and
-`test_pyflakes_clean` is the lint gate. `python3 test_ollamarun.py --live`
+`test_turn_mode_isolation` pins the model-turn-vs-agent-turn contrast,
+`test_examples` runs both reference clients against the fake stack, and
+`test_pyflakes_clean` is the lint gate (it covers `ollamarun_lib/`, the
+`examples/` clients, the entry script and both test files). `python3
+test_ollamarun.py --live`
 additionally runs a real-backend smoke test (models, completion with
 usage, streaming, embeddings — `OLLAMARUN_TEST_EMBED_MODEL` overrides the
 first embedding-capable pick — and one full agent turn; tool round-trip
