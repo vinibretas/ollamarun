@@ -1838,6 +1838,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Remote inference
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -1854,6 +1872,80 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#names-and-resolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Names and resolution
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-preflight" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The preflight
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#probes-on-the-remote-machine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Probes on the remote machine
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sticky-sessions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sticky sessions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-stays-local" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What stays local
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3370,6 +3462,69 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#names-and-resolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Names and resolution
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-preflight" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The preflight
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#probes-on-the-remote-machine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Probes on the remote machine
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sticky-sessions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sticky sessions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-stays-local" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What stays local
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3402,16 +3557,104 @@
 
 
 <h1 id="remote-inference">Remote inference<a class="headerlink" href="#remote-inference" title="Permanent link">&para;</a></h1>
-<p><code>--remote NAME</code> (config <code>remote</code>/<code>remote_hosts</code>) runs the whole thing on
-another machine: inference, model management (load/unload, <code>/api/ps</code>) and
-<code>/pull</code> happen there, while sessions, files, images and the tool harness stay
-local — there is no separate remote code path. Names resolve through
-<code>tailscale status --json</code> (falling back to the MagicDNS name), and any
-<code>host[:port]</code> works. Short names come from the config's <code>remote_hosts</code> map —
-the shipped entries are just my own fleet, so replace them with yours. A
-short <code>/api/version</code> preflight fails fast with the Tailscale node state when
-the machine is down, and resuming a session reconnects to the machine it last
-ran on.</p>
+<p><code>--remote NAME</code> retargets every Ollama call at another machine on your
+tailnet: inference, model management (<code>/api/ps</code>, load/unload) and <code>/pull</code>
+happen there, while <strong>sessions, files, images and the tool harness stay
+local</strong>. There is no separate remote code path — the same client, the same
+commands, a different base URL.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span>ollamarun<span class="w"> </span>--remote<span class="w"> </span>kiddo<span class="w"> </span>--no-tools<span class="w"> </span>llama3.2:3b<span class="w"> </span><span class="s2">"Reply with exactly: pong"</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="go">llama3.2:3b ›</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="go">pong</span>
+</code></pre></div>
+<h2 id="names-and-resolution">Names and resolution<a class="headerlink" href="#names-and-resolution" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Short name</th>
+<th>Tailscale node</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pi</code></td>
+<td><code>vinipi</code></td>
+</tr>
+<tr>
+<td><code>kiddo</code></td>
+<td><code>kiddo</code></td>
+</tr>
+<tr>
+<td><code>g3</code></td>
+<td><code>g3</code></td>
+</tr>
+<tr>
+<td><code>optiplex7070</code>, <code>optiplex</code></td>
+<td><code>optiplex7070</code></td>
+</tr>
+<tr>
+<td><code>guri</code></td>
+<td><code>guri</code></td>
+</tr>
+</tbody>
+</table>
+<p>Anything else is treated as a hostname or <code>host[:port]</code>, and <code>remote_hosts</code>
+in the config maps your own names to machines. Resolution reads
+<code>tailscale status --json</code> and uses the peer's tailnet IP (falling back to the
+MagicDNS name), so <code>--remote tower</code> works for any node — not only the short
+list above. <code>remote_ssh_user</code> in the config names a non-default ssh user for
+the probes below.</p>
+<h2 id="the-preflight">The preflight<a class="headerlink" href="#the-preflight" title="Permanent link">&para;</a></h2>
+<p>Before starting, the harness probes <code>/api/version</code> with a short (4 s)
+timeout and fails fast with what it knows:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gp">$ </span>ollamarun<span class="w"> </span>--remote<span class="w"> </span>tower<span class="w"> </span>--no-save<span class="w"> </span>llama3.2:3b<span class="w"> </span><span class="s2">"hi"</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="go">cannot reach remote tower at http://100.105.136.73:11434:</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="go">HTTPConnectionPool(host='100.105.136.73', port=11434): Max retries exceeded</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="go">with url: /api/version …</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="gp">$ </span><span class="nb">echo</span><span class="w"> </span><span class="nv">$?</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="go">1</span>
+</code></pre></div>
+<p>The same failure happens on a live node with the wrong port
+(<code>--remote kiddo:9</code>) in about a second. For the known short names, when
+tailscale itself reports the node offline, the message appends the state —
+<code>— tailscale reports kiddo offline</code> — so a powered-off machine is not
+confused with a down Ollama.</p>
+<h2 id="probes-on-the-remote-machine">Probes on the remote machine<a class="headerlink" href="#probes-on-the-remote-machine" title="Permanent link">&para;</a></h2>
+<p>When something needs a machine fact — free disk before a pull, free VRAM for
+a <a href="../context/max-gpu/">context fit</a>, available DRAM for
+<a href="../context/max-cpu/">max-cpu</a> — a <code>--remote</code> session gets it over one
+BatchMode ssh probe (reading <code>OLLAMA_MODELS</code> from the ollama unit for the
+disk path). The <code>system_status</code> tool reads the same numbers, and
+<code>target="local"</code> flips to the machine you are sitting at:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>llama3.2:3b › /tools system_status call
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>│ kiddo (ollama at http://100.107.146.36:11434)          │
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>│ RAM: 7.8 GiB free of 11.4 GiB                          │
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>│ GPU: no nvidia-smi data                                │
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>│ disk (models): 784.3 GiB free of 915.3 GiB at /        │
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>llama3.2:3b › /tools system_status call target=local
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>│ this machine                                           │
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>│ RAM: 16.9 GiB free of 31.2 GiB                         │
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>│ GPU 0: 729.0 MiB free of 4.0 GiB                       │
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>│ disk (models): 92.9 GiB free of 467.3 GiB at /usr/share/ollama/.ollama/models │
+</code></pre></div>
+<p>A probe that cannot reach the machine degrades to <code>unknown</code> rather than
+failing the command that needed it.</p>
+<h2 id="sticky-sessions">Sticky sessions<a class="headerlink" href="#sticky-sessions" title="Permanent link">&para;</a></h2>
+<p>Sessions store the machine they last ran on, and resuming reconnects there:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="gp">$ </span>ollamarun<span class="w"> </span>--remote<span class="w"> </span>kiddo<span class="w"> </span>--no-tools<span class="w"> </span>--session<span class="w"> </span>remote-demo<span class="w"> </span>llama3.2:3b<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">    </span><span class="s2">"Remember the word: anchor. Reply OK."</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="go">OK</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="gp">$ </span>ollamarun<span class="w"> </span>--no-tools<span class="w"> </span>-c<span class="w"> </span>remote-demo<span class="w"> </span><span class="s2">"What word did I ask you to remember?"</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="go">resuming session on kiddo (http://100.107.146.36:11434)</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="go">The word "anchor"</span>
+</code></pre></div>
+<p>Passing <code>--host</code>/<code>--remote</code> on the resume overrides the stored target.</p>
+<h2 id="what-stays-local">What stays local<a class="headerlink" href="#what-stays-local" title="Permanent link">&para;</a></h2>
+<p>Everything that is not inference: sessions (one store, wherever you run
+from), <code>@file</code> inlining, images (sent with the request), the tool harness
+and its results, exports. <code>ollamarun serve --remote NAME</code> applies to the API
+layer the same way — the listener is still local, the upstream is the
+remote.</p>
 
 
 
