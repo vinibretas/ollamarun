@@ -3402,11 +3402,33 @@
 
 
 <h1 id="pager">Pager<a class="headerlink" href="#pager" title="Permanent link">&para;</a></h1>
-<p><code>--pager</code> (config <code>pager</code>) buffers the response into the pager instead of
-streaming it in place, so long transcripts are scrollable while the model
-works. <code>/pager [on|off]</code> toggles it mid-session.</p>
-<p>The rendering modes themselves are on
-<a href="../rendering/markdown/">Streaming markdown</a>.</p>
+<p><code>--pager</code> (config <code>pager: true</code>) buffers the response and opens it in the
+system pager when it is complete, instead of streaming it into the
+scrollback:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span><span class="nv">PAGER</span><span class="o">=</span>cat<span class="w"> </span>ollamarun<span class="w"> </span>--no-tools<span class="w"> </span>--pager<span class="w"> </span>llama3.2:3b<span class="w"> </span><span class="s2">"Reply with a two-item markdown bullet list of primary colors."</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="go"> • Red</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="go"> • Blue</span>
+</code></pre></div>
+<p>The pager is the standard one: rich hands the content to <code>pydoc</code>'s pager,
+which uses <code>$PAGER</code> (commonly <code>less</code>; <code>PAGER=cat</code> above prints it straight
+through, which is also what happens when the output is piped). Inside the
+pager you scroll and search the way that tool works; quitting it returns to
+the prompt.</p>
+<p><code>/pager [on|off]</code> toggles it mid-session:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>llama3.2:3b › /pager on
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>pager: on
+</code></pre></div>
+<p>What lands in the pager is the finished answer with the same rendering —
+including the thinking panel when it is visible, and the <code>response</code> divider
+when a tool loop preceded it. What you lose is the live view: while the
+model generates, the terminal stays quiet and the <a href="../rendering/footer/">footer</a>
+does not tick. For long answers in a short terminal that trade is worth it;
+for watching progress it is not.</p>
+<ul>
+<li><a href="../rendering/markdown/">Streaming markdown</a> — the live path.</li>
+<li><a href="../rendering/transcript/">Transcript replay</a> — scrolling a session after
+  the fact instead of during.</li>
+</ul>
 
 
 

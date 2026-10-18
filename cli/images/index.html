@@ -608,6 +608,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Images and vision
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -624,6 +642,58 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#attaching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Attaching
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-they-are-sent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How they are sent
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-api-side" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The API side
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3370,6 +3440,47 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#attaching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Attaching
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-they-are-sent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How they are sent
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-api-side" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The API side
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3402,17 +3513,70 @@
 
 
 <h1 id="images-and-vision">Images and vision<a class="headerlink" href="#images-and-vision" title="Permanent link">&para;</a></h1>
-<p>Images are attached to the next message as vision input:</p>
+<p>Images ride along with a message as vision input. They are attached to the
+<strong>next</strong> message only — once it is sent, the attachment is spent, and
+<code>/image clear</code> throws pending ones away.</p>
+<h2 id="attaching">Attaching<a class="headerlink" href="#attaching" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Way</th>
+<th>When</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--image PATH</code> (repeatable)</td>
+<td>At launch, for a one-shot or the REPL's first message.</td>
+</tr>
+<tr>
+<td><code>/image PATH…</code></td>
+<td>In the REPL, for the next message.</td>
+</tr>
+<tr>
+<td><code>/image clear</code></td>
+<td>Drop everything pending.</td>
+</tr>
+</tbody>
+</table>
+<p>The command answers with what it queued:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>minicpm-v4.6:1b › /image /tmp/red.png
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>attached red.png
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>minicpm-v4.6:1b › What color fills the attached image? Answer with one word.
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>red
+</code></pre></div>
+<p>The model must advertise <strong>vision</strong>. Asking a text-only model makes the
+backend refuse the request, and the harness surfaces that as an ordinary
+error:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gp">$ </span>ollamarun<span class="w"> </span>--no-tools<span class="w"> </span>--no-save<span class="w"> </span>--image<span class="w"> </span>/tmp/red.png<span class="w"> </span>llama3.2:3b<span class="w"> </span><span class="s2">"What color is this image?"</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="go">llama3.2:3b ›</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="go">HTTP 400 on /api/chat: Multimodal data provided, but model does not support</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="go">multimodal requests.</span>
+</code></pre></div>
+<p>A missing file exits 2 with the path as the message — currently without
+further context (tracked as
+<a href="https://github.com/vinibretas/ollamarun/issues/40">issue #40</a>):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="gp">$ </span>ollamarun<span class="w"> </span>--no-save<span class="w"> </span>--image<span class="w"> </span>/tmp/does-not-exist.png<span class="w"> </span>llama3.2:3b<span class="w"> </span><span class="s2">"hi"</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="go">/tmp/does-not-exist.png</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="gp">$ </span><span class="nb">echo</span><span class="w"> </span><span class="nv">$?</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="go">2</span>
+</code></pre></div>
+<h2 id="how-they-are-sent">How they are sent<a class="headerlink" href="#how-they-are-sent" title="Permanent link">&para;</a></h2>
+<p>Images are base64-embedded into the chat request (<code>images</code> on the Ollama
+message), so nothing about the target machine matters: with
+<a href="../remote/"><code>--remote</code></a> the file stays local and travels with the request.</p>
 <ul>
-<li><code>--image PATH</code> (repeatable) at launch, or <code>/image PATH… | clear</code> in the
-  REPL.</li>
-<li>Under <a href="../remote/"><code>--remote</code></a>, sessions, files and images stay local — the
-  image is sent with the request.</li>
-<li>Config <code>image_storage</code> and <code>max_file_kb</code> control how they are kept and
-  bounded.</li>
+<li>Config <code>image_storage</code> (default <code>"embed"</code>) keeps the bytes in the pending
+  record. With any other value, files <strong>over 8 MiB</strong> are kept as a path and
+  re-read when the request is built instead of being embedded twice.</li>
+<li>Everything is read from disk at attach time, so editing the file
+  afterwards does not change what was sent (in <code>embed</code> mode).</li>
 </ul>
-<p>The API surface takes images as <code>image_url</code> or <code>file</code> parts — see
-<a href="../../api/openai/vision/">Vision</a>.</p>
+<h2 id="the-api-side">The API side<a class="headerlink" href="#the-api-side" title="Permanent link">&para;</a></h2>
+<p><code>ollamarun serve</code> takes images as OpenAI <code>image_url</code> parts (data URIs or
+http(s) URLs) or as uploaded <code>file</code> parts, with its own capability check and
+limits — see <a href="../../api/openai/vision/">Vision</a> and
+<a href="../../api/agent/artifacts/">Artifacts</a>.</p>
 
 
 

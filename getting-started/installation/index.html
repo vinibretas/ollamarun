@@ -368,6 +368,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -384,6 +402,102 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#requirements" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Requirements
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-code" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The code
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dependencies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dependencies
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verify" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verify
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#first-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        First run
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pointing-at-ollama" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pointing at Ollama
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running-it-without-the-checkout-optional" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running it without the checkout (optional)
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3370,6 +3484,91 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#requirements" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Requirements
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-code" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The code
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dependencies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dependencies
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verify" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verify
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#first-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        First run
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pointing-at-ollama" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pointing at Ollama
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running-it-without-the-checkout-optional" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running it without the checkout (optional)
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3402,17 +3601,151 @@
 
 
 <h1 id="installation">Installation<a class="headerlink" href="#installation" title="Permanent link">&para;</a></h1>
-<p>Needs Linux, Python 3.10+ and a reachable Ollama server (default
-<code>127.0.0.1:11434</code>). The entry point is pinned to <code>/bin/python3.10</code>; if that
-interpreter is elsewhere, run <code>python3 ollamarun …</code> instead.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span>pip<span class="w"> </span>install<span class="w"> </span>--user<span class="w"> </span>rich<span class="w"> </span>requests<span class="w"> </span>prompt_toolkit
+<p>ollamarun is a single executable plus one Python package — there is no build
+step and nothing to compile. It runs anywhere Linux does, as long as a Python
+3.10+ and a reachable Ollama server are around.</p>
+<h2 id="requirements">Requirements<a class="headerlink" href="#requirements" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>What</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Linux</td>
+<td>The harness leans on Linux behavior: <code>/proc/meminfo</code> for the RAM fits, <code>nvidia-smi</code> for GPU probes, <code>trash-put</code> for deletes, PTYs for the inline REPL.</td>
+</tr>
+<tr>
+<td>Python 3.10+</td>
+<td>The entry script pins <code>/bin/python3.10</code>; the code targets 3.10 and does not use newer stdlib without guards.</td>
+</tr>
+<tr>
+<td>A reachable Ollama server</td>
+<td>All inference, model listing and model management go to Ollama over its HTTP API. Default <code>127.0.0.1:11434</code>; see <a href="#pointing-at-ollama">pointing at Ollama</a> below.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="the-code">The code<a class="headerlink" href="#the-code" title="Permanent link">&para;</a></h2>
+<p>Clone the repository somewhere it can live permanently:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/vinibretas/ollamarun.git
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="gp">$ </span><span class="nb">cd</span><span class="w"> </span>ollamarun
 </code></pre></div>
-<p>Optional extras: <code>pylatexenc</code> (inline-math fallback), <code>textual</code> (the
-deprecated <code>--ui tui</code> front end), <code>ddgs</code> (the <code>web_search</code> tool).</p>
-<p>The test suite additionally needs <code>openai</code> and <code>pyflakes</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gp">$ </span>pip<span class="w"> </span>install<span class="w"> </span>--user<span class="w"> </span>openai<span class="w"> </span>pyflakes
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="gp">$ </span>python3<span class="w"> </span>test_ollamarun.py
+<p>The <code>ollamarun</code> file at the root is the whole entry point: it adds its own
+directory to <code>sys.path</code> and calls into <code>ollamarun_lib/</code>, so the two must stay
+together. If the checkout already sits on your <code>PATH</code> (this project is also a
+git submodule of my personal <code>~/bin</code>), the bare <code>ollamarun</code> command resolves
+straight to it.</p>
+<h2 id="dependencies">Dependencies<a class="headerlink" href="#dependencies" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gp">$ </span>pip<span class="w"> </span>install<span class="w"> </span>--user<span class="w"> </span>rich<span class="w"> </span>requests<span class="w"> </span>prompt_toolkit
 </code></pre></div>
+<p>Those three are the required runtime dependencies: <code>rich</code> for the rendering,
+<code>requests</code> for the HTTP API and <code>prompt_toolkit</code> for the inline REPL. On a
+PEP 668 "externally managed" distribution, add <code>--break-system-packages</code> (it
+still only touches your user site) or use a virtualenv.</p>
+<p>Everything else is optional and degrades gracefully:</p>
+<table>
+<thead>
+<tr>
+<th>Extra</th>
+<th>Enables</th>
+<th>Without it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pylatexenc</code></td>
+<td>The best-quality LaTeX → Unicode conversion</td>
+<td>A smaller built-in macro table does the conversion; nothing crashes.</td>
+</tr>
+<tr>
+<td><code>textual</code></td>
+<td>The deprecated <code>--ui tui</code> front end</td>
+<td><code>--ui tui</code> warns and falls back to the inline REPL.</td>
+</tr>
+<tr>
+<td><code>ddgs</code></td>
+<td>The <code>web_search</code> tool</td>
+<td>The tool is not offered to the model.</td>
+</tr>
+<tr>
+<td><code>pypdf</code></td>
+<td>PDF text extraction for <code>fetch_url</code></td>
+<td>Falls back to <code>pdftotext</code> when it is installed.</td>
+</tr>
+<tr>
+<td><code>pyperclip</code></td>
+<td><code>/copy</code> writes to the clipboard</td>
+<td><code>/copy</code> reports that pyperclip is missing.</td>
+</tr>
+</tbody>
+</table>
+<p>A few tools are wired to external commands and appear only where those
+resolve: <code>tts-remote</code> (the <code>speak</code>/<code>list_voices</code> tools), <code>chemInventoryAPI</code>
+(the read-only <code>chem_*</code> lookups), plus system tools the harness calls when
+present — <code>trash-put</code> (deletes), <code>pdftotext</code> (PDFs), <code>nvidia-smi</code> (GPU
+probes) and <code>tailscale</code> (<code>--remote</code>).</p>
+<p>To run the test suite you additionally need the official SDK and the linter:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="gp">$ </span>pip<span class="w"> </span>install<span class="w"> </span>--user<span class="w"> </span>openai<span class="w"> </span>pyflakes
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="gp">$ </span>python3<span class="w"> </span>test_ollamarun.py
+</code></pre></div>
+<h2 id="verify">Verify<a class="headerlink" href="#verify" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="gp">$ </span>./ollamarun<span class="w"> </span>--version
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="go">ollamarun 2.0</span>
+</code></pre></div>
+<p><code>./ollamarun --help</code> prints the full flag surface (the same reference this
+site keeps in <a href="../../cli/usage/">Usage and flags</a>) and <code>./ollamarun serve
+--help</code> covers the API server.</p>
+<h2 id="first-run">First run<a class="headerlink" href="#first-run" title="Permanent link">&para;</a></h2>
+<p>Nothing needs configuring up front. The first run creates the config file
+from the built-in defaults, so a plain one-shot is enough to prove everything
+works:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="gp">$ </span>ollamarun<span class="w"> </span>--no-tools<span class="w"> </span>llama3.2:3b<span class="w"> </span><span class="s2">"Say hello in one short sentence."</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="go">llama3.2:3b ›</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="go">Hello.</span>
+</code></pre></div>
+<p>(That transcript is verbatim from a real run; <code>llama3.2:3b</code> happens to answer
+in one or two words. Without <code>--no-tools</code> it may also call the shell — that is
+the <a href="../../cli/tools/">tool harness</a> doing its job.)</p>
+<ul>
+<li>Config: <code>~/etc/config_files/ollamarun.json</code> — created on first run; see
+  <a href="../../config/file/">Config file</a> for every key.</li>
+<li>Sessions: one JSON file plus an index under <code>~/etc/data/ollamarun/</code> — see
+  <a href="../../cli/sessions/storage/">Storage</a>.</li>
+<li>Logs: <code>~/etc/logs/ollamarun.log</code> receives the debug log when <code>--debug</code> is
+  set.</li>
+</ul>
+<p>If the model is not installed on the target machine, the run does not fail
+silently: it prints the machine's free disk space and offers to pull the
+model (per-layer progress included). <code>--pull</code> skips the question, declining
+opens the <a href="../../cli/models/picker/">model picker</a>, and <code>/pull</code> does the same
+from inside the REPL.</p>
+<h2 id="pointing-at-ollama">Pointing at Ollama<a class="headerlink" href="#pointing-at-ollama" title="Permanent link">&para;</a></h2>
+<p>In precedence order, the upstream server comes from:</p>
+<ol>
+<li><code>--host HOST[:PORT]</code> on the command line.</li>
+<li><code>--remote NAME</code> for a tailnet machine — see
+   <a href="../../cli/remote/">Remote inference</a>.</li>
+<li>The <code>OLLAMA_HOST</code> environment variable.</li>
+<li>The <code>host</code> config key.</li>
+<li>The default, <code>127.0.0.1:11434</code>.</li>
+</ol>
+<p><code>ollamarun serve</code> has its own, separate <code>--host</code>/<code>--remote</code> for the upstream;
+the API listener is chosen with <code>--bind</code>/<code>--port</code> — see
+<a href="../../api/">API overview</a>.</p>
+<h2 id="running-it-without-the-checkout-optional">Running it without the checkout (optional)<a class="headerlink" href="#running-it-without-the-checkout-optional" title="Permanent link">&para;</a></h2>
+<p>The executable is self-contained with its package next to it, so putting the
+checkout on <code>PATH</code> is enough:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="gp">$ </span><span class="nb">export</span><span class="w"> </span><span class="nv">PATH</span><span class="o">=</span><span class="s2">"</span><span class="nv">$PATH</span><span class="s2">:</span><span class="nv">$HOME</span><span class="s2">/code/ollamarun"</span><span class="w">    </span><span class="c1"># then: ollamarun ...</span>
+</code></pre></div>
+<p>The shebang <code>/bin/python3.10</code> matters only for the bare <code>./ollamarun</code>
+form; if that interpreter lives elsewhere, call it explicitly with any 3.10+
+Python instead:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="gp">$ </span>python3<span class="w"> </span>/path/to/ollamarun<span class="w"> </span>--version
+</code></pre></div>
+<p>That works because the entry script re-adds its own directory to <code>sys.path</code>
+before importing the package.</p>
 
 
 

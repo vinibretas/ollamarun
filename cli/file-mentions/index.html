@@ -580,6 +580,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    @file mentions
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -596,6 +614,69 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#syntax" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Syntax
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tested-examples" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tested examples
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Limits
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-it-fits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where it fits
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3370,6 +3451,58 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#syntax" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Syntax
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tested-examples" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tested examples
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Limits
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-it-fits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where it fits
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3402,9 +3535,93 @@
 
 
 <h1 id="file-mentions">@file mentions<a class="headerlink" href="#file-mentions" title="Permanent link">&para;</a></h1>
-<p><code>@path</code> mentions in a prompt inline the file's contents into the message —
-the model sees the text, not the path. They complete with Tab alongside
-commands, session ids and models.</p>
+<p><code>@path</code> in a prompt inlines the file's contents into the message: the model
+sees the text itself, not the path. It works in the REPL, in one-shot prompts
+and for piped stdin alike, and is the quick way to hand a file to a model
+without a tool call.</p>
+<h2 id="syntax">Syntax<a class="headerlink" href="#syntax" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>@</code> immediately before a path; the path runs to the next whitespace.</li>
+<li><code>~</code> expands to your home; relative paths resolve against the working
+  directory the harness runs in.</li>
+<li>Several mentions in one prompt are all inlined.</li>
+<li>In the REPL, <strong>Tab</strong> completes <code>@files</code> along with commands, ids and model
+  names.</li>
+</ul>
+<p>The contents are appended to the message as one block per file, so the model
+can tell where a file starts and ends:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>&lt;file name="/tmp/notes.txt"&gt;
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>The fjord holds a copper coin of moon.
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>Second line, unremarkable.
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>&lt;/file&gt;
+</code></pre></div>
+<p>The path is part of the block header; the user message itself keeps the
+mention as typed, and the session records the resolved paths so <code>/show</code> and
+exports can list what was sent.</p>
+<h2 id="tested-examples">Tested examples<a class="headerlink" href="#tested-examples" title="Permanent link">&para;</a></h2>
+<p>With this file:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gp">$ </span><span class="nb">printf</span><span class="w"> </span><span class="s1">'The fjord holds a copper coin of moon.\nSecond line, unremarkable.\n'</span><span class="w"> </span>&gt;<span class="w"> </span>/tmp/notes.txt
+</code></pre></div>
+<p>Ask about it — note the space before the <code>?</code>, which is what ends the path:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="gp">$ </span>ollamarun<span class="w"> </span>--no-tools<span class="w"> </span>--no-save<span class="w"> </span>llama3.2:3b<span class="w"> </span><span class="s2">"What is the first line of @/tmp/notes.txt ? Reply with just that line, verbatim."</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="go">llama3.2:3b ›</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="go">The fjord holds a copper coin of moon.</span>
+</code></pre></div>
+<p>A missing file and an over-limit file both warn and are skipped (the model
+simply does not get them):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="gp">$ </span>ollamarun<span class="w"> </span>--no-tools<span class="w"> </span>--no-save<span class="w"> </span>llama3.2:3b<span class="w"> </span><span class="s2">"Summarize @/tmp/nope.txt in one word."</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="go">@/tmp/nope.txt: no such file</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="go">llama3.2:3b ›</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="go">I don't see any file at `/tmp/nope.txt`.</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="gp">$ </span>ollamarun<span class="w"> </span>--no-tools<span class="w"> </span>--no-save<span class="w"> </span>llama3.2:3b<span class="w"> </span><span class="s2">"Summarize @/tmp/big.txt in one word."</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="go">@/tmp/big.txt: 300 KiB exceeds 256 KiB limit</span>
+</code></pre></div>
+<h2 id="limits">Limits<a class="headerlink" href="#limits" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>max_file_kb</code> (config)</td>
+<td>256</td>
+<td>Files larger than this are skipped with a warning.</td>
+</tr>
+<tr>
+<td>—</td>
+<td>—</td>
+<td>Files are read as UTF-8 with undecodable bytes replaced.</td>
+</tr>
+</tbody>
+</table>
+<p>Because the content is appended to the prompt, a big file eats the context
+window — the <a href="../rendering/footer/">context counter</a> and
+<a href="../context/overview/"><code>/context</code></a> show the damage, and
+<a href="../context/compaction/">compaction</a> can trim older messages.</p>
+<div class="admonition warning">
+<p class="admonition-title">Punctuation ends the mention</p>
+<p>The path ends only at whitespace, so a sentence-final <code>.</code>/<code>,</code>/<code>)</code> right
+after the mention becomes part of the filename and the file is not
+inlined:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="gp">$ </span>ollamarun<span class="w"> </span>--no-tools<span class="w"> </span>--no-save<span class="w"> </span>llama3.2:3b<span class="w"> </span><span class="s2">"Summarize @/tmp/notes.txt. One word."</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="go">@/tmp/notes.txt.: no such file</span>
+</code></pre></div>
+<p>Put a space between the path and the punctuation
+(<code>@/tmp/notes.txt .</code>) or reorder the sentence. Tracked as
+<a href="https://github.com/vinibretas/ollamarun/issues/39">issue #39</a>.</p>
+</div>
+<h2 id="where-it-fits">Where it fits<a class="headerlink" href="#where-it-fits" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../images/">Images and vision</a> attaches images the same way, but as
+  vision input instead of text.</li>
+<li>The <a href="../tools/reference/">file tools</a> (<code>read_file</code>, <code>write_file</code>, …) let
+  the <em>model</em> decide what to touch; <code>@file</code> is you deciding up front.</li>
+</ul>
 
 
 
