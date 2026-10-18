@@ -1,30 +1,255 @@
 # Tool reference
 
-| Tool | What it does | Needs |
-| --- | --- | --- |
-| `run_shell` | Run a shell command (`bash -lc`), return output and exit code | — |
-| `run_python` | Execute a short Python 3 program; the model is told to compute with it, never mentally | — |
-| `read_file` | Read a text file, optionally a line range | — |
-| `write_file` | Write or append text, creating the file | — |
-| `edit_file` | Replace one exact fragment (unique match unless `replace_all`), atomic write keeping the mode; the call panel shows a coloured diff before approval | — |
-| `list_dir` | Directory listing with sizes and modification times | — |
-| `make_dir` | `mkdir -p` | — |
-| `move_file` / `copy_file` | Move/copy; refuse an existing destination unless `overwrite=true` | — |
-| `delete_file` | Move to the trash (`trash-put`) — never a permanent unlink | — |
-| `publish_artifact` | Publish a generated file (from `run_shell`/`run_python`) as a downloadable artifact; the file tools publish their own results automatically | `ollamarun serve` artifact store |
-| `fetch_url` | Fetch one exact URL as readable content — HTML to text plus the page's links, JSON pretty-printed, PDFs text-extracted; a URL already fetched in the session is answered from cache, and failures come back as one actionable line | — |
-| `web_search` | Search the web for titles/URLs/snippets (cached; search-engine `q=` URLs are rerouted here) | `ddgs` package |
-| `search_sessions` | Search your saved ollamarun conversations (titles, models, messages, thinking) | — |
-| `list_models` | Installed models; loaded ones marked with VRAM and unload time (`loaded_only` for just the residents) | — |
-| `system_status` | RAM, GPU VRAM and model-disk space of the machine running Ollama (ssh-probed under `--remote`; `target="local"` for this machine) | — |
-| `context_status` | The context budget in use: window (labelled source), tokens the last request carried, free space, message counts, wrap-up note past 80% | — |
-| `session_info` | Date/time, session id/title, model size/quantization/capabilities, server + cwd, parameters, thinking/render modes, system-prompt status, tool policy and remaining rounds | — |
-| `speak` / `list_voices` | Speak text aloud through tts-remote (fire-and-forget), or list its voices | tts-remote |
-| `chem_search` / `chem_container` / `chem_locations` | Read-only chemical-inventory lookups through the `chemInventoryAPI` CLI | chemInventoryAPI |
+Every built-in tool, its parameters (as defined in
+`ollamarun_lib/defs/tools/*.json`) and how it is approved. **Auto** means it
+runs unattended; **asks** means the [approval gate](approvals.md) decides.
+Tools with a `requires` entry only appear when that capability resolves.
 
-`web_search` only appears when `ddgs` is installed, the speech tools when
-`tts-remote` is available, the chem tools when `chemInventoryAPI` resolves
-(config `chem_inventory` names a different path, `chem_tools: false` hides
-them), and `publish_artifact` when `ollamarun serve` runs an artifact store
-(the CLI has none). A tool's `requires` capability gates it the same way for
-user-added definitions.
+## Shell and Python
+
+### `run_shell` — asks (safe list)
+
+Run a shell command (`bash -lc`), return output and exit code.
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `command` | string | required | the command to run |
+| `cwd` | string | optional | working directory |
+| `timeout` | number | optional | seconds |
+
+Allowlisted commands (`ls`, `cat`, `grep`, `rg`, `find`, `git status`, …)
+run unattended per segment; anything else asks.
+
+### `run_python` — asks (safe list)
+
+Execute a short Python 3 program and return its stdout/stderr. The models are
+told to compute with it, never mentally.
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `code` | string | required | the python source to run |
+| `timeout` | number | optional | seconds |
+
+Safe modules only run unattended; `open`/`import os`-style code asks.
+
+## Files
+
+### `read_file` — auto (read-only)
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `path` | string | required | file path |
+| `offset` | integer | optional | first line (0-based) |
+| `limit` | integer | optional | how many lines |
+
+### `write_file` — asks
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `path` | string | required | file path |
+| `content` | string | required | text to write |
+| `append` | boolean | optional | append instead of replacing |
+
+### `edit_file` — asks
+
+Replace one exact fragment; the match must be unique unless `replace_all`.
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `path` | string | required | file path |
+| `old_string` | string | required | the exact text to replace |
+| `new_string` | string | required | the replacement text |
+| `replace_all` | boolean | optional | replace every occurrence |
+
+### `list_dir` — auto (read-only)
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `path` | string | optional | directory (default: cwd) |
+
+### `make_dir` — asks
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `path` | string | required | directory path |
+
+### `move_file` / `copy_file` — ask
+
+Refuse to replace an existing destination unless `overwrite`.
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `source` | string | required | what to move/copy |
+| `destination` | string | required | where to put it |
+| `overwrite` | boolean | optional | replace an existing destination |
+
+### `delete_file` — asks
+
+Moves the target to the trash (`trash-put`) — never a permanent unlink.
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `path` | string | required | file or directory to delete |
+
+## Web
+
+### `fetch_url` — auto (read-only)
+
+Fetch one http(s) URL as readable content: HTML → text plus links, JSON
+pretty-printed, PDFs text-extracted. A URL already fetched in the session is
+answered from the cache; failures come back as one actionable line.
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `url` | string | required | absolute http(s) URL |
+| `timeout` | number | optional | seconds |
+
+### `web_search` — auto (read-only) · requires `search` (`ddgs`)
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `query` | string | required | what to search for |
+| `max_results` | integer | optional | how many results (default 5, max 10) |
+| `timeout` | number | optional | seconds |
+
+## Sessions, models and the run
+
+### `search_sessions` — auto (read-only)
+
+Search your saved conversations — titles, models, messages and thinking.
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `query` | string | required | word or phrase to look for |
+| `limit` | integer | optional | max sessions (default 5, max 20) |
+
+### `list_models` — auto (read-only)
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `loaded_only` | boolean | optional | only the resident models |
+
+### `system_status` — auto (read-only)
+
+RAM, GPU VRAM and model-disk free space of the machine running Ollama
+(ssh-probed under `--remote`).
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `target` | string | optional | `ollama` (default) or `local` |
+
+### `context_status` — auto (read-only)
+
+The context budget actually in use: window (with its source), tokens the
+last request carried, free space, message counts, a wrap-up note past 80%.
+
+### `session_info` — auto (read-only)
+
+Date/time, session id and title, model size/quantization/capabilities,
+server and cwd, settings, thinking/render modes, system-prompt status, tool
+policy and remaining rounds.
+
+## Speech
+
+### `speak` — auto · requires `tts`
+
+Speak text through `tts-remote` (queued, returns immediately).
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `text` | string | required | what to say |
+| `voice` | string | optional | voice slug |
+| `lang` | string | optional | ISO language code |
+
+### `list_voices` — auto (read-only) · requires `tts`
+
+Lists the voices `speak` can use.
+
+## Chemical inventory
+
+Read-only lookups through the `chemInventoryAPI` CLI · requires `chem`.
+
+| Tool | Parameters |
+| --- | --- |
+| `chem_search` | `query` (required), `type` (`name`/`cas`/`barcode`/`ghs`…), `limit` (default 10, max 50) |
+| `chem_container` | `id` (required) — full container record |
+| `chem_locations` | `location` (optional) — the tree, or the containers in one location |
+
+## Artifacts
+
+### `publish_artifact` — asks · requires `artifacts`
+
+Publish a file (from `run_shell`/`run_python`) as a downloadable artifact in
+`ollamarun serve`. The file tools publish their results automatically.
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `path` | string | required | file to publish (inside the working directory) |
+
+## Running tools yourself
+
+`/tools NAME call ARGS` runs a tool exactly like the model would — same
+approval gate, same panels — without adding anything to the conversation.
+Three argument forms:
+
+- JSON: `/tools read_file call {"path": "/etc/hostname"}`
+- keyed pairs: `/tools run_shell call command="echo hi"`
+- one bare value, only when exactly one parameter is **required**:
+  `/tools run_python call print(6*7)`
+
+That last rule has a sharp edge: `list_dir`'s `path` is optional, so
+`/tools list_dir call /tmp` refuses with a usage line — use
+`/tools list_dir call path=/tmp`.
+
+Tested examples, verbatim results condensed:
+
+```text
+llama3.2:3b › /tools read_file call /etc/hostname
+╭─ tool · read_file · ok · 0.00s ──────────────────────────────────────────────╮
+│ $ /etc/hostname                                                              │
+│ /etc/hostname (1 lines shown)                                                │
+│ 1: g3                                                                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+llama3.2:3b › /tools run_shell call echo hi from tools
+╭─ tool · run_shell · ok · 0.00s ──────────────────────────────────────────────╮
+│ $ echo hi from tools                                                         │
+│ exit 0                                                                       │
+│ hi from tools                                                                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+llama3.2:3b › /tools run_python call print(6*7)
+│ 42                                                                           │
+
+llama3.2:3b › /tools list_models call loaded_only=true
+│ 1 model(s) loaded on http://127.0.0.1:11434:                                 │
+│ - llama3.2:3b · 2.6 GiB VRAM of 9.4 GiB · unloads 2026-10-18 14:08:33        │
+
+llama3.2:3b › /tools search_sessions call color
+│ 5 saved session(s) matching 'color':                                         │
+```
+
+And the awareness trio, which is what the model reads when it asks "how much
+room is left?":
+
+```text
+llama3.2:3b › /tools context_status call
+│ model: llama3.2:3b on this machine (http://127.0.0.1:11434)                  │
+│ context window: 65536 tokens (loaded runner; model default 131072)           │
+│ context used: nothing yet (no request has been sent)                         │
+
+llama3.2:3b › /tools system_status call
+│ this machine (ollama at http://127.0.0.1:11434)                              │
+│ RAM: 16.2 GiB free of 31.2 GiB                                               │
+│ GPU 0: 1.3 GiB free of 4.0 GiB                                               │
+│ disk (models): 92.9 GiB free of 467.3 GiB at /usr/share/ollama/.ollama/models │
+
+llama3.2:3b › /tools session_info call
+│ session: 20261018-120810-fb11 "new session" · 0 messages · 0 turns           │
+│ model: llama3.2:3b · 3.2B · Q4_K_M · capabilities: completion, tools        │
+│ modes: thinking collapsed · render markdown · system prompt built-in default │
+│ tools: on · policy allowlist · round 0 of 8 · disabled: none                 │
+```
+
+Each tool's own page (`/tools NAME help`) is the version guaranteed to match
+your installed definitions and overrides.
