@@ -124,7 +124,7 @@ except ImportError:  # pragma: no cover - fallback path
     TEXTUAL_VERSION = ""
     TextualApp = None
 
-VERSION = "2.0"
+VERSION = "2.1"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -198,6 +198,10 @@ THEME = Theme({
 })
 
 console = Console(theme=THEME)
+#: The shared stderr sink for messages that must not pollute stdout (the
+#: `--raw` error line, the quiet unload warning); `rich` has no `stderr=`
+#: print keyword -- a second Console bound to stderr is the supported way.
+err_console = Console(stderr=True, theme=THEME)
 rich.traceback.install()
 
 #: One colour per built-in tool: the arguments panel of a call, the

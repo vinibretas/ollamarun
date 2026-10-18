@@ -2,6 +2,18 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 2.1
+
+Summary of changes in this version:
+  - Mid-stream backend errors are reported instead of crashing the app. Both
+    error paths passed the unsupported rich `stderr=` keyword to
+    `Console.print`, so a stream that started and then failed raised a
+    `TypeError` that hid the backend message (and a failed unload warning
+    did the same). The error line now goes through a real stderr console in
+    `--raw` mode and a failed unload warning follows its `quiet` flag; a
+    one-shot mid-stream error prints the message and exits 1, and the REPL
+    stays alive.
+
 Version: 2.0
 
 Summary of changes in this version:
