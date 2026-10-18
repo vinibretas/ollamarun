@@ -1,52 +1,78 @@
 # Event stream
 
-`GET /v1/agent/turns/{id}/events` is the SSE stream for a turn. Each frame is
-named after its event type and carries a `<turn_id>:<seq>` id, so a reconnect
-resumes with `?after=N` or `Last-Event-ID`:
+`GET /v1/agent/turns/{id}/events` is the SSE stream for a turn. Each frame
+is named after its event type and carries a `<turn_id>:<seq>` id, so a
+reconnect resumes with `?after=N` or `Last-Event-ID`.
+
+A real capture of a completed simple turn (`?after=0` replay), frames
+trimmed to their payloads:
 
 ```console
-$ curl -N 'http://127.0.0.1:11440/v1/agent/turns/trn_…/events?after=0'
-id: trn_…:1
+$ curl -N 'http://127.0.0.1:11440/v1/agent/turns/turn_2e7a284c4149/events?after=0'
+id: turn_2e7a284c4149:1
 event: turn.started
-data: {"id": "trn_…:1", "seq": 1, "type": "turn.started", "turn_id": "trn_…",
-       "session_id": "ses_…", "ts": "…",
-       "data": {"model": "qwen3:8b", "session_id": "ses_…"}}
-id: trn_…:2
+data: {"id": "turn_2e7a284c4149:1", "seq": 1, "type": "turn.started", "turn_id": "turn_2e7a284c4149",
+       "session_id": "20261018-131729-6386", "ts": "…",
+       "data": {"model": "llama3.2:3b", "session_id": "…",
+                "context": {"used": null, "total": 8192, "source": "loaded runner"}}}
+
+id: turn_2e7a284c4149:2
 event: message.delta
-data: {"id": "trn_…:2", "seq": 2, "type": "message.delta", "turn_id": "trn_…",
-       "session_id": "ses_…", "ts": "…",
-       "data": {"channel": "content", "text": "The repo is"}}
-id: trn_…:3
-event: tool.call
-data: {"id": "trn_…:3", "seq": 3, "type": "tool.call", "turn_id": "trn_…",
-       "session_id": "ses_…", "ts": "…", "data": {"name": "run_shell",
-       "args": {"command": "ls -la"}, "detail": "ls -la", "round": 1}}
-id: trn_…:4
-event: tool.result
-data: {"id": "trn_…:4", "seq": 4, "type": "tool.result", "turn_id": "trn_…",
-       "session_id": "ses_…", "ts": "…", "data": {"name": "run_shell",
-       "ok": true, "text": "total 42\n…", "duration": 0.03, …}}
-id: trn_…:5
+data: {… "data": {"channel": "content", "text": "pong"}}
+
+id: turn_2e7a284c4149:3
+event: message.completed
+data: {… "data": {"round": 0, "content": "pong", "thinking": null,
+                  "tool_calls": 0, "cancelled": null, "error": null}}
+
+id: turn_2e7a284c4149:4
 event: turn.completed
-data: {"id": "trn_…:5", "seq": 5, "type": "turn.completed", "turn_id": "trn_…",
-       "session_id": "ses_…", "ts": "…",
-       "data": {"content": "…", "tool_calls": 1, "rounds": 2, "stats": {…}, …}}
+data: {… "data": {"content": "pong", "thinking": null, "tool_calls": 0, "rounds": 0,
+                  "stats": {"total_duration": 1.658, "eval_tps": 12.27, …},
+                  "context": {…}}}
 ```
+
+Every payload shares the envelope: `id`, `seq`, `type`, `turn_id`,
+`session_id`, `ts`, and a `data` object per type.
 
 ## Event vocabulary
 
-The stream carries `turn.started`, `message.delta`, `tool.call`/`tool.result`,
-`approval.required`/`approval.resolved`, `turn.warning` and the terminal
-`turn.completed`/`turn.error`/`turn.cancelled`, each with a deterministic
-`<turn_id>:<seq>` id.
+| Type | When | Notable `data` |
+| --- | --- | --- |
+| `turn.started` | Worker picked the turn up. | `model`, `session_id`, `context`. |
+| `message.delta` | Each streamed chunk. | `channel` (`content`/`thinking`), `text`. |
+| `message.completed` | One round finished. | `round`, `content`, `thinking`, `tool_calls` count, `cancelled`, `error`. |
+| `tool.call` | Model asked for a tool. | `name`, `args`, `detail`, `round`. |
+| `tool.result` | The tool finished (or was denied). | `name`, `ok`, `text`, `duration`, and `artifacts` ids when files were published. |
+| `approval.required` | A call parked for a decision. | The full call + `reason` + `suggestions` + `approval_id` — see [Approvals](approvals.md). |
+| `approval.resolved` | A decision landed. | `action`, `run`, `note`. |
+| `artifact.created` | A file was published. | The full [ArtifactRef](artifacts.md). |
+| `session.fit` | A turn-start context fit ran. | The fit result — see [Context fits](fits.md). |
+| `turn.warning` | Non-fatal advice (context 80%, tool-support missing). | `message`. |
+| `turn.completed` / `turn.error` / `turn.cancelled` | Terminal events. | `content`, `rounds`, `stats`, `context`, `result` shape. |
+
+A tool call and its result come **before** the round's `message.completed`
+for the round that requested them; an `artifact.created` rides between the
+approval decision and the `tool.result` that references it.
 
 ## Replay and gaps
 
-A reconnecting client resumes with `Last-Event-ID`; a truncated buffer is
-reported as `stream.gap`, and the [turn status](turns.md) endpoint is the
-recovery path afterwards. A subscription without `?after=`/`Last-Event-ID` is
-live-only — nothing is replayed, so a finished turn yields an empty stream;
-catching-up clients pass `after=0` or read the status snapshot instead.
+- A subscription **without** `?after=`/`Last-Event-ID` is live-only: nothing
+  is replayed, so a finished turn yields an empty stream. Catching-up
+  clients pass `after=0` or read the [status snapshot](turns.md#the-snapshot).
+- `Last-Event-ID: <turn>:<seq>` resumes exactly; `?after=N` does the same.
+- If the ring has overwritten the client's position
+  (`serve_turn_event_buffer`, default 10 000 events), the stream emits a
+  `stream.gap` frame and the client recovers from the status snapshot.
+- Heartbeats are `: ping` comment lines every `serve_sse_ping_interval`
+  (default 15 s) — they keep intermediaries from timing the stream out and
+  are safe for any SSE client to ignore.
 
-A dropped stream is an unsubscribe, not a cancellation — see
-[Disconnects and cancellation](../index.md#lifecycle).
+## Disconnects
+
+A dropped stream is an **unsubscribe**, not a cancellation: the turn keeps
+running and its results land in the session (checked live — status
+`completed` after the client vanished). With
+`"settings": {"cancel_on_disconnect": true}` the drop cancels instead
+(checked live — status `cancelled` within a couple of seconds). Explicit
+cancellation is `POST .../cancel` at any time.

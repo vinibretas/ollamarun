@@ -9,39 +9,75 @@
   `waiting_approval` and emits `approval.required` with the `approval_id`,
   the call, the reason and suggested rules.
 
-`POST /v1/agent/approvals/{id}` resolves a parked decision. The first decision
-wins; duplicates get `409`. An unanswered approval times out (config
-`serve_approval_timeout`, default 300 s) as **denied**: the tool result says
-`not run: approval timed out` and the model continues.
+## The parked event
 
-The parked event carries everything needed to decide (the client already saw
-it on the stream, as `approval.required`):
+A real capture (`write_file` in interactive mode):
 
 ```json
-{"name": "run_shell", "args": {"command": "rm -rf build"},
- "detail": "rm -rf build", "fingerprint": "…", "reason": "catastrophic rm",
- "approval_id": "apr_…",
- "suggestions": [{"kind": "shell", "pattern": "rm -rf build",
-                  "base": "", "created": "…"}]}
+{
+  "name": "write_file",
+  "args": {"path": "approve-demo.txt", "append": false, "content": "approved-by-api"},
+  "detail": "approve-demo.txt (15 chars)",
+  "fingerprint": "write_file:{\"append\": false, \"content\": \"approved-by-api\", \"path\": \"approve-demo.txt\"}",
+  "reason": "write_file modifies state",
+  "suggestions": [
+    {"kind": "path", "pattern": "approve-demo.txt", "base": "/home/you/serve-dir", "created": "…"},
+    {"kind": "path", "pattern": "**", "base": "/home/you/serve-dir", "created": "…"}
+  ],
+  "approval_id": "apr_83764cec6535"
+}
 ```
 
-The decision is one POST — the body's `action` picks the outcome:
+The park is preceded on the same stream by `tool.call` (the call panel
+equivalent) and followed, on decision, by `approval.resolved`. The
+`suggestions` are the same generalized rules the CLI offers; the fingerprint
+powers "remember exactly this call".
 
-```console
-$ curl -s http://127.0.0.1:11440/v1/agent/approvals/apr_… \
-    -H 'Content-Type: application/json' -d '{"action": "run"}'
-{"id": "apr_…", "object": "approval", "turn_id": "trn_…", "session_id": "ses_…",
- "name": "run_shell", "status": "resolved", "action": "run", "run": true,
- "note": "confirmed", "resolved_at": "…"}
-```
+## Deciding
+
+`POST /v1/agent/approvals/{id}` — the first decision wins; duplicates get
+`409`.
 
 | Request body | Effect |
 | --- | --- |
-| `{"action": "run"}` | Run this call once |
-| `{"action": "remember"}` | Run it, remembering the exact call for the session |
-| `{"action": "rule", "rule": {"kind": "shell", "pattern": "make :*"}}` | Run it and store a generalized rule (`call`, `shell`, `path` or `python`) |
-| `{"action": "auto"}` | Allow everything for the rest of this turn |
-| `{"action": "deny"}` | Refuse it; the model gets a not-run note |
+| `{"action": "run"}` | Run this call once. |
+| `{"action": "remember"}` | Run it, remembering the exact call for the session. |
+| `{"action": "rule", "rule": {"kind": "path", "pattern": "reports/**"}}` | Run it and store a generalized rule (`call`, `shell`, `path` or `python`). |
+| `{"action": "auto"}` | Allow everything for the rest of this turn. |
+| `{"action": "deny"}` | Refuse it; the model gets a not-run note. |
 
-The rules are the same engine the CLI uses — see
-[Approvals and policy](../../cli/tools/approvals.md).
+```console
+$ curl -s http://127.0.0.1:11440/v1/agent/approvals/apr_83764cec6535 \
+    -H 'Content-Type: application/json' -d '{"action": "run"}'
+{"id": "apr_83764cec6535", "object": "approval", "turn_id": "turn_7cc9871fcf7d",
+ "action": "run", "run": true, "note": "confirmed",
+ "resolved_at": "2026-10-18T13:20:09.745442-03:00"}
+```
+
+After `run`, the same turn went on to `tool.result` (`ok`), published the
+written file as an [artifact](artifacts.md) and completed with the model's
+confirmation. After `deny`:
+
+```json
+{"id": "apr_783809fe4258", "object": "approval", "turn_id": "turn_82bf7ce2fbc2",
+ "action": "deny", "run": false, "note": "denied by the user", "resolved_at": "…"}
+```
+
+…the tool result is a not-run note and the file is **not** written (checked
+on disk). The model still answered in that run — models sometimes claim
+success anyway; the harness's record (`tool.result`, the session) shows what
+actually happened, which is why clients should decide from events, not prose.
+
+## Timeouts and edge cases
+
+- An unanswered approval times out (`serve_approval_timeout`, default 300 s)
+  as **denied**: the tool result says `not run: approval timed out` and the
+  model continues.
+- A turn cancelled or shut down while parked resolves the approval as
+  cancelled (`200` with the resolved state), so clients never hang.
+- The decision endpoint is per-approval; there is no bulk form — `auto` is
+  the per-turn escalation.
+
+The rules engine behind the decisions is the CLI's — see
+[Approvals and policy](../../cli/tools/approvals.md) for kinds, matching and
+the floor no rule can cover.
