@@ -385,6 +385,7 @@ def test_pyflakes_clean() -> int:
     reporter = flakes_reporter.Reporter(output, output)
     repo = Path(__file__).resolve().parent
     targets = sorted((repo / "ollamarun_lib").glob("*.py"))
+    targets += sorted((repo / "examples").glob("*.py"))
     targets += [repo / "ollamarun", repo / "test_ollamarun.py",
                 repo / "test_ollamarun_serve.py"]
     for path in targets:
@@ -5219,6 +5220,72 @@ def _headless_events(api, turn_id, after=0):
     return _collect(api.manager.subscribe(turn_id, after=after))
 
 
+def test_examples() -> int:
+    """Both reference clients run green against the fake stack (no rot)."""
+    import subprocess
+
+    failures = 0
+    repo = Path(__file__).resolve().parent
+
+    client = _ServeClient(models=["m1"],
+                          capabilities=["completion", "tools", "embedding"],
+                          chat_script=[[
+                              {"message": {"content": "Hello"}, "done": False},
+                              {"message": {"content": ""}, "done": True,
+                               "prompt_eval_count": 3, "eval_count": 1,
+                               "done_reason": "stop"}]])
+    server, _client, thread = _start_api(client)
+    try:
+        result = subprocess.run(
+            [sys.executable, str(repo / "examples" / "openai_client.py"),
+             "--base-url", f"http://127.0.0.1:{server.address[1]}/v1",
+             "--model", "m1"],
+            capture_output=True, text=True, timeout=120, cwd=str(repo))
+        out = _plain(result.stdout)
+        failures = _check(
+            failures, "the OpenAI reference client runs green",
+            result.returncode == 0
+            and "all checks passed" in out
+            and "a non-streaming completion" in out
+            and "streaming deltas" in out
+            and "embeddings return one vector per input" in out
+            and "n=2 returns two indexed choices" in out,
+            f"rc={result.returncode} out={out[-300:]!r} "
+            f"err={result.stderr[-200:]!r}")
+    finally:
+        _stop_api(server, thread)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        agent_client = _ServeClient(
+            models=["m1"], capabilities=["completion", "tools"],
+            chat_script=[
+                [{"message": {"content": "", "tool_calls": [
+                    {"function": {"name": "run_shell",
+                                  "arguments": {"command": "echo example"}}}]}},
+                 {"message": {"content": ""}, "done": True}],
+                [{"message": {"content": "done"}, "done": True}],
+            ])
+        server2, _api2, _store2, thread2 = _start_agent_api(tmp, agent_client)
+        try:
+            result = subprocess.run(
+                [sys.executable, str(repo / "examples" / "agent_client.py"),
+                 "--base-url", f"http://127.0.0.1:{server2.address[1]}",
+                 "--model", "m1", "--prompt", "run it"],
+                capture_output=True, text=True, timeout=120, cwd=str(repo))
+            out = _plain(result.stdout)
+            failures = _check(
+                failures, "the agent reference client runs green",
+                result.returncode == 0
+                and "status completed" in out
+                and "tool · run_shell" in out
+                and "answer done" in out,
+                f"rc={result.returncode} out={out[-300:]!r} "
+                f"err={result.stderr[-200:]!r}")
+        finally:
+            _stop_api(server2, thread2)
+    return failures
+
+
 def test_turn_mode_isolation() -> int:
     """The same tool call: returned to the client vs executed by the agent."""
     failures = 0
@@ -6784,6 +6851,7 @@ def run_all(*, live: bool = False) -> int:
         + test_serve_unload_on_exit()
         + test_serve_cli()
         + test_serve_process()
+        + test_examples()
         + test_openai_sdk()
         + test_turn_mode_isolation()
         + test_agent_turn_lifecycle() + test_agent_turn_controls()

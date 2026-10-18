@@ -34,7 +34,7 @@ Phase index
 | 5 | done | `plans/done/phase-5-artifacts.md` | File/image input and artifact output with provenance, storage and retrieval |
 | 6 | done | `plans/done/phase-6-security-operations.md` | Operational hardening: one validated `serve_*` config matrix wired into the transport, chunked request decoding, aggregate input limits, native parameter validation, workspace/artifact-root boundaries, `serve_models`/`serve_agent` switches, bounded shutdown with tracked-model unload |
 | 7 | done | `plans/done/phase-7-testing.md` | The coverage audit and its gap tests, the pyflakes and required-SDK gates, the real-process smoke, and the `test_ollamarun_serve.py` split |
-| 8 | pending | `plans/phase-8-documentation.md` | Compatibility + agent API documentation and example clients |
+| 8 | done | `plans/done/phase-8-documentation.md` | Compatibility + agent API documentation and example clients |
 | 9 | done | `plans/done/phase-9-compatibility.md` | Compatibility completion: `/v1/embeddings`, `n > 1`, `parallel_tool_calls`, remote image URLs (Phase 5 handoff) and the recorded closures for backend-impossible features |
 | 10 | done | `plans/done/phase-10-context-control.md` | Context and placement control over the API: first-class `num_ctx`/`gpu_layers`, a synchronous fit estimate, asynchronous probe jobs and turn-start estimation |
 
