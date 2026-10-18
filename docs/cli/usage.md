@@ -84,7 +84,7 @@ All of this (and how the fits are computed) lives in
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `-c [SESSION_ID]`, `--continue [SESSION_ID]` | — | Continue the latest session, or the given one. |
+| `-c [SESSION_ID]`, `--continue [SESSION_ID]` | — | Continue the latest session, or the given one (exact id, id prefix, or exact title with a prompt). |
 | `-r`, `--resume` | — | Browse saved sessions and pick one. |
 | `--session NAME` | — | Continue the session saved under `NAME`, or create it. |
 | `--new` | — | Force a fresh session even with `-c`/`--session`. |

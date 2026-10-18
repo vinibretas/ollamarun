@@ -8,7 +8,7 @@ from inside the REPL.
 
 | Form | Meaning |
 | --- | --- |
-| `-c [ID]`, `--continue [ID]` | Continue the most recent session, or the given one. |
+| `-c [ID]`, `--continue [ID]` | Continue the most recent session, or the given one (an id, an id prefix, or an exact title followed by a separate prompt). |
 | `-r`, `--resume` | Browse saved sessions and pick one. |
 | `--session NAME` | Continue the session named `NAME`, or create it. |
 | `--new` | Force a fresh session even with `-c`/`--session`. |
@@ -30,13 +30,13 @@ $ ollamarun --no-tools -c "Now add one to that number. Answer with the number on
 42
 ```
 
-!!! warning "`-c` and similar prompts"
+!!! info "`-c` and prompt-like titles"
 
-    Because stored titles are derived from prompts, a prompt that matches an
-    existing title can be mistaken for a session reference by `-c` and get
-    swallowed (the run then reports no prompt). Reusing prompt wording is the
-    trigger; `--session` or `--continue ID` avoids it. Tracked as
-    [issue #44](https://github.com/vinibretas/ollamarun/issues/44).
+    Stored titles are derived from prompts, so `-c` only reads a token as a
+    session reference when it is an exact id, an id prefix, or an exact title
+    with a separate prompt following it (`-c "demo session" "and the next
+    question"`). A lone token that equals (or contains) a title stays the
+    prompt, so reusing prompt wording continues the latest session.
 
 `-r` opens the same browser as `/sessions`: a table where you type a number,
 an id, a filter to narrow, or `q` to quit.
