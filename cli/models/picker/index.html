@@ -1423,6 +1423,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Picker and sorting
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -1439,6 +1457,47 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#sorting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sorting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#from-the-repl" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        From the REPL
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3431,36 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#sorting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sorting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#from-the-repl" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        From the REPL
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3404,12 +3493,106 @@
 
 
 <h1 id="picker-and-sorting">Picker and sorting<a class="headerlink" href="#picker-and-sorting" title="Permanent link">&para;</a></h1>
-<p>The model picker (a model-less <code>ollamarun</code> run, <code>/model</code>) sorts by <code>modified</code>
-(newest first), <code>name</code>, <code>size</code>, <code>parameters</code> or <code>context</code>; <code>--sort KEY</code> seeds
-it and the picker prompt takes <code>--sort KEY</code> in place. <code>context</code> costs one lazy
-<code>/api/show</code> per model, cached per host.</p>
-<p>In the REPL, <code>/model</code>/<code>/models [NAME|--list|--sort KEY]</code> switches model or
-lists and sorts the installed models, and <code>/ps</code> shows the resident ones.</p>
+<p>A model-less run opens the picker; <code>/model</code> opens it from inside a session.
+It is a sortable table: type a number, a name, a <code>--sort KEY</code>, or <code>q</code> to
+quit.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>                                                         models
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>╭────┬───────────────────────────────────────────────────────┬────────────┬─────────┬─────────────────────┬────────────╮
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>│  # │ name                                                  │       size │  params │ modified            │ family     │
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>├────┼───────────────────────────────────────────────────────┼────────────┼─────────┼─────────────────────┼────────────┤
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>│  1 │ gpuCurator:latest                                     │    6.1 GiB │    9.7B │ 2026-10-18 10:35:03 │ qwen35     │
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>│  2 │ d1:3b                                                 │    3.5 GiB │    2.7B │ 2026-10-17 03:56:52 │ lfm2       │
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>│  3 │ llama3.2:3b-instruct-q8_0                             │    3.2 GiB │    3.2B │ 2026-10-15 10:56:22 │ llama      │
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>│  4 │ llama3.2:3b                                           │    1.9 GiB │    3.2B │ 2026-10-15 10:56:22 │ llama      │
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>│  5 │ smollm2:1.7b                                          │    1.7 GiB │    1.7B │ 2026-10-14 12:42:04 │ llama      │
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>…
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>model number, name, --sort KEY or 'q' to quit (q):
+</code></pre></div>
+<p>Quitting without a choice is not an error — but a model-less run then has
+nothing to do:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>model number, name, --sort KEY or 'q' to quit (q): q
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>no model given — pass MODEL or configure one
+</code></pre></div>
+<h2 id="sorting">Sorting<a class="headerlink" href="#sorting" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Order</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>modified</code> (default)</td>
+<td>Newest first.</td>
+</tr>
+<tr>
+<td><code>name</code></td>
+<td>Alphabetical.</td>
+</tr>
+<tr>
+<td><code>size</code></td>
+<td>Largest first.</td>
+</tr>
+<tr>
+<td><code>parameters</code></td>
+<td>Most parameters first (MoE totals included).</td>
+</tr>
+<tr>
+<td><code>context</code></td>
+<td>Largest context window first.</td>
+</tr>
+</tbody>
+</table>
+<p>Aliases like <code>recent</code>, <code>newest</code> and <code>mtime</code> map to <code>modified</code>.
+<code>context</code> costs one lazy <code>/api/show</code> per model, fetched in parallel behind a
+status line and cached per host — the first sorted-by-context prompt takes a
+moment, later ones do not.</p>
+<p>Ways in: <code>--sort KEY</code> seeds the picker at launch, the picker prompt itself
+takes <code>--sort KEY</code> in place, and the session remembers the last choice for
+the next run.</p>
+<h2 id="from-the-repl">From the REPL<a class="headerlink" href="#from-the-repl" title="Permanent link">&para;</a></h2>
+<p><code>/model</code> alone opens the picker; the rest are table views:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>llama3.2:3b › /model --list --sort size
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>                                                    models · by size
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>╭────┬───────────────────────────────────────────────────────┬────────────┬─────────┬─────────────────────┬────────────╮
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>│  # │ name                                                  │       size │  params │ modified            │ family     │
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>├────┼───────────────────────────────────────────────────────┼────────────┼─────────┼─────────────────────┼────────────┤
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>…
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/model NAME</code></td>
+<td>Switch model (unloads the previous one — see <a href="../housekeeping/">Housekeeping</a>).</td>
+</tr>
+<tr>
+<td><code>/model --list [--sort KEY]</code></td>
+<td>The table without the interactive prompt.</td>
+</tr>
+<tr>
+<td><code>/ps</code></td>
+<td>The resident models — <code>ollama ps</code> with VRAM, quant and unload time.</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>llama3.2:3b › /ps
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>                                ollama ps
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>╭─────────────────┬───────────┬──────────┬────────┬─────────────────────╮
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>│ model           │ size      │ VRAM     │ quant  │ until               │
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>├─────────────────┼───────────┼──────────┼────────┼─────────────────────┤
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>│ llama3.2:3b     │ 3.2 GiB   │ 2.7 GiB  │ Q4_K_M │ 2026-10-18 12:51:04 │
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>╰─────────────────┴───────────┴──────────┴────────┴─────────────────────╯
+</code></pre></div>
+<p>Tab-completion offers model names at <code>/model</code> in both front ends, and the
+same table is what <a href="../pulling/">pulling</a> falls back to when you decline a
+pull.</p>
 
 
 

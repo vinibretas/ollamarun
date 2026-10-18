@@ -1451,6 +1451,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pulling models
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -1467,6 +1485,69 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-missing-model-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The missing-model flow
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#-pull" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        --pull
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pull-pull-or-update" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /pull — pull or update
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-models-come-from" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where models come from
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3453,58 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-missing-model-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The missing-model flow
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#-pull" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        --pull
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pull-pull-or-update" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /pull — pull or update
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-models-come-from" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where models come from
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3404,11 +3537,62 @@
 
 
 <h1 id="pulling-models">Pulling models<a class="headerlink" href="#pulling-models" title="Permanent link">&para;</a></h1>
-<p>A model missing from the target machine (local or <code>--remote</code>) offers to pull
-it after printing that machine's free disk space (local <code>disk_usage</code>, remote
-via a BatchMode ssh <code>df</code> probe; degrades to unknown), with live per-layer
-progress. <code>--pull</code> pulls without asking, <code>/pull [MODEL]</code> does it from the
-REPL, and declining the prompt opens the model picker.</p>
+<p>When the model you asked for is not installed on the target machine, the run
+does not fail with a bare error. It reports where it looked, probes the free
+disk space, and offers to pull — with live per-layer progress.</p>
+<h2 id="the-missing-model-flow">The missing-model flow<a class="headerlink" href="#the-missing-model-flow" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>model nonexistent-model:99b is not installed on 100.102.94.44:11434
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>free disk space on 100.102.94.44:11434: unknown
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>pull nonexistent-model:99b? [y/n] (n):
+</code></pre></div>
+<ul>
+<li><strong>y</strong> pulls it (<code>/api/pull</code>, one progress bar per layer) and the run
+  continues.</li>
+<li><strong>n</strong> (the default) opens the <a href="../picker/">model picker</a> to choose
+  something that <em>is</em> installed.</li>
+<li><code>--pull</code> skips the question and pulls without asking — the shape for
+  scripts and one-shots.</li>
+<li><code>/pull [MODEL]</code> does the same from inside the REPL.</li>
+</ul>
+<p>The disk line is the machine that will store the model: a local run reports
+its own numbers (<code>free disk space on this machine: 62.7 GiB of 467.3 GiB
+(/usr/share/ollama/.ollama/models)</code>), and a remote target is probed with a
+BatchMode ssh <code>df</code> — reading <code>OLLAMA_MODELS</code> from the ollama unit — which
+degrades to <code>unknown</code> when ssh cannot answer.</p>
+<h2 id="-pull"><code>--pull</code><a class="headerlink" href="#-pull" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gp">$ </span>ollamarun<span class="w"> </span>--no-tools<span class="w"> </span>--pull<span class="w"> </span>qwen2:0.5b<span class="w"> </span><span class="s2">"Reply with exactly: pong"</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="go">model qwen2:0.5b is not installed on 127.0.0.1:11434</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="go">free disk space on this machine: 92.9 GiB of 467.3 GiB (/usr/share/ollama/.ollama/models)</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="go">pulling qwen2:0.5b ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 352.2 MB / 352.2 MB  94 MB/s  0:00:04</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="go">…</span>
+</code></pre></div>
+<p>Each layer reports its own bytes and rate (Ollama's progress events, one
+rich bar per layer), then the model load and the answer follow. The check
+above ran end to end in ~14 s on a LAN, and the model was removed again with
+the API afterwards.</p>
+<h2 id="pull-pull-or-update"><code>/pull</code> — pull or update<a class="headerlink" href="#pull-pull-or-update" title="Permanent link">&para;</a></h2>
+<p><code>/pull</code> works on installed models too: it checks the manifest and
+re-verifies every layer, downloading only what changed.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>llama3.2:3b › /pull llama3.2:3b
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>free disk space on http://100.102.94.44:11434: unknown
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>llama3.2:3b is installed — checking for updates
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>pulling llama3.2:3b · pulling manifest  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 0/? bytes
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>  dde5aa3fc5ff  ━━━━━━━━━━━━━━━━━━━━━━ 2.0/2.0 GB  0:00:00
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>  966de95ca8a6  ━━━━━━━━━━━━━━━━━━━━━━ 1.4/1.4 kB  0:00:00
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>…
+</code></pre></div>
+<p>With no argument it pulls the session's model.</p>
+<h2 id="where-models-come-from">Where models come from<a class="headerlink" href="#where-models-come-from" title="Permanent link">&para;</a></h2>
+<p>Pulls go to the Ollama server the session talks to — locally or on the
+<a href="../../remote/"><code>--remote</code></a> machine; there is no separate remote path. The
+model store is the server's (<code>/usr/share/ollama/.ollama/models</code> by default,
+<code>OLLAMA_MODELS</code> overrides). Sessions store only the <em>name</em>, so a model
+pulled here is usable from every front end and the API at once.</p>
+<ul>
+<li><a href="../housekeeping/">Housekeeping</a> — what happens to a pulled model when
+  you switch away or exit.</li>
+<li>[Models API(../../api/openai/models.md) — the same list over HTTP.</li>
+</ul>
 
 
 

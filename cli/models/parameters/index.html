@@ -1507,6 +1507,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parameters
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -1523,6 +1541,58 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#params" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /params
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#setting-them" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Setting them
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-a-request-carries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What a request carries
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3442,47 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#params" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /params
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#setting-them" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Setting them
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-a-request-carries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What a request carries
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3404,17 +3515,83 @@
 
 
 <h1 id="parameters">Parameters<a class="headerlink" href="#parameters" title="Permanent link">&para;</a></h1>
-<p>Session parameters are Ollama options that ride every request:</p>
+<p>Everything a request sends to Ollama beyond the messages: the model options
+(<code>temperature</code>, <code>num_predict</code>, <code>top_p</code>, …), the system prompt, the thinking
+flag, keep-alive and the response format. They live on the session and are
+visible in one table.</p>
+<h2 id="params"><code>/params</code><a class="headerlink" href="#params" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>llama3.2:3b › /params
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>              session parameters
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>╭─────────────┬──────────────────────────────╮
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>│ parameter   │ value                        │
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>├─────────────┼──────────────────────────────┤
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>│ temperature │ 0.2                          │
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>│ num_predict │ 64                           │
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>│ think       │ None                         │
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>│ keep_alive  │ 2h                           │
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>│ gpu layers  │ auto (ollama decides)        │
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>│ format      │                              │
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>│ system      │ built-in default (258 chars) │
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>╰─────────────┴──────────────────────────────╯
+</code></pre></div>
+<p>Model options appear first (only the ones set), then the session-level knobs:
+<code>think</code>, <code>keep_alive</code>, <code>gpu layers</code>, <code>format</code>, <code>system</code>.</p>
+<h2 id="setting-them">Setting them<a class="headerlink" href="#setting-them" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Where</th>
+<th>How</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>REPL</td>
+<td><code>/set parameter NAME VALUE</code> — values are coerced (<code>0.2</code> → float, <code>true</code> → bool, JSON passes through).</td>
+</tr>
+<tr>
+<td>REPL</td>
+<td><code>/set parameter NAME</code> with no value clears it.</td>
+</tr>
+<tr>
+<td>REPL</td>
+<td><code>/set system TEXT</code> — the system prompt (see <a href="../../../config/prompts/">Prompts</a>).</td>
+</tr>
+<tr>
+<td>Launch</td>
+<td><code>--option NAME=VALUE</code> (repeatable) or <code>--options-json '{"temperature": 0.7}'</code>.</td>
+</tr>
+<tr>
+<td>Launch</td>
+<td><code>--system TEXT</code>, <code>--system-file FILE</code>, <code>--no-system</code>.</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>llama3.2:3b › /set parameter temperature 0.2
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>set temperature = 0.2
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>llama3.2:3b › /set parameter num_predict 64
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>set num_predict = 64
+</code></pre></div>
+<p>Options are passed through to Ollama's <code>/api/chat</code> <code>options</code> object as-is —
+the same names the API and <code>ollama run --option</code> use. A few interact with
+dedicated commands and settings:</p>
 <ul>
-<li><code>/set parameter NAME VALUE</code> sets one, <code>/params</code> shows them, and
-  <code>--option K=V</code> seeds them at launch.</li>
-<li>They live in the session, so they persist across resume, <code>/save</code> and the
-  API's session records (<code>settings.parameters</code>).</li>
-<li><code>num_gpu</code> set here is overridden by a pinned
-  <a href="../../context/gpu-layers/">gpu-layers</a> value.</li>
+<li><code>num_gpu</code> — <a href="../../context/gpu-layers/"><code>/gpu-layers</code></a> wins over it in the
+  payload.</li>
+<li><code>num_ctx</code> — <a href="../../context/num-ctx/"><code>/num-ctx</code></a> is the managed path;
+  setting the option directly works but skips the cap/warning logic.</li>
+<li><code>think</code> — prefer <a href="../../rendering/thinking/"><code>/think</code></a> or <code>--think</code>, which
+  also drive the display side.</li>
+<li><code>keep_alive</code> — prefer <code>--keepalive</code>/config <code>keepalive</code>; it is stored as
+  the session's <code>keepalive</code> and shown as <code>keep_alive</code> in the table.</li>
 </ul>
-<p><code>/show parameters</code> shows the model's own parameters. System prompts are set
-separately — see <a href="../../../config/prompts/">Prompts</a>.</p>
+<h2 id="what-a-request-carries">What a request carries<a class="headerlink" href="#what-a-request-carries" title="Permanent link">&para;</a></h2>
+<p><code>/params</code> is a view of the session; the wire payload is assembled per round
+by <code>build_payload()</code>: model, messages (history + the effective system
+message), <code>stream</code>, <code>options</code>, <code>think</code>, <code>keep_alive</code>, <code>format</code> — and the
+tool schemas when tools are on. Everything in the table above is part of it,
+except <code>gpu layers</code>, which resolves into <code>options.num_gpu</code> per the
+<a href="../../context/gpu-layers/">/gpu-layers spec</a>.</p>
 
 
 
