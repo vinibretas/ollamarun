@@ -586,6 +586,40 @@ typed `session.fit` event and `result.fit` on the turn status; a failed fit
 leaves the context unchanged. `serve_fit` gates the whole surface:
 `"probe"` (default), `"estimate"` (no probing) or `"off"`.
 
+**Deployment and auth.** `ollamarun serve` is meant to run on the trusted
+network under the user's own service management (the `serve_*` keys cover
+the listener, limits and shutdown; the startup banner prints the surface in
+effect). There is deliberately no authentication yet — the bind address is
+the only boundary, so the port must never reach the public internet. When
+authentication lands it wraps these routes without reshaping them: it is a
+transport concern, and never a substitute for the tool-approval gate.
+
+## Example clients
+
+Two reference clients under `examples/` double as integration checks — both
+print a `PASS`/`SKIP`/`FAIL` line per step and exit non-zero on a failure:
+
+- `examples/openai_client.py` — the official `openai` SDK against the `/v1`
+  surface: the model list, a completion, streaming with usage, embeddings
+  (the SDK's default base64 encoding), `n = 2` and a tools request. Needs
+  the SDK (`pip install --user openai`); pass a chat model:
+
+  ```console
+  $ python3 examples/openai_client.py --model qwen3:8b
+  ```
+
+- `examples/agent_client.py` — the native agent flow over plain HTTP:
+  submit a turn, follow the typed SSE stream, resolve a parked approval,
+  read the session summary. `--mode interactive --approve run` exercises
+  the approval path; `--session-id` continues an existing session:
+
+  ```console
+  $ python3 examples/agent_client.py --prompt "List the files in /tmp"
+  ```
+
+Both take `--base-url` for a remote or non-default listener (the OpenAI one
+wants the `/v1` suffix).
+
 ## Prompts and tool definitions
 
 The model-facing text lives in files, not code:

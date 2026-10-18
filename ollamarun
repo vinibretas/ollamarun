@@ -2,6 +2,25 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 1.59
+
+Summary of changes in this version:
+  - Phase 8: the API layer is documented and demonstrated end to end. Two
+    reference clients land under `examples/`: `openai_client.py` drives the
+    official OpenAI SDK against `ollamarun serve` (the model list, a
+    completion, streaming with usage, embeddings in the SDK's default
+    base64 encoding, `n > 1`, and a tools request) and `agent_client.py`
+    speaks the native API over plain HTTP (submit a turn, follow the typed
+    SSE event stream, resolve a parked approval, print the terminal
+    summary). Both print a PASS/SKIP/FAIL line per step, exit non-zero on
+    a failure, and run as the `test_examples` regression against the fake
+    stack so they cannot rot; the pyflakes gate now covers `examples/` too.
+  - README: a new "Example clients" section with the runnable commands, and
+    the Agent API section gains "Deployment and auth" — the bind address is
+    the only boundary, authentication is deliberately deferred and, when it
+    lands, wraps the routes without reshaping them (never a substitute for
+    tool approval).
+
 Version: 1.58
 
 Summary of changes in this version:
