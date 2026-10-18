@@ -2,6 +2,39 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 2.0
+
+Summary of changes in this version:
+  - The API layer is complete, and this release marks it as the supported
+    contract: ollamarun is now both the terminal harness it always was and a
+    reusable agent backend. One runtime drives all three front ends — the
+    REPL, the TUI and `ollamarun serve` — and the version jumps to 2.0
+    because that surface (and the behavior pinned with it) is a stable,
+    tested interface rather than an experiment.
+  - `ollamarun serve` is the whole surface. OpenAI-compatible: `GET
+    /v1/models`, `GET /v1/models/{id}`, `POST /v1/embeddings` (float and
+    base64 encodings) and `POST /v1/chat/completions` (streaming SSE,
+    `n > 1`, `parallel_tool_calls`, client `tools` passed through and never
+    executed), with strict validation, structured errors, thinking as
+    `delta.reasoning_content`, and the permanently unsupported features
+    recorded rather than guessed at. Native agent API: typed turn events
+    with replay and `stream.gap`, explicit approval state, session CRUD,
+    artifact upload/download with provenance, and context/placement control
+    (`num_ctx`/`gpu_layers`, synchronous fit estimates, asynchronous probe
+    jobs).
+  - The operational contract ships with it: the validated `serve_*`
+    configuration matrix, LAN/tailnet-only binding without authentication
+    (deferred by design, never a substitute for tool approval), the
+    workspace jail and artifact-root containment, aggregate input limits,
+    chunked request decoding, the `serve_models` allowlist and the
+    `serve_agent` switch, and an ordered shutdown that drains handlers and
+    unloads only the models the server used.
+  - Everything is gated: the two-file suite (`python3 test_ollamarun.py`)
+    with the required pyflakes and official-SDK gates, the in-process fake
+    stack behind the whole API, a real-process smoke of the serve binary,
+    an optional `--live` real-backend pass, and the runnable reference
+    clients in `examples/`.
+
 Version: 1.59
 
 Summary of changes in this version:
