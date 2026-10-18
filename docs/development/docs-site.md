@@ -3,15 +3,20 @@
 The site is MkDocs + Material: `mkdocs.yml` is the whole configuration and
 `docs/` holds one page per feature, grouped by surface — `cli/`, `api/`,
 `tui/`, `web-ui/` — with global material in `getting-started/`, `config/`,
-`development/` and `design/`. Collections that are one feature (the slash
-commands, the tools) get a single reference page with a section per item.
+`project/`, `development/` and `design/`. Collections that are one feature
+(the slash commands, the tools) get a single reference page with a section per
+item.
 
-Pages are assembled from the repository's own files through
-`pymdownx.snippets` includes, so they cannot drift from their sources:
+Two kinds of pages:
+
+- Feature pages mirror the README's material page by page — the README is the
+  GitHub front page, the site is the browsable version — so a behavior change
+  updates both.
+- A few pages are snippet includes of the repository's own files, so they
+  cannot drift from their sources:
 
 | Page | Source |
 | --- | --- |
-| `index.md` | `README.md` |
 | `development/architecture.md` | the marked `architecture` section of `AGENTS.md` |
 | `development/contributing.md` | the marked `where-to-change` and `testing` sections of `AGENTS.md` |
 | `design/api-layer.md` | the marked `api-layer` section of `ollamarunAPILayerPlan.md` |

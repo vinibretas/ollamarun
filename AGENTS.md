@@ -105,10 +105,11 @@ docstring convention) — it is binding, not optional, for edits in this repo.
   running `ollamarun serve`.
 - Docs site: `mkdocs serve` for a live preview and `mkdocs build --strict`
   (must be warning-free) before `mkdocs gh-deploy`, which builds the site and
-  pushes the `gh-pages` branch GitHub Pages serves. The pages under `docs/`
-  are assembled from `README.md`, marked `AGENTS.md` sections and
-  `ollamarunAPILayerPlan.md` through `pymdownx.snippets` includes — edit the
-  source files, never a generated page, and keep the snippet markers intact.
+  pushes the `gh-pages` branch GitHub Pages serves. The feature pages under
+  `docs/` mirror the README's material; the architecture/contributing pages
+  and the API design note are `pymdownx.snippets` includes of marked
+  `AGENTS.md` sections and `ollamarunAPILayerPlan.md` — edit the source files,
+  never a generated page, and keep the snippet markers intact.
 - The entry-point script is executable and shebang-pinned to
   `#! /bin/python3.10` (system Python). Do not use stdlib features newer
   than 3.10 without a try/except fallback (see the `HAS_PYLATEXENC`/
@@ -142,13 +143,12 @@ docstring convention) — it is binding, not optional, for edits in this repo.
   system-prompt contract: unset session `system` = built-in default, `""` =
   no system prompt (`--no-system`, `/system off`), text = replaces it
   (`/system clear` returns to the default).
-- Docs move with behavior: `README.md` is the feature reference (tool table,
-  command table, config), `CLAUDE.md`/`AGENTS.md` are the working guidance —
-  update them in the same change, keeping the two guidance files identical.
-  The docs site under `docs/` renders those same files through snippet
-  includes, so it must never duplicate their text; when a marked section
-  moves, the site follows automatically — re-check with `mkdocs build
-  --strict`.
+- Docs move with behavior: `README.md` stays the GitHub feature reference and
+  the docs pages under `docs/` mirror it section by section — update both in
+  the same change (the architecture/contributing pages follow their marked
+  `AGENTS.md` sections automatically). `CLAUDE.md`/`AGENTS.md` are the working
+  guidance — keep the two guidance files identical, and re-check the site with
+  `mkdocs build --strict`.
 - Inspection-style flags (`--list`, `--show`, `--search`, `--export`) share
   one output convention: rich table by default, `--json`/`--csv`/`--markdown`
   plus `--out FILE` to redirect — implemented once in `emit()`
