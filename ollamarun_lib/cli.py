@@ -802,6 +802,31 @@ def parse_cli_args(parser: argparse.ArgumentParser, argv: list[str],
         normalize_argv(argv, store or SessionStore(), parser))
 
 
+def attach_images(repl: Repl, paths: Optional[list[str]]) -> Optional[int]:
+    """Encode `--image` paths into `repl.pending_images`; an exit code on failure.
+
+    A missing file is its own message (`image not found: PATH`); anything else
+    (an empty or unreadable file) reports the path and the reason, so with
+    several `--image` flags it is clear which argument failed.
+    """
+    for image in paths or []:
+        expanded = Path(os.path.expanduser(image))
+        try:
+            repl.pending_images.append(encode_image(expanded, repl.image_storage))
+        except FileNotFoundError:
+            console.print(f"[err]image not found: {escape(image)}[/err]")
+            return 2
+        except (OSError, ValueError) as exc:
+            detail = str(exc)
+            prefix = f"{expanded}: "
+            if detail.startswith(prefix):
+                detail = detail[len(prefix):]
+            console.print(f"[err]cannot attach image {escape(image)}: "
+                          f"{escape(detail)}[/err]")
+            return 2
+    return None
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "serve":
@@ -1050,13 +1075,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         repl = Repl(args, config, client, store, session)
         if args.json and not args.tools:
             repl.tools_enabled = False
-        for image in args.image or []:
-            try:
-                repl.pending_images.append(encode_image(Path(os.path.expanduser(image)),
-                                                        repl.image_storage))
-            except (OSError, ValueError) as exc:
-                console.print(f"[err]{escape(str(exc))}[/err]")
-                return 2
+        code = attach_images(repl, args.image)
+        if code is not None:
+            return code
         if session.system:
             console.print(f"[dim]system prompt: {shortcut(session.system, 80)}[/dim]")
         elif session.system == "":
