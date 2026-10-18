@@ -115,7 +115,7 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"1.56"` — keep this
+  constant in `ollamarun_lib/constants.py`, currently `"2.0"` — keep this
   line current when you bump it) and prepend a new bullet list under
   `Summary of changes in this version:` in the top-level `ollamarun` entry
   script's module docstring — read the existing entries there before adding
