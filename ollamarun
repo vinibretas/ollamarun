@@ -2,6 +2,15 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 2.2
+
+Summary of changes in this version:
+  - A flag between MODEL and PROMPT is no longer unrecognized: the CLI parses
+    with `parse_intermixed_args`, so `ollamarun qwen3:0.6b --no-tools "hi"`
+    (and every other flag-first/middle/last order the help shows) runs the
+    one-shot. Positionals and option values parse exactly as before in every
+    form that already worked.
+
 Version: 2.1
 
 Summary of changes in this version:

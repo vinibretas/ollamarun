@@ -738,13 +738,25 @@ def session_reconnect(args: argparse.Namespace, config: dict[str, Any],
     return resolve_remote(session.remote, config, ts_map) if session.remote else session.host
 
 
+def parse_cli_args(parser: argparse.ArgumentParser, argv: list[str],
+                   store: Optional[SessionStore] = None) -> argparse.Namespace:
+    """Parse CLI argv with flags allowed between MODEL and PROMPT.
+
+    `parse_args` stops collecting positionals at the first optional, so
+    `ollamarun MODEL --flag PROMPT` left PROMPT unrecognized (#37);
+    `parse_intermixed_args` collects both interspersed blocks. The `-c`
+    disambiguation runs first, on the raw argv.
+    """
+    return parser.parse_intermixed_args(normalize_argv(argv, store or SessionStore()))
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "serve":
         return serve_main(argv[1:])
     parser = build_parser()
     store = SessionStore()
-    args = parser.parse_args(normalize_argv(argv, store))
+    args = parse_cli_args(parser, argv, store)
     resuming = args.continue_ is not None or bool(args.session) or args.resume
     if resuming and args.model and not args.prompt and not args.model_flag:
         args.prompt, args.model = [args.model], None

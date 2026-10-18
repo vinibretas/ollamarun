@@ -124,7 +124,7 @@ except ImportError:  # pragma: no cover - fallback path
     TEXTUAL_VERSION = ""
     TextualApp = None
 
-VERSION = "2.1"
+VERSION = "2.2"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
