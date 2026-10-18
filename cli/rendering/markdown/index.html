@@ -975,6 +975,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Streaming markdown
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -991,6 +1009,58 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Modes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#while-it-streams" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        While it streams
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#off-a-terminal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Off a terminal
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3442,47 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Modes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#while-it-streams" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        While it streams
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#off-a-terminal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Off a terminal
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3404,15 +3515,72 @@
 
 
 <h1 id="streaming-markdown">Streaming markdown<a class="headerlink" href="#streaming-markdown" title="Permanent link">&para;</a></h1>
-<p>Output streams through a <code>rich.Live</code> view with a throttled markdown re-render
-(raw streaming past <code>max_render_chars</code>, default 12000); <code>--pager</code> buffers into
-the pager, <code>--render markdown|plain|raw</code> picks the mode.</p>
+<p>Responses stream through a <code>rich.Live</code> view that re-renders the markdown as
+tokens arrive — headings, lists, tables, code fences and
+<a href="../math/">display math</a> all appear already formatted while the model is
+still writing.</p>
+<h2 id="modes">Modes<a class="headerlink" href="#modes" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th><code>--render</code></th>
+<th>What you see</th>
+<th>When</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>auto</code> (default)</td>
+<td><code>markdown</code> on a terminal, <code>plain</code> when piped</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>markdown</code></td>
+<td>Styled markdown, math converted; degrades to plain off-terminal</td>
+<td>Interactive use</td>
+</tr>
+<tr>
+<td><code>plain</code></td>
+<td>The text as the model wrote it (still through the live view)</td>
+<td>When you want no markup interpretation</td>
+</tr>
+<tr>
+<td><code>raw</code></td>
+<td>Only the answer text on stdout, nothing else</td>
+<td>Scripts — equivalent to <code>--raw</code></td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span>ollamarun<span class="w"> </span>--no-tools<span class="w"> </span>--render<span class="w"> </span>raw<span class="w"> </span>llama3.2:3b<span class="w"> </span><span class="s2">"Reply with exactly: pong"</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="go">pong</span>
+</code></pre></div>
+<p><code>/render [markdown|plain|raw]</code> switches mid-session; <code>/render</code> alone shows
+the current mode. <code>--raw</code> is the same as <code>--render raw</code>.</p>
+<h2 id="while-it-streams">While it streams<a class="headerlink" href="#while-it-streams" title="Permanent link">&para;</a></h2>
+<p>The view refreshes on a throttle, not per token — content stays readable and
+the terminal is not redrawn hundreds of times a second. Two knobs matter:</p>
 <ul>
-<li><a href="../math/">2D math</a> — the display-math layout engine.</li>
-<li><a href="../thinking/">Thinking panel</a> — the collapsible reasoning preview.</li>
-<li><a href="../footer/">Footer</a> — tok/s, the context counter and timings.</li>
-<li><a href="../transcript/">Transcript replay</a> — saved sessions rendered the way they
-  looked live.</li>
+<li><code>max_render_chars</code> (config, default 12000): past this much content in one
+  response, the renderer switches to raw streaming — the answer keeps
+  arriving, it just stops re-parsing the markdown for speed.</li>
+<li><code>--nowordwrap</code>: don't wrap long lines to the terminal width.</li>
+<li><code>--pager</code> buffers the whole response and opens it in <code>$PAGER</code> when done —
+  see <a href="../../pager/">Pager</a>.</li>
+</ul>
+<p>The user message is framed in a small right-aligned box, the model's answer
+flows under a rule, and a tool loop's final answer gets a centered
+<code>response</code> divider (tool panels are their own boxes — see
+<a href="../../tools/tool-loop/">The tool loop</a>).</p>
+<h2 id="off-a-terminal">Off a terminal<a class="headerlink" href="#off-a-terminal" title="Permanent link">&para;</a></h2>
+<p>Piped and redirected output is always plain: the live view needs a terminal,
+so <code>markdown</code> itself degrades to <code>plain</code> there. The response text is still
+written line by line as it arrives. For machine output, <code>--raw</code>/<code>--json</code>
+skip the presentation entirely — see
+<a href="../../usage/#output-and-rendering">Usage</a>.</p>
+<ul>
+<li><a href="../math/">2D math</a> — what the display-math renderer does.</li>
+<li><a href="../thinking/">Thinking panel</a> — the collapsible reasoning view.</li>
+<li><a href="../footer/">Footer</a> — the tok/s and ctx line under the answer.</li>
 </ul>
 
 

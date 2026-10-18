@@ -3493,20 +3493,98 @@
 
 
 <h1 id="footer">Footer<a class="headerlink" href="#footer" title="Permanent link">&para;</a></h1>
+<p>Two lines of live feedback sit around an answer: the tok/s + context footer
+while it streams, and the <code>⏱</code> timings line under it when it finishes.</p>
 <h2 id="live-toks-and-context">Live tok/s and context<a class="headerlink" href="#live-toks-and-context" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>~24.0 tok/s (avg 21.4) · 45 tok · ctx 12.345k/32.768k (38.123%)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>~20.0 tok/s · (avg 20.9) · 48 tok · ctx 12.345k/32.768k (38.123%)
 </code></pre></div>
-<p>The 5s windowed rate, its cumulative average, the streamed token count and a
-context counter that ticks with every token. Its denominator is the window the
-model is actually loaded with (<code>/api/ps</code>; a session <code>num_ctx</code> wins, the
-architectural maximum is only the fallback), and counts read raw below 1k /
-3-decimal k above. The TUI status bar shows the same rate, average and live
-ctx. <code>--no-tps</code>/<code>/tps</code> switch the footer off.</p>
+<table>
+<thead>
+<tr>
+<th>Segment</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>~20.0 tok/s</code></td>
+<td>The rate over a 5-second sliding window (<code>TpsEstimator</code>), so it reacts quickly to speed changes.</td>
+</tr>
+<tr>
+<td><code>(avg 20.9)</code></td>
+<td>The cumulative average for the response.</td>
+</tr>
+<tr>
+<td><code>48 tok</code></td>
+<td>Tokens streamed so far this response (thinking counts).</td>
+</tr>
+<tr>
+<td><code>ctx 12.345k/32.768k (38.123%)</code></td>
+<td>Context the next request will carry over the effective window.</td>
+</tr>
+</tbody>
+</table>
+<p>Counting rules: values read raw below 1k, 3-decimal <code>k</code> above. The ctx part
+appears from the second round on, when there is a base to count from — it
+adds the current round's chunks to the last request's totals.</p>
+<p>The <strong>denominator is the window the model is actually loaded with</strong>, not the
+model's architectural maximum: a session <code>num_ctx</code> wins, then the loaded
+runner's <code>/api/ps</code> window, then the model default. Until the runner reports,
+the counter is marked provisional. (That resolution order is the same one
+<a href="../../context/overview/"><code>/context</code></a> and the 80%/85% warnings use.)</p>
+<p><code>--no-tps</code> hides the footer for a run; <code>/tps [on|off]</code> toggles it
+mid-session; config <code>tps_footer: false</code> turns it off permanently. The
+deprecated <a href="../../../tui/">TUI</a> shows the same numbers in its status bar.</p>
 <h2 id="timings">Timings<a class="headerlink" href="#timings" title="Permanent link">&para;</a></h2>
-<p><code>⏱ load … · prompt … · eval … · total …</code> prints under every answer on a
-terminal; <code>--verbose</code> is obsolete there and now only adds the line to
-piped/redirected output. <code>--raw</code>/<code>--json</code> never get it, and config
-<code>show_stats: false</code> turns it off.</p>
+<p>When a response ends on a terminal, a dim line prints under it:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>⏱  load 3 ms · prompt 87 tok (1030 tok/s) · eval 2 tok (21.3 tok/s) · total 184 ms
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Segment</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>load</code></td>
+<td>Time Ollama spent loading the model (0 when warm).</td>
+</tr>
+<tr>
+<td><code>prompt</code></td>
+<td>Prompt tokens and their processing rate; <code>cached</code> shows reused KV.</td>
+</tr>
+<tr>
+<td><code>eval</code></td>
+<td>Generated tokens and their rate.</td>
+</tr>
+<tr>
+<td><code>total</code></td>
+<td>The whole request.</td>
+</tr>
+</tbody>
+</table>
+<p>Visibility rules:</p>
+<ul>
+<li>On a terminal it is always shown — <code>--verbose</code> is obsolete there and only
+  matters off a terminal.</li>
+<li>Piped/redirected output omits it <strong>unless <code>--verbose</code></strong>:</li>
+</ul>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="gp">$ </span>ollamarun<span class="w"> </span>--no-tools<span class="w"> </span>llama3.2:3b<span class="w"> </span><span class="s2">"Reply with exactly: pong"</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="go">llama3.2:3b ›</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="go">pong</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="gp">$ </span>ollamarun<span class="w"> </span>--no-tools<span class="w"> </span>--verbose<span class="w"> </span>llama3.2:3b<span class="w"> </span><span class="s2">"Reply with exactly: pong"</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="go">llama3.2:3b ›</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="go">pong</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="go">⏱  load 3 ms · prompt 87 tok (1030 tok/s) · eval 2 tok (21.3 tok/s) · total 184 ms</span>
+</code></pre></div>
+<ul>
+<li><code>--raw</code> and <code>--json</code> never carry it.</li>
+<li>Config <code>show_stats: false</code> turns it off everywhere.</li>
+</ul>
+<p>The same line is what <code>--show</code> prints at the end of a transcript replay (with
+the session's totals instead of one request's).</p>
 
 
 

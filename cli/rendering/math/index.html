@@ -1003,6 +1003,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2D math
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -1019,6 +1037,69 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-it-renders" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it renders
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#inline-math" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inline math
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fallbacks-not-crashes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fallbacks, not crashes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#live-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Live example
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3453,58 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-it-renders" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it renders
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#inline-math" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inline math
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fallbacks-not-crashes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fallbacks, not crashes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#live-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Live example
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3404,13 +3537,145 @@
 
 
 <h1 id="2d-math">2D math<a class="headerlink" href="#2d-math" title="Permanent link">&para;</a></h1>
-<p>Display math (<code>$$…$$</code>, <code>\[…\]</code>) is laid out by a self-contained parser/layout
-engine — stacked fractions, sqrt overlines, sum/prod/lim limits above-below,
-integral side-limits, matrices, cases, aligned, <code>\boxed</code>, <code>\binom</code>, tall
-delimiters, accents, <code>\mathbb</code>/<code>\mathcal</code>/<code>\mathfrak</code>/<code>\mathbf</code> — centered in
-cyan, with flattened Unicode for inline math and <code>pylatexenc</code> as the
-never-crashing fallback (unknown env/over-wide/over-budget). <code>--no-math</code> /
-<code>/math</code> disable the conversion.</p>
+<p>Display math is not printed as LaTeX. A self-contained parser and layout
+engine (<code>ollamarun_lib/mathrender.py</code>) turns it into 2D Unicode art —
+stacked fractions, radical overlines, limits above and below big operators —
+centered in cyan. Inline math is flattened to a single line instead.</p>
+<p>The engine handles display math written as <code>$$…$$</code> or <code>\[…\]</code> on its own
+line(s); math inside a sentence, list item or table cell goes through the
+inline path so it stays inside its block.</p>
+<h2 id="what-it-renders">What it renders<a class="headerlink" href="#what-it-renders" title="Permanent link">&para;</a></h2>
+<p>Real output from the engine (the text here; it is centered and cyan on a
+terminal):</p>
+<table>
+<thead>
+<tr>
+<th>LaTeX</th>
+<th>Rendered as</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>\frac{a+b}{2}</code></td>
+<td>A stacked fraction with a rule.</td>
+</tr>
+<tr>
+<td><code>\sqrt{x^2+y^2}</code></td>
+<td>A radical with an overline.</td>
+</tr>
+<tr>
+<td><code>\sum_{i=1}^{n} …</code></td>
+<td><code>∑</code> with limits above and below.</td>
+</tr>
+<tr>
+<td><code>\int_0^\infty …</code></td>
+<td><code>∫₀^∞</code>, tight side limits.</td>
+</tr>
+<tr>
+<td><code>\lim_{x \to 0} …</code></td>
+<td><code>lim</code> with <code>x → 0</code> beneath.</td>
+</tr>
+<tr>
+<td><code>\begin{pmatrix} … \end{pmatrix}</code></td>
+<td>A parenthesised matrix.</td>
+</tr>
+<tr>
+<td><code>\begin{cases} … \end{cases}</code></td>
+<td>A brace with stacked cases.</td>
+</tr>
+<tr>
+<td><code>\boxed{E = mc^2}</code></td>
+<td>A rounded box.</td>
+</tr>
+<tr>
+<td><code>\binom{n}{k}</code></td>
+<td>Binomial in big parentheses.</td>
+</tr>
+<tr>
+<td><code>\vec{v}\cdot\hat{n} + \bar{x}</code></td>
+<td>Accents above the letters.</td>
+</tr>
+</tbody>
+</table>
+<p>Verbatim, as the layout engine returns them:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>\frac{a+b}{2}
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>   a + b
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>   ─────
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>     2
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>\sqrt{x^2+y^2}
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>   ───────
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>   √x² + y²
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>\sum_{i=1}^{n} i = \frac{n(n+1)}{2}
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>     n       n(n + 1)
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>     ∑   i = ────────
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>   i = 1        2
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>\lim_{x \to 0} \frac{\sin x}{x} = 1
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>         sin x
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>    lim  ───── = 1
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>   x → 0   x
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>\begin{pmatrix} a &amp; b \\ c &amp; d \end{pmatrix}
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>   ⎛ a  b ⎞
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>   ⎝ c  d ⎠
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>\begin{cases} x &amp; x&gt;0 \\ -x &amp; x\le 0 \end{cases}
+<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>   ⎧ x  x &gt; 0
+<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>   ⎩ -x  x ≤ 0
+<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>
+<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>\begin{aligned} a &amp;= b+c \\ d &amp;= e \end{aligned}
+<a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>   a = b + c
+<a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>   d = e
+<a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>
+<a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a>\boxed{E = mc^2}
+<a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a>   ╭─────────╮
+<a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a>   │ E = mc² │
+<a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a>   ╰─────────╯
+<a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a>
+<a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a>\binom{n}{k} = \frac{n!}{k!(n-k)!}
+<a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a>   ⎛n⎞       n!
+<a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a>   ⎜ ⎟ = ──────────
+<a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a>   ⎝k⎠   k!(n - k)!
+<a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a>
+<a id="__codelineno-0-42" name="__codelineno-0-42" href="#__codelineno-0-42"></a>\mathbb{R} \subset \mathbb{C}, \; \mathcal{L}
+<a id="__codelineno-0-43" name="__codelineno-0-43" href="#__codelineno-0-43"></a>   ℝ ⊂ ℂ,  ℒ
+<a id="__codelineno-0-44" name="__codelineno-0-44" href="#__codelineno-0-44"></a>
+<a id="__codelineno-0-45" name="__codelineno-0-45" href="#__codelineno-0-45"></a>\alpha + \beta = \gamma \ne \delta \approx \epsilon
+<a id="__codelineno-0-46" name="__codelineno-0-46" href="#__codelineno-0-46"></a>   α + β = γ ≠ δ ≈ ε
+</code></pre></div>
+<p>Accents (<code>\vec</code>, <code>\hat</code>, <code>\bar</code>), Greek letters, <code>\mathbb</code>/<code>\mathcal</code>,
+<code>\left…\right</code> delimiters, sub/superscripts (stacked for big operators,
+raised otherwise) and <code>\,</code>-style spacing come along too.</p>
+<h2 id="inline-math">Inline math<a class="headerlink" href="#inline-math" title="Permanent link">&para;</a></h2>
+<p><code>$x^2 + y_i$</code> → <code>x² + yᵢ</code>; <code>$\alpha\beta$</code> → <code>αβ</code>; <code>$\frac{1}{2}$</code> → <code>1/2</code>.
+Inline conversion is line-based, so it stays safe inside tables and
+sentences.</p>
+<h2 id="fallbacks-not-crashes">Fallbacks, not crashes<a class="headerlink" href="#fallbacks-not-crashes" title="Permanent link">&para;</a></h2>
+<p>Anything the layout engine cannot lay out — an unknown environment, an
+unknown macro, a formula too wide for the terminal, an internal over-budget
+— falls back to the <code>pylatexenc</code> flattening path and is shown literally
+instead of half-rendered:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>$$ \begin{foo} x + 1 \end{foo} $$     →     x + 1      (literal block)
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>$$ \notacommand{x} $$                 →     x          (literal block)
+</code></pre></div>
+<p>Nothing unsupported ever takes the rendering down; the expression is
+reproduced as best it can be.</p>
+<h2 id="live-example">Live example<a class="headerlink" href="#live-example" title="Permanent link">&para;</a></h2>
+<p>Asked to repeat a formula exactly, the model's answer is laid out by the
+engine on the way in:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="gp">$ </span>ollamarun<span class="w"> </span>--no-tools<span class="w"> </span>llama3.2:3b<span class="w"> </span><span class="s2">"Repeat this exact line, with no extra text: \$\$e^{i\pi} + 1 = 0\$\$"</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="go">llama3.2:3b ›</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="go">                            e^(iπ) + 1 = 0</span>
+</code></pre></div>
+<p>The same run with <code>--no-math</code> shows the source instead:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>$$e^{i\pi} + 1 = 0$$
+</code></pre></div>
+<p><code>/math [on|off]</code> toggles conversion mid-session; <code>--no-math</code> is the
+per-run flag. Conversion runs in the renderer's markdown path, so it applies
+to live streaming, <a href="../transcript/">transcript replays</a> and HTML exports
+alike.</p>
 
 
 

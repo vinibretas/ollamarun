@@ -1031,6 +1031,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Thinking panel
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -1047,6 +1065,69 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-collapsed-line" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The collapsed line
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ctrlt-and-the-three-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ctrl+T, and the three modes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#think-is-a-different-knob" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /think is a different knob
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#off-a-terminal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Off a terminal
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3453,58 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-collapsed-line" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The collapsed line
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ctrlt-and-the-three-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ctrl+T, and the three modes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#think-is-a-different-knob" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /think is a different knob
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#off-a-terminal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Off a terminal
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3404,11 +3537,69 @@
 
 
 <h1 id="thinking-panel">Thinking panel<a class="headerlink" href="#thinking-panel" title="Permanent link">&para;</a></h1>
-<p>Thinking streams live and is collapsed by default as an animated
-<code>thinking · N chars · Ctrl+T to expand</code> line. Ctrl+T expands a tail-capped
-boxed preview in place (press again to collapse; the stream never pauses),
-and <code>/thinking full</code> prints the stored panel later. <code>--show-thinking</code>/
-<code>--hidethinking</code> and config <code>thinking</code> set the start mode.</p>
+<p>Reasoning models stream their thinking alongside the answer. The harness
+shows it live but collapsed, so it never buries the answer you asked for.</p>
+<h2 id="the-collapsed-line">The collapsed line<a class="headerlink" href="#the-collapsed-line" title="Permanent link">&para;</a></h2>
+<p>While the model thinks, a single animated line ticks in place:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>⠋  thinking · 161 chars · Ctrl+T to expand
+</code></pre></div>
+<p>The count grows as tokens arrive. When the answer starts, the line stays put
+(the thinking is kept, just folded) and the response streams under it.</p>
+<h2 id="ctrlt-and-the-three-modes">Ctrl+T, and the three modes<a class="headerlink" href="#ctrlt-and-the-three-modes" title="Permanent link">&para;</a></h2>
+<p><strong>Ctrl+T</strong> expands the panel in place — a boxed, dim, markdown-rendered
+preview capped to the terminal's height — and pressing it again collapses
+it. The stream never pauses for either.</p>
+<table>
+<thead>
+<tr>
+<th>Start mode</th>
+<th>Where</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>collapsed</code></td>
+<td>config <code>thinking</code> (default)</td>
+<td>The ticking line.</td>
+</tr>
+<tr>
+<td><code>expanded</code></td>
+<td><code>--show-thinking</code>, config</td>
+<td>The panel starts open.</td>
+</tr>
+<tr>
+<td><code>hidden</code></td>
+<td><code>--hidethinking</code>, config</td>
+<td>Thinking is not shown at all.</td>
+</tr>
+</tbody>
+</table>
+<p><code>/thinking [show|collapse|hide|toggle|full]</code> covers them from inside a
+session — and <code>full</code> prints the whole stored reasoning after the fact, no
+terminal-height cap:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>qwen3:1.7b › /thinking full
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>│ Okay, the user is asking for a two-item markdown bullet list of primary
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>│ colors. Let me think. The primary colors in painting are typically red
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>│ and blue, but wait, in light theory, it's red, green, and blue. …
+</code></pre></div>
+<p>The thinking is stored on the assistant message either way (session JSON,
+exports and <code>--show</code> include it), so hiding it never loses it.</p>
+<h2 id="think-is-a-different-knob"><code>/think</code> is a different knob<a class="headerlink" href="#think-is-a-different-knob" title="Permanent link">&para;</a></h2>
+<p>Easy to mix up:</p>
+<ul>
+<li><strong><code>/think [on|off|low|medium|high]</code></strong> — whether the <em>model</em> thinks at all
+  (sent as Ollama's <code>think</code> parameter).</li>
+<li><strong><code>/thinking [mode]</code></strong> — how the thinking is <em>displayed</em>.</li>
+</ul>
+<p><code>--think STR</code> is the launch flag for the former; the config key <code>thinking</code>
+is the display mode.</p>
+<h2 id="off-a-terminal">Off a terminal<a class="headerlink" href="#off-a-terminal" title="Permanent link">&para;</a></h2>
+<p>Piped and redirected runs print the thinking text plainly before the answer
+(no live panel exists there); <code>--hidethinking</code> removes it. <code>--json</code> carries
+it in <code>message.thinking</code>. The API surface exposes reasoning models as
+<code>delta.reasoning_content</code> on the OpenAI side — see
+[Streaming(../../api/openai/streaming.md).</p>
 
 
 
