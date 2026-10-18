@@ -1,11 +1,68 @@
 # ollamarun
 
-A terminal agent harness for Ollama: run models, give them tools, keep the
-conversation. It is a drop-in superset of `ollama run` — every ollama 0.34 run
-flag is accepted — and adds an approval-gated tool-calling loop (22 built-in
-tools), persistent sessions, live markdown + 2D Unicode math rendering, an
-optional Textual TUI, context/GPU placement fitting, and inference on any
-Tailscale machine.
+> A terminal agent harness for Ollama — a personal project about how far local
+> models go when you hand them tools.
+
+ollamarun began as a nicer `ollama run`: streamed markdown, 2D Unicode math,
+sessions that actually persist. It has since grown into a full harness — an
+approval-gated tool loop, two front ends, remote inference, context/GPU
+placement fitting, and an HTTP API layer (`ollamarun serve`) that speaks both
+the OpenAI API and its own native agent API.
+
+This is not a product. It is a one-person workbench for learning how local LLM
+stacks fit together, and how much of a real agent harness you can build around
+one. Every `ollama run` flag (ollama 0.34) is accepted and extended, so it
+still doubles as a drop-in replacement for the CLI it started as.
+
+## What I'm using it to learn
+
+- **Local LLM orchestration** — talking to Ollama over raw HTTP, streaming
+  responses by hand, model lifecycle (`/api/ps`, load/unload), GPU placement.
+- **Harness engineering** — the unglamorous middle of agents: tool schemas,
+  approvals that do not get in the way, cancellation, output truncation, and
+  keeping a model on the rails across multi-round tool loops.
+- **API compatibility and support** — making unmodified OpenAI clients work
+  against local models (strict validation, SSE, embeddings, emulated `n > 1`),
+  plus a native agent API (turns, events, parked approvals, sessions, fits)
+  for clients that want the whole loop.
+- **Terminal UX** — live markdown re-rendering, a self-contained
+  LaTeX → 2D Unicode math layout engine, a collapsible thinking panel,
+  tok/s + context footers.
+- **Systems math** — sizing context windows from GGUF metadata and KV-cache
+  geometry, VRAM budgets, and calibrating estimates with measured probes.
+- **Data-driven prompting** — tool definitions and system prompts as editable
+  files, not Python strings.
+
+## The path so far
+
+1. **`ollama run`, but nicer** — richer rendering, 2D math, persistent
+   sessions, slash commands.
+2. **Tools and approvals** — Ollama function calling with a read-only
+   allowlist, numbered approval prompts with remembered rules, and sessions
+   that keep the whole tool loop.
+3. **A real terminal app** — a Textual TUI, remote inference over Tailscale,
+   GPU/context fitting, image input, artifacts.
+4. **An API layer** — `ollamarun serve`: an OpenAI-compatible `/v1` surface
+   plus a native agent API for full turns, with reference clients and a
+   compatibility test suite.
+
+## Next: a web UI
+
+The main thing on the roadmap is a web interface on top of `ollamarun serve`
+as its backend. The native agent API already has the shape a browser client
+needs — submit a turn, follow its event stream, answer parked approvals,
+manage sessions and files — because that is the same loop the terminal drives.
+See [Agent API](#agent-api-turns-events-approvals-sessions) for the surface it
+will build on.
+
+## Status
+
+Early, single-developer and moving. Built against one Linux box and a small
+Tailscale fleet; Python 3.10; a few tools are wired to my own side projects
+and degrade gracefully when those are absent. Rough edges are part of the
+deal — expect the structure to keep changing as the learning continues.
+
+## Highlights
 
 - **Agent loop, not a pipe.** The model calls tools through Ollama function
   calling — shell, Python, files, web, your saved sessions, system stats,
@@ -23,30 +80,87 @@ Tailscale machine.
   transcript pane, status bar, and an input box that stays usable while the
   model works.
 - **Any machine on the tailnet.** `--remote NAME` runs all inference and model
-  management on `pi`, `kiddo`, `g3`, `optiplex7070` (alias `optiplex`) or
-  `guri` while sessions, files and tools stay local.
+  management on another machine — a name defined in config `remote_hosts`, or
+  any `host[:port]` — while sessions, files and tools stay local.
 - **Context and placement fitting.** `/num-ctx --max-gpu` finds the largest
   window that stays fully on the GPU, `/num-ctx --max-cpu N` fills DRAM to N%,
   `--probe` verifies by loading and calibrates later estimates, and
   `/gpu-layers` pins layer counts.
+- **An API, not just a CLI.** `ollamarun serve` exposes the OpenAI API and a
+  native agent API (turns, SSE events, approvals, sessions, artifacts, context
+  fits) from the same process.
 - **Model-facing text is data.** Tool definitions and prompts live as
   JSON/Markdown under `ollamarun_lib/defs/`, overridable per user without
   touching Python.
 
+## Quickstart
+
+Needs Linux, Python 3.10+ and a reachable Ollama server (default
+`127.0.0.1:11434`). The entry point is pinned to `#! /bin/python3.10`; if that
+interpreter is elsewhere, run `python3 ollamarun …` instead.
+
+```console
+$ pip install --user rich requests prompt_toolkit
+$ ./ollamarun qwen3:8b "explain this repo"    # one-shot
+$ ./ollamarun qwen3:8b                        # interactive REPL
+```
+
+Optional extras: `pylatexenc` (inline-math fallback), `textual` (the
+`--ui tui` front end), `ddgs` (the `web_search` tool). The test suite
+additionally needs `openai` and `pyflakes`:
+
+```console
+$ pip install --user openai pyflakes
+$ python3 test_ollamarun.py
+```
+
+Serve the API layer and drive it from the reference clients:
+
+```console
+$ ./ollamarun serve                           # OpenAI + agent API on :11440
+$ python3 examples/openai_client.py --model qwen3:8b
+$ python3 examples/agent_client.py --prompt "List the files in /tmp"
+```
+
+## Contents
+
+- [The tool harness](#the-tool-harness)
+- [Rendering](#rendering)
+- [Front ends](#front-ends)
+- [Sessions](#sessions)
+- [Models and housekeeping](#models-and-housekeeping)
+- [Context and placement](#context-and-placement)
+- [Remote](#remote)
+- [OpenAI-compatible API (`ollamarun serve`)](#openai-compatible-api-ollamarun-serve)
+- [Agent API (turns, events, approvals, sessions)](#agent-api-turns-events-approvals-sessions)
+- [Example clients](#example-clients)
+- [Prompts and tool definitions](#prompts-and-tool-definitions)
+- [Usage](#usage)
+- [Slash commands](#slash-commands)
+- [Config, files and logs](#config-files-and-logs)
+- [Layout](#layout)
+- [Development](#development)
+
 ## The tool harness
 
-With `--tools` (the default), the request carries the tool definitions and the
-model can call them through Ollama function calling. Calls and results are
-kept in the session (so `/show`/`--show` replay them), a finished loop is
-separated from the committed answer by a centered `response` divider, and
-every call/result panel is colour-coded — one fixed colour per tool, a random
-palette colour (remembered for the run) for anything unmapped, with config
-`tool_colors` overrides. The result box wears the call's colour, prints
-ok/failed green/red in its title, and the `speak` tool's box names where the
-voice is generated and where it will be heard (`optiplex → g3`, `(cached)` for
-a phrase served from disk). Invented tool names (`search`, `curl`, `mkdir`,
-...) and call-id-prefixed ones (`call_fetch_url`) resolve onto the real
-tools through per-tool alias lists.
+With `--tools` (the default), the request carries the 23 built-in tool
+definitions (some capability-gated) and the model can call them through Ollama
+function calling. Calls and results are kept in the session (so
+`/show`/`--show` replay them), a finished loop is separated from the committed
+answer by a centered `response` divider, and every call/result panel is
+colour-coded — one fixed colour per tool, a random palette colour (remembered
+for the run) for anything unmapped, with config `tool_colors` overrides. The
+result box wears the call's colour, prints ok/failed green/red in its title,
+and the `speak` tool's box names where the voice is generated and where it
+will be heard (`gpu-box → desk`, `(cached)` for a phrase served from disk).
+Invented tool names (`search`, `curl`, `mkdir`, ...) and call-id-prefixed ones
+(`call_fetch_url`) resolve onto the real tools through per-tool alias lists.
+
+A few tools are wired to my own side projects: `speak`/`list_voices` drive
+`tts-remote` and the `chem_*` lookups go through `chemInventoryAPI`. They are
+capability-gated — they only appear when the CLI resolves — and mostly serve
+as examples of the extension mechanism: adding a tool (personal or general)
+is one JSON file under `ollamarun_lib/defs/tools/` plus a handler.
 
 ### Tools
 
@@ -275,9 +389,11 @@ another machine: inference, model management (load/unload, `/api/ps`) and
 `/pull` happen there, while sessions, files, images and the tool harness stay
 local — there is no separate remote code path. Names resolve through
 `tailscale status --json` (falling back to the MagicDNS name), and any
-`host[:port]` works. A short `/api/version` preflight fails fast with the
-tailscale node state when the machine is down, and resuming a session
-reconnects to the machine it last ran on.
+`host[:port]` works. Short names come from the config's `remote_hosts` map —
+the shipped entries are just my own fleet, so replace them with yours. A
+short `/api/version` preflight fails fast with the Tailscale node state when
+the machine is down, and resuming a session reconnects to the machine it last
+ran on.
 
 ## OpenAI-compatible API (`ollamarun serve`)
 
@@ -778,13 +894,17 @@ means exactly what the row says.
 `CLAUDE.md` and `AGENTS.md` (mirror copies) carry the working guidance for
 agents editing this repo.
 
-## Usage as a submodule
+## Development
 
-This repo is checked out as a git submodule at `ollamarun/` inside
-[`vinibretas/binscripts`](https://github.com/vinibretas/binscripts) (`~/bin`
-on the machine it runs on). `~/bin/ollamarun` (this submodule's directory) is
-added to `PATH` alongside `~/bin` itself so the `ollamarun` command resolves
-straight to the script here.
+This is a personal project, but the internals are documented for anyone
+reading along: `CLAUDE.md` and `AGENTS.md` (mirror copies) describe the module
+layout, the conventions (Python 3.10, `rich`, argparse in `main()`) and where
+to change what.
 
-See `~/bin/AGENTS.md` in binscripts for the surrounding tool conventions
-(shebang pin, `rich` usage, argparse structure, config/log/data locations).
+Run the tests with `python3 test_ollamarun.py`. The suite doubles as the
+compatibility contract for both API surfaces — it round-trips the official
+`openai` SDK and exercises a real `ollamarun serve` process against a stub
+backend — and `--live` adds a pass against a real Ollama server.
+
+There is no contribution process; issues are welcome, but the roadmap is
+whatever I am learning next — currently the web UI.
