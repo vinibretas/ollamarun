@@ -5,6 +5,10 @@ backend: an OpenAI-compatible HTTP API plus native endpoints for
 agent-specific functionality, all on one agent runtime. The per-phase plans
 in `plans/` are the source of truth; this file is only the itemized index.
 
+The layer landed across Phases 1–10 (all rows below are done); **v2.0** is
+the milestone release that marks the surface as the supported, tested
+contract.
+
 Design principles (locked)
 
 - OpenAI-compatible at heart. Familiar request/response schemas, endpoints,
