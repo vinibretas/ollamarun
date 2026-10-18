@@ -11,10 +11,9 @@
 `ollamarun serve` is meant to run on the trusted network under the user's own
 service management (the `serve_*` keys cover the listener, limits and
 shutdown; the startup banner prints the surface in effect). There is
-deliberately no authentication yet — the bind address is the only boundary,
-so the port must never reach the public internet. When authentication lands
-it wraps these routes without reshaping them: it is a transport concern, and
-never a substitute for the tool-approval gate.
+deliberately no authentication yet — the bind address is the only boundary.
+When authentication lands it wraps these routes without reshaping them: it is
+a transport concern, and never a substitute for the tool-approval gate.
 
 ## Limits
 
@@ -48,23 +47,48 @@ turns (a stored session whose model fell out of the list is refused before it
 runs) and the fit endpoints — and a model outside it answers exactly like an
 unknown one (`404 model_not_found`).
 
+Checked live with `serve_models: ["qwen3*"]`:
+
+```console
+$ curl -s http://127.0.0.1:PORT/v1/models | …                 # only qwen3* entries
+$ curl -s http://127.0.0.1:PORT/v1/models/llama3.2:3b
+{"error": {"message": "model 'llama3.2:3b' not found", "type": "invalid_request_error",
+ "param": "model", "code": "model_not_found"}}          # HTTP 404
+```
+
 ## Tool workspace
 
 Serve runs its tool context jailed to `serve_workspace` (default: the
 directory serve started in, printed in the banner): relative paths in the
 file tools resolve under it, resolved escapes — symlinks included — are
 refused, and the `run_shell`/`run_python` working directories follow the same
-rule. This is an argument and default-working-directory policy, **not**
-subprocess confinement: an approved command can still reach whatever the
-process user can. The CLI keeps its previous behavior.
+rule. A model asking for a path outside gets a refusal as the tool result:
+
+```console
+tool · list_dir {"path": "/tmp"}
+  → error ['refused: /tmp is outside the workspace root (/home/you/serve-dir)']
+```
+
+This is an argument and default-working-directory policy, **not** subprocess
+confinement: an approved command can still reach whatever the process user
+can. The CLI keeps its previous behavior.
 
 ## Feature switches
 
 `serve_agent: false` runs the process as an inference server: the native
-routes (turns, approvals, sessions, fits) are not registered at all (404),
-while models, chat completions and the `/v1/files` + `/v1/artifacts/*`
-endpoints keep serving — the OpenAI surface can still send `file` parts. One
-model policy applies to every route: see the allowlist above.
+routes (turns, approvals, sessions, fits) are not registered at all, while
+models, chat completions and the `/v1/files` + `/v1/artifacts/*` endpoints
+keep serving — the OpenAI surface can still send `file` parts. The banner
+spells it out (`files /v1/files (agent routes disabled)`), and the refusal
+is a plain 404:
+
+```console
+$ curl -s http://127.0.0.1:PORT/v1/agent/turns -H 'Content-Type: application/json' -d '{…}'
+{"error": {"message": "unknown endpoint: POST /v1/agent/turns",
+ "type": "invalid_request_error", "param": null, "code": "not_found"}}   # HTTP 404
+```
+
+One model policy applies to every route: see the allowlist above.
 
 Every key with its default, range and zero semantics is listed in
 [Config file](../config/file.md#serve-keys).
