@@ -2368,6 +2368,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Approvals
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -2384,6 +2402,58 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-parked-event" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The parked event
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#deciding" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Deciding
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#timeouts-and-edge-cases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Timeouts and edge cases
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3442,47 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-parked-event" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The parked event
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#deciding" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Deciding
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#timeouts-and-edge-cases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Timeouts and edge cases
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3413,25 +3524,28 @@
   <code>waiting_approval</code> and emits <code>approval.required</code> with the <code>approval_id</code>,
   the call, the reason and suggested rules.</li>
 </ul>
-<p><code>POST /v1/agent/approvals/{id}</code> resolves a parked decision. The first decision
-wins; duplicates get <code>409</code>. An unanswered approval times out (config
-<code>serve_approval_timeout</code>, default 300 s) as <strong>denied</strong>: the tool result says
-<code>not run: approval timed out</code> and the model continues.</p>
-<p>The parked event carries everything needed to decide (the client already saw
-it on the stream, as <code>approval.required</code>):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p">{</span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"run_shell"</span><span class="p">,</span><span class="w"> </span><span class="nt">"args"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"command"</span><span class="p">:</span><span class="w"> </span><span class="s2">"rm -rf build"</span><span class="p">},</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w"> </span><span class="nt">"detail"</span><span class="p">:</span><span class="w"> </span><span class="s2">"rm -rf build"</span><span class="p">,</span><span class="w"> </span><span class="nt">"fingerprint"</span><span class="p">:</span><span class="w"> </span><span class="s2">"…"</span><span class="p">,</span><span class="w"> </span><span class="nt">"reason"</span><span class="p">:</span><span class="w"> </span><span class="s2">"catastrophic rm"</span><span class="p">,</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w"> </span><span class="nt">"approval_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"apr_…"</span><span class="p">,</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w"> </span><span class="nt">"suggestions"</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">"kind"</span><span class="p">:</span><span class="w"> </span><span class="s2">"shell"</span><span class="p">,</span><span class="w"> </span><span class="nt">"pattern"</span><span class="p">:</span><span class="w"> </span><span class="s2">"rm -rf build"</span><span class="p">,</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">                  </span><span class="nt">"base"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">,</span><span class="w"> </span><span class="nt">"created"</span><span class="p">:</span><span class="w"> </span><span class="s2">"…"</span><span class="p">}]}</span>
+<h2 id="the-parked-event">The parked event<a class="headerlink" href="#the-parked-event" title="Permanent link">&para;</a></h2>
+<p>A real capture (<code>write_file</code> in interactive mode):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p">{</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"write_file"</span><span class="p">,</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span><span class="nt">"args"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"path"</span><span class="p">:</span><span class="w"> </span><span class="s2">"approve-demo.txt"</span><span class="p">,</span><span class="w"> </span><span class="nt">"append"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w"> </span><span class="nt">"content"</span><span class="p">:</span><span class="w"> </span><span class="s2">"approved-by-api"</span><span class="p">},</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="nt">"detail"</span><span class="p">:</span><span class="w"> </span><span class="s2">"approve-demo.txt (15 chars)"</span><span class="p">,</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">  </span><span class="nt">"fingerprint"</span><span class="p">:</span><span class="w"> </span><span class="s2">"write_file:{\"append\": false, \"content\": \"approved-by-api\", \"path\": \"approve-demo.txt\"}"</span><span class="p">,</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">  </span><span class="nt">"reason"</span><span class="p">:</span><span class="w"> </span><span class="s2">"write_file modifies state"</span><span class="p">,</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">  </span><span class="nt">"suggestions"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">    </span><span class="p">{</span><span class="nt">"kind"</span><span class="p">:</span><span class="w"> </span><span class="s2">"path"</span><span class="p">,</span><span class="w"> </span><span class="nt">"pattern"</span><span class="p">:</span><span class="w"> </span><span class="s2">"approve-demo.txt"</span><span class="p">,</span><span class="w"> </span><span class="nt">"base"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/home/you/serve-dir"</span><span class="p">,</span><span class="w"> </span><span class="nt">"created"</span><span class="p">:</span><span class="w"> </span><span class="s2">"…"</span><span class="p">},</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">    </span><span class="p">{</span><span class="nt">"kind"</span><span class="p">:</span><span class="w"> </span><span class="s2">"path"</span><span class="p">,</span><span class="w"> </span><span class="nt">"pattern"</span><span class="p">:</span><span class="w"> </span><span class="s2">"**"</span><span class="p">,</span><span class="w"> </span><span class="nt">"base"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/home/you/serve-dir"</span><span class="p">,</span><span class="w"> </span><span class="nt">"created"</span><span class="p">:</span><span class="w"> </span><span class="s2">"…"</span><span class="p">}</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">  </span><span class="p">],</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">  </span><span class="nt">"approval_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"apr_83764cec6535"</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="p">}</span>
 </code></pre></div>
-<p>The decision is one POST — the body's <code>action</code> picks the outcome:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:11440/v1/agent/approvals/apr_…<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">    </span>-H<span class="w"> </span><span class="s1">'Content-Type: application/json'</span><span class="w"> </span>-d<span class="w"> </span><span class="s1">'{"action": "run"}'</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="go">{"id": "apr_…", "object": "approval", "turn_id": "trn_…", "session_id": "ses_…",</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="go"> "name": "run_shell", "status": "resolved", "action": "run", "run": true,</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="go"> "note": "confirmed", "resolved_at": "…"}</span>
-</code></pre></div>
+<p>The park is preceded on the same stream by <code>tool.call</code> (the call panel
+equivalent) and followed, on decision, by <code>approval.resolved</code>. The
+<code>suggestions</code> are the same generalized rules the CLI offers; the fingerprint
+powers "remember exactly this call".</p>
+<h2 id="deciding">Deciding<a class="headerlink" href="#deciding" title="Permanent link">&para;</a></h2>
+<p><code>POST /v1/agent/approvals/{id}</code> — the first decision wins; duplicates get
+<code>409</code>.</p>
 <table>
 <thead>
 <tr>
@@ -3442,28 +3556,55 @@ it on the stream, as <code>approval.required</code>):</p>
 <tbody>
 <tr>
 <td><code>{"action": "run"}</code></td>
-<td>Run this call once</td>
+<td>Run this call once.</td>
 </tr>
 <tr>
 <td><code>{"action": "remember"}</code></td>
-<td>Run it, remembering the exact call for the session</td>
+<td>Run it, remembering the exact call for the session.</td>
 </tr>
 <tr>
-<td><code>{"action": "rule", "rule": {"kind": "shell", "pattern": "make :*"}}</code></td>
-<td>Run it and store a generalized rule (<code>call</code>, <code>shell</code>, <code>path</code> or <code>python</code>)</td>
+<td><code>{"action": "rule", "rule": {"kind": "path", "pattern": "reports/**"}}</code></td>
+<td>Run it and store a generalized rule (<code>call</code>, <code>shell</code>, <code>path</code> or <code>python</code>).</td>
 </tr>
 <tr>
 <td><code>{"action": "auto"}</code></td>
-<td>Allow everything for the rest of this turn</td>
+<td>Allow everything for the rest of this turn.</td>
 </tr>
 <tr>
 <td><code>{"action": "deny"}</code></td>
-<td>Refuse it; the model gets a not-run note</td>
+<td>Refuse it; the model gets a not-run note.</td>
 </tr>
 </tbody>
 </table>
-<p>The rules are the same engine the CLI uses — see
-<a href="../../../cli/tools/approvals/">Approvals and policy</a>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:11440/v1/agent/approvals/apr_83764cec6535<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">    </span>-H<span class="w"> </span><span class="s1">'Content-Type: application/json'</span><span class="w"> </span>-d<span class="w"> </span><span class="s1">'{"action": "run"}'</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="go">{"id": "apr_83764cec6535", "object": "approval", "turn_id": "turn_7cc9871fcf7d",</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="go"> "action": "run", "run": true, "note": "confirmed",</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="go"> "resolved_at": "2026-10-18T13:20:09.745442-03:00"}</span>
+</code></pre></div>
+<p>After <code>run</code>, the same turn went on to <code>tool.result</code> (<code>ok</code>), published the
+written file as an <a href="../artifacts/">artifact</a> and completed with the model's
+confirmation. After <code>deny</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="p">{</span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"apr_783809fe4258"</span><span class="p">,</span><span class="w"> </span><span class="nt">"object"</span><span class="p">:</span><span class="w"> </span><span class="s2">"approval"</span><span class="p">,</span><span class="w"> </span><span class="nt">"turn_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"turn_82bf7ce2fbc2"</span><span class="p">,</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w"> </span><span class="nt">"action"</span><span class="p">:</span><span class="w"> </span><span class="s2">"deny"</span><span class="p">,</span><span class="w"> </span><span class="nt">"run"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w"> </span><span class="nt">"note"</span><span class="p">:</span><span class="w"> </span><span class="s2">"denied by the user"</span><span class="p">,</span><span class="w"> </span><span class="nt">"resolved_at"</span><span class="p">:</span><span class="w"> </span><span class="s2">"…"</span><span class="p">}</span>
+</code></pre></div>
+<p>…the tool result is a not-run note and the file is <strong>not</strong> written (checked
+on disk). The model still answered in that run — models sometimes claim
+success anyway; the harness's record (<code>tool.result</code>, the session) shows what
+actually happened, which is why clients should decide from events, not prose.</p>
+<h2 id="timeouts-and-edge-cases">Timeouts and edge cases<a class="headerlink" href="#timeouts-and-edge-cases" title="Permanent link">&para;</a></h2>
+<ul>
+<li>An unanswered approval times out (<code>serve_approval_timeout</code>, default 300 s)
+  as <strong>denied</strong>: the tool result says <code>not run: approval timed out</code> and the
+  model continues.</li>
+<li>A turn cancelled or shut down while parked resolves the approval as
+  cancelled (<code>200</code> with the resolved state), so clients never hang.</li>
+<li>The decision endpoint is per-approval; there is no bulk form — <code>auto</code> is
+  the per-turn escalation.</li>
+</ul>
+<p>The rules engine behind the decisions is the CLI's — see
+<a href="../../../cli/tools/approvals/">Approvals and policy</a> for kinds, matching and
+the floor no rule can cover.</p>
 
 
 

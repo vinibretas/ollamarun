@@ -2396,6 +2396,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sessions
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -2412,6 +2430,91 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#create" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Create
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#edit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Edit
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#read" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Read
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#delete" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Delete
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#while-a-turn-or-fit-runs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        While a turn or fit runs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#maps-to-the-cli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Maps to the CLI
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3475,80 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#create" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Create
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#edit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Edit
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#read" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Read
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#delete" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Delete
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#while-a-turn-or-fit-runs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        While a turn or fit runs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#maps-to-the-cli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Maps to the CLI
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3404,7 +3581,8 @@
 
 
 <h1 id="sessions">Sessions<a class="headerlink" href="#sessions" title="Permanent link">&para;</a></h1>
-<p>The durable record behind turns — the same JSON session store the CLI uses:</p>
+<p>The durable record behind turns — the same JSON session store the CLI uses
+(see <a href="../../../cli/sessions/storage/">Storage</a>).</p>
 <table>
 <thead>
 <tr>
@@ -3415,35 +3593,101 @@
 <tbody>
 <tr>
 <td><code>GET</code>/<code>POST /v1/sessions</code></td>
-<td>list / create sessions</td>
+<td>List / create sessions.</td>
 </tr>
 <tr>
 <td><code>GET</code>/<code>PATCH</code>/<code>DELETE /v1/sessions/{id}</code></td>
-<td>inspect, edit (title/model/system/tags/parameters/<code>num_ctx</code>/<code>gpu_layers</code>) or trash a session; edits and deletes are refused (409 <code>session_busy</code>) while a turn or fit runs</td>
+<td>Inspect, edit or trash one.</td>
 </tr>
 </tbody>
 </table>
-<p>A session's context size and GPU placement are first-class fields:
-<code>PATCH /v1/sessions/{id}</code> (and the turn <code>settings</code>) accept <code>num_ctx</code> (a
-positive integer, refused past the model's trained maximum) and <code>gpu_layers</code>
-(<code>N</code>, <code>P%</code>, <code>+N</code>/<code>-N</code>, <code>all</code>, <code>cpu</code> or <code>auto</code>; a change unloads the resident
-model, exactly like <code>/gpu-layers</code>).</p>
+<h2 id="create">Create<a class="headerlink" href="#create" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:11440/v1/sessions<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">    </span>-H<span class="w"> </span><span class="s1">'Content-Type: application/json'</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span>-d<span class="w"> </span><span class="s1">'{"model": "qwen3:8b", "title": "build log triage", "tags": ["infra"]}'</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="go">{"id": "ses_…", "object": "session", "title": "build log triage",</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="go"> "model": "qwen3:8b", "host": "http://127.0.0.1:11434", "tags": ["infra"],</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="go"> "messages": 0, "turns": 0, "system": null, "artifacts": [],</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="go"> "active_turn_id": null, "created_at": "…", "updated_at": "…"}</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>PATCH<span class="w"> </span>http://127.0.0.1:11440/v1/sessions/ses_…<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">    </span>-H<span class="w"> </span><span class="s1">'Content-Type: application/json'</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">    </span>-d<span class="w"> </span><span class="err">'</span><span class="o">{</span><span class="s2">"num_ctx"</span>:<span class="w"> </span><span class="m">32768</span>,<span class="w"> </span><span class="s2">"gpu_layers"</span>:<span class="w"> </span><span class="s2">"80%"</span>,
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="go">         "parameters": {"temperature": 0.4}}'</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span>-d<span class="w"> </span><span class="s1">'{"model": "llama3.2:3b", "title": "api demo session", "tags": ["infra", "demo"]}'</span>
 </code></pre></div>
-<p>Session history lives under <code>~/etc/data/ollamarun/sessions/</code> — see
-<a href="../../../cli/sessions/storage/">Storage</a>. Context fitting over the API is on
-<a href="../fits/">Context fits</a>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"20261018-132254-7414"</span><span class="p">,</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">"object"</span><span class="p">:</span><span class="w"> </span><span class="s2">"session"</span><span class="p">,</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="nt">"title"</span><span class="p">:</span><span class="w"> </span><span class="s2">"api demo session"</span><span class="p">,</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span><span class="nt">"model"</span><span class="p">:</span><span class="w"> </span><span class="s2">"llama3.2:3b"</span><span class="p">,</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">  </span><span class="nt">"host"</span><span class="p">:</span><span class="w"> </span><span class="s2">"http://127.0.0.1:11434"</span><span class="p">,</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">  </span><span class="nt">"remote"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">  </span><span class="nt">"created_at"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2026-10-18T13:22:54.823230-03:00"</span><span class="p">,</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">  </span><span class="nt">"updated_at"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2026-10-18T13:22:54.823284-03:00"</span><span class="p">,</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">  </span><span class="nt">"tags"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"infra"</span><span class="p">,</span><span class="w"> </span><span class="s2">"demo"</span><span class="p">],</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">  </span><span class="nt">"messages"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">  </span><span class="nt">"turns"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">  </span><span class="nt">"system"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">  </span><span class="nt">"artifacts"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">  </span><span class="nt">"active_turn_id"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span>
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="p">}</span>
+</code></pre></div>
+<p><code>201</code> on create; the model must be installed and inside the
+<a href="../../security/#model-allowlist">allowlist</a>.</p>
+<h2 id="edit">Edit<a class="headerlink" href="#edit" title="Permanent link">&para;</a></h2>
+<p><code>PATCH</code> accepts <code>title</code>, <code>model</code>, <code>system</code>, <code>tags</code>, <code>parameters</code>,
+<code>num_ctx</code> and <code>gpu_layers</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>PATCH<span class="w"> </span>http://127.0.0.1:11440/v1/sessions/20261018-132254-7414<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">    </span>-H<span class="w"> </span><span class="s1">'Content-Type: application/json'</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span>-d<span class="w"> </span><span class="err">'</span><span class="o">{</span><span class="s2">"title"</span>:<span class="w"> </span><span class="s2">"api demo (patched)"</span>,<span class="w"> </span><span class="s2">"num_ctx"</span>:<span class="w"> </span><span class="m">8192</span>,
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="go">         "parameters": {"temperature": 0.4}}'</span>
+</code></pre></div>
+<p>The <code>parameters</code> object is <strong>merged</strong> over the existing options (and
+validated like a turn's settings); <code>num_ctx</code> is a positive integer (refused
+past the model's trained maximum) and <code>gpu_layers</code> takes the CLI spec
+(<code>N</code>, <code>P%</code>, <code>+N</code>/<code>-N</code>, <code>all</code>, <code>cpu</code>, <code>auto</code>) — a placement change unloads
+the resident model exactly like <code>/gpu-layers</code>.</p>
+<h2 id="read">Read<a class="headerlink" href="#read" title="Permanent link">&para;</a></h2>
+<p><code>GET /v1/sessions/{id}</code> returns the summary plus <code>history</code>, <code>stats</code>,
+<code>parameters</code>, <code>tool_allow</code>, <code>tool_rules</code> and <code>tools_disabled</code> — everything a
+client needs to render a resumed session. <code>GET /v1/sessions</code> lists the same
+summaries:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">{</span><span class="nt">"object"</span><span class="p">:</span><span class="w"> </span><span class="s2">"list"</span><span class="p">,</span><span class="w"> </span><span class="nt">"data"</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"…"</span><span class="p">,</span><span class="w"> </span><span class="nt">"title"</span><span class="p">:</span><span class="w"> </span><span class="s2">"…"</span><span class="p">,</span><span class="w"> </span><span class="nt">"model"</span><span class="p">:</span><span class="w"> </span><span class="s2">"…"</span><span class="p">,</span><span class="w"> </span><span class="nt">"host"</span><span class="p">:</span><span class="w"> </span><span class="s2">"…"</span><span class="p">,</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w"> </span><span class="nt">"created_at"</span><span class="p">:</span><span class="w"> </span><span class="s2">"…"</span><span class="p">,</span><span class="w"> </span><span class="nt">"updated_at"</span><span class="p">:</span><span class="w"> </span><span class="s2">"…"</span><span class="p">,</span><span class="w"> </span><span class="nt">"messages"</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="nt">"turns"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w"> </span><span class="nt">"prompt_tokens"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="nt">"completion_tokens"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="nt">"tags"</span><span class="p">:</span><span class="w"> </span><span class="p">[]},</span><span class="w"> </span><span class="err">…</span><span class="p">]}</span>
+</code></pre></div>
+<h2 id="delete">Delete<a class="headerlink" href="#delete" title="Permanent link">&para;</a></h2>
+<p><code>DELETE /v1/sessions/{id}</code> moves the session to the trash (<code>trash-put</code>,
+recoverable) and returns the summary with <code>object: "session.deleted"</code>.
+Deleting a session never deletes its artifacts early — artifact retention is
+<a href="../artifacts/#storage-and-retention">TTL-only</a>.</p>
+<h2 id="while-a-turn-or-fit-runs">While a turn or fit runs<a class="headerlink" href="#while-a-turn-or-fit-runs" title="Permanent link">&para;</a></h2>
+<p>A session with an active turn (or a running fit) refuses edits and deletes
+with <code>409 session_busy</code> naming the <code>active_turn_id</code>/<code>active_fit_id</code>, and a
+second turn for the same session is refused the same way — see
+<a href="../turns/#records-and-limits">Turns</a>.</p>
+<h2 id="maps-to-the-cli">Maps to the CLI<a class="headerlink" href="#maps-to-the-cli" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>API</th>
+<th>CLI equivalent</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>POST /v1/sessions</code></td>
+<td>A first run with <code>--session NAME</code> / <code>--title</code>.</td>
+</tr>
+<tr>
+<td><code>GET /v1/sessions/{id}</code></td>
+<td><code>ollamarun --show ID</code> / <code>--export ID</code>.</td>
+</tr>
+<tr>
+<td><code>PATCH … {num_ctx}</code></td>
+<td><a href="../../../cli/context/num-ctx/"><code>/num-ctx N</code></a>.</td>
+</tr>
+<tr>
+<td><code>PATCH … {gpu_layers}</code></td>
+<td><a href="../../../cli/context/gpu-layers/"><code>/gpu-layers SPEC</code></a>.</td>
+</tr>
+<tr>
+<td><code>DELETE</code></td>
+<td><code>ollamarun --delete ID</code>.</td>
+</tr>
+</tbody>
+</table>
 
 
 

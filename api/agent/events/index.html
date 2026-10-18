@@ -2412,6 +2412,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#disconnects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Disconnects
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -3459,6 +3470,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#disconnects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Disconnects
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -3493,49 +3515,126 @@
 
 
 <h1 id="event-stream">Event stream<a class="headerlink" href="#event-stream" title="Permanent link">&para;</a></h1>
-<p><code>GET /v1/agent/turns/{id}/events</code> is the SSE stream for a turn. Each frame is
-named after its event type and carries a <code>&lt;turn_id&gt;:&lt;seq&gt;</code> id, so a reconnect
-resumes with <code>?after=N</code> or <code>Last-Event-ID</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span>curl<span class="w"> </span>-N<span class="w"> </span><span class="s1">'http://127.0.0.1:11440/v1/agent/turns/trn_…/events?after=0'</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="go">id: trn_…:1</span>
+<p><code>GET /v1/agent/turns/{id}/events</code> is the SSE stream for a turn. Each frame
+is named after its event type and carries a <code>&lt;turn_id&gt;:&lt;seq&gt;</code> id, so a
+reconnect resumes with <code>?after=N</code> or <code>Last-Event-ID</code>.</p>
+<p>A real capture of a completed simple turn (<code>?after=0</code> replay), frames
+trimmed to their payloads:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span>curl<span class="w"> </span>-N<span class="w"> </span><span class="s1">'http://127.0.0.1:11440/v1/agent/turns/turn_2e7a284c4149/events?after=0'</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="go">id: turn_2e7a284c4149:1</span>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="go">event: turn.started</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="go">data: {"id": "trn_…:1", "seq": 1, "type": "turn.started", "turn_id": "trn_…",</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="go">       "session_id": "ses_…", "ts": "…",</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="go">       "data": {"model": "qwen3:8b", "session_id": "ses_…"}}</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="go">id: trn_…:2</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="go">event: message.delta</span>
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="go">data: {"id": "trn_…:2", "seq": 2, "type": "message.delta", "turn_id": "trn_…",</span>
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="go">       "session_id": "ses_…", "ts": "…",</span>
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="go">       "data": {"channel": "content", "text": "The repo is"}}</span>
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="go">id: trn_…:3</span>
-<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="go">event: tool.call</span>
-<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="go">data: {"id": "trn_…:3", "seq": 3, "type": "tool.call", "turn_id": "trn_…",</span>
-<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="go">       "session_id": "ses_…", "ts": "…", "data": {"name": "run_shell",</span>
-<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="go">       "args": {"command": "ls -la"}, "detail": "ls -la", "round": 1}}</span>
-<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="go">id: trn_…:4</span>
-<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="go">event: tool.result</span>
-<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="go">data: {"id": "trn_…:4", "seq": 4, "type": "tool.result", "turn_id": "trn_…",</span>
-<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="go">       "session_id": "ses_…", "ts": "…", "data": {"name": "run_shell",</span>
-<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="go">       "ok": true, "text": "total 42\n…", "duration": 0.03, …}}</span>
-<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="go">id: trn_…:5</span>
-<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a><span class="go">event: turn.completed</span>
-<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a><span class="go">data: {"id": "trn_…:5", "seq": 5, "type": "turn.completed", "turn_id": "trn_…",</span>
-<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a><span class="go">       "session_id": "ses_…", "ts": "…",</span>
-<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a><span class="go">       "data": {"content": "…", "tool_calls": 1, "rounds": 2, "stats": {…}, …}}</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="go">data: {"id": "turn_2e7a284c4149:1", "seq": 1, "type": "turn.started", "turn_id": "turn_2e7a284c4149",</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="go">       "session_id": "20261018-131729-6386", "ts": "…",</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="go">       "data": {"model": "llama3.2:3b", "session_id": "…",</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="go">                "context": {"used": null, "total": 8192, "source": "loaded runner"}}}</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="go">id: turn_2e7a284c4149:2</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="go">event: message.delta</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="go">data: {… "data": {"channel": "content", "text": "pong"}}</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="go">id: turn_2e7a284c4149:3</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="go">event: message.completed</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="go">data: {… "data": {"round": 0, "content": "pong", "thinking": null,</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="go">                  "tool_calls": 0, "cancelled": null, "error": null}}</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="go">id: turn_2e7a284c4149:4</span>
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="go">event: turn.completed</span>
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="go">data: {… "data": {"content": "pong", "thinking": null, "tool_calls": 0, "rounds": 0,</span>
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="go">                  "stats": {"total_duration": 1.658, "eval_tps": 12.27, …},</span>
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="go">                  "context": {…}}}</span>
 </code></pre></div>
+<p>Every payload shares the envelope: <code>id</code>, <code>seq</code>, <code>type</code>, <code>turn_id</code>,
+<code>session_id</code>, <code>ts</code>, and a <code>data</code> object per type.</p>
 <h2 id="event-vocabulary">Event vocabulary<a class="headerlink" href="#event-vocabulary" title="Permanent link">&para;</a></h2>
-<p>The stream carries <code>turn.started</code>, <code>message.delta</code>, <code>tool.call</code>/<code>tool.result</code>,
-<code>approval.required</code>/<code>approval.resolved</code>, <code>turn.warning</code> and the terminal
-<code>turn.completed</code>/<code>turn.error</code>/<code>turn.cancelled</code>, each with a deterministic
-<code>&lt;turn_id&gt;:&lt;seq&gt;</code> id.</p>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>When</th>
+<th>Notable <code>data</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>turn.started</code></td>
+<td>Worker picked the turn up.</td>
+<td><code>model</code>, <code>session_id</code>, <code>context</code>.</td>
+</tr>
+<tr>
+<td><code>message.delta</code></td>
+<td>Each streamed chunk.</td>
+<td><code>channel</code> (<code>content</code>/<code>thinking</code>), <code>text</code>.</td>
+</tr>
+<tr>
+<td><code>message.completed</code></td>
+<td>One round finished.</td>
+<td><code>round</code>, <code>content</code>, <code>thinking</code>, <code>tool_calls</code> count, <code>cancelled</code>, <code>error</code>.</td>
+</tr>
+<tr>
+<td><code>tool.call</code></td>
+<td>Model asked for a tool.</td>
+<td><code>name</code>, <code>args</code>, <code>detail</code>, <code>round</code>.</td>
+</tr>
+<tr>
+<td><code>tool.result</code></td>
+<td>The tool finished (or was denied).</td>
+<td><code>name</code>, <code>ok</code>, <code>text</code>, <code>duration</code>, and <code>artifacts</code> ids when files were published.</td>
+</tr>
+<tr>
+<td><code>approval.required</code></td>
+<td>A call parked for a decision.</td>
+<td>The full call + <code>reason</code> + <code>suggestions</code> + <code>approval_id</code> — see <a href="../approvals/">Approvals</a>.</td>
+</tr>
+<tr>
+<td><code>approval.resolved</code></td>
+<td>A decision landed.</td>
+<td><code>action</code>, <code>run</code>, <code>note</code>.</td>
+</tr>
+<tr>
+<td><code>artifact.created</code></td>
+<td>A file was published.</td>
+<td>The full <a href="../artifacts/">ArtifactRef</a>.</td>
+</tr>
+<tr>
+<td><code>session.fit</code></td>
+<td>A turn-start context fit ran.</td>
+<td>The fit result — see <a href="../fits/">Context fits</a>.</td>
+</tr>
+<tr>
+<td><code>turn.warning</code></td>
+<td>Non-fatal advice (context 80%, tool-support missing).</td>
+<td><code>message</code>.</td>
+</tr>
+<tr>
+<td><code>turn.completed</code> / <code>turn.error</code> / <code>turn.cancelled</code></td>
+<td>Terminal events.</td>
+<td><code>content</code>, <code>rounds</code>, <code>stats</code>, <code>context</code>, <code>result</code> shape.</td>
+</tr>
+</tbody>
+</table>
+<p>A tool call and its result come <strong>before</strong> the round's <code>message.completed</code>
+for the round that requested them; an <code>artifact.created</code> rides between the
+approval decision and the <code>tool.result</code> that references it.</p>
 <h2 id="replay-and-gaps">Replay and gaps<a class="headerlink" href="#replay-and-gaps" title="Permanent link">&para;</a></h2>
-<p>A reconnecting client resumes with <code>Last-Event-ID</code>; a truncated buffer is
-reported as <code>stream.gap</code>, and the <a href="../turns/">turn status</a> endpoint is the
-recovery path afterwards. A subscription without <code>?after=</code>/<code>Last-Event-ID</code> is
-live-only — nothing is replayed, so a finished turn yields an empty stream;
-catching-up clients pass <code>after=0</code> or read the status snapshot instead.</p>
-<p>A dropped stream is an unsubscribe, not a cancellation — see
-<a href="../../#lifecycle">Disconnects and cancellation</a>.</p>
+<ul>
+<li>A subscription <strong>without</strong> <code>?after=</code>/<code>Last-Event-ID</code> is live-only: nothing
+  is replayed, so a finished turn yields an empty stream. Catching-up
+  clients pass <code>after=0</code> or read the <a href="../turns/#the-snapshot">status snapshot</a>.</li>
+<li><code>Last-Event-ID: &lt;turn&gt;:&lt;seq&gt;</code> resumes exactly; <code>?after=N</code> does the same.</li>
+<li>If the ring has overwritten the client's position
+  (<code>serve_turn_event_buffer</code>, default 10 000 events), the stream emits a
+  <code>stream.gap</code> frame and the client recovers from the status snapshot.</li>
+<li>Heartbeats are <code>: ping</code> comment lines every <code>serve_sse_ping_interval</code>
+  (default 15 s) — they keep intermediaries from timing the stream out and
+  are safe for any SSE client to ignore.</li>
+</ul>
+<h2 id="disconnects">Disconnects<a class="headerlink" href="#disconnects" title="Permanent link">&para;</a></h2>
+<p>A dropped stream is an <strong>unsubscribe</strong>, not a cancellation: the turn keeps
+running and its results land in the session (checked live — status
+<code>completed</code> after the client vanished). With
+<code>"settings": {"cancel_on_disconnect": true}</code> the drop cancels instead
+(checked live — status <code>cancelled</code> within a couple of seconds). Explicit
+cancellation is <code>POST .../cancel</code> at any time.</p>
 
 
 

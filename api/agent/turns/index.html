@@ -2363,6 +2363,56 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#starting-a-turn" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Starting a turn
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Starting a turn">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#settings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        settings
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-snapshot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The snapshot
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cancelling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cancelling
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#records-and-limits" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3427,6 +3477,56 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#starting-a-turn" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Starting a turn
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Starting a turn">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#settings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        settings
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-snapshot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The snapshot
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cancelling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cancelling
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#records-and-limits" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3471,7 +3571,7 @@
 
 
 <h1 id="turns">Turns<a class="headerlink" href="#turns" title="Permanent link">&para;</a></h1>
-<p>The same <code>ollamarun serve</code> process also exposes ollamarun's own endpoints:
+<p>The same <code>ollamarun serve</code> process exposes ollamarun's own endpoints:
 instead of one inference call, a client submits a <strong>full agent turn</strong> — the
 internal tool loop, approvals and session persistence run server-side — and
 follows it over Server-Sent Events.</p>
@@ -3485,89 +3585,179 @@ follows it over Server-Sent Events.</p>
 <tbody>
 <tr>
 <td><code>POST /v1/agent/turns</code></td>
-<td>start a full agent turn (<code>202</code> + the turn id and its URLs)</td>
+<td>Start a full agent turn (<code>202</code> + the turn id and its URLs).</td>
 </tr>
 <tr>
 <td><code>GET /v1/agent/turns/{id}</code></td>
-<td>snapshot: <code>queued</code>/<code>running</code>/<code>waiting_approval</code>/<code>completed</code>/<code>failed</code>/<code>cancelled</code>, seq, result, error (404 unknown, 410 swept)</td>
+<td>Snapshot: status, seq, result, error (<code>404</code> unknown, <code>410</code> swept).</td>
 </tr>
 <tr>
 <td><code>GET /v1/agent/turns/{id}/events</code></td>
-<td>SSE turn events (<code>id: &lt;turn&gt;:&lt;seq&gt;</code>, typed <code>event:</code> names; replay with <code>?after=N</code> or <code>Last-Event-ID</code>)</td>
+<td>SSE turn events — see <a href="../events/">Event stream</a>.</td>
 </tr>
 <tr>
 <td><code>POST /v1/agent/turns/{id}/cancel</code></td>
-<td>request cancellation</td>
+<td>Request cancellation.</td>
 </tr>
 </tbody>
 </table>
+<h2 id="starting-a-turn">Starting a turn<a class="headerlink" href="#starting-a-turn" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="err">POST</span><span class="w"> </span><span class="err">/v</span><span class="mi">1</span><span class="err">/age</span><span class="kc">nt</span><span class="err">/</span><span class="kc">turns</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="p">{</span>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span><span class="nt">"model"</span><span class="p">:</span><span class="w"> </span><span class="s2">"llama3.2:3b"</span><span class="p">,</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="nt">"messages"</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">"role"</span><span class="p">:</span><span class="w"> </span><span class="s2">"user"</span><span class="p">,</span><span class="w"> </span><span class="nt">"content"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Clean up /tmp/build"</span><span class="p">}],</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">  </span><span class="nt">"persist"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">  </span><span class="nt">"settings"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span><span class="nt">"tools"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">"max_rounds"</span><span class="p">:</span><span class="w"> </span><span class="mi">8</span><span class="p">,</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">    </span><span class="nt">"approval"</span><span class="p">:</span><span class="w"> </span><span class="s2">"interactive"</span><span class="p">,</span>
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">    </span><span class="nt">"system"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="nt">"parameters"</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span>
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">    </span><span class="nt">"cancel_on_disconnect"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span>
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">  </span><span class="p">}</span>
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="p">}</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="nt">"messages"</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">"role"</span><span class="p">:</span><span class="w"> </span><span class="s2">"user"</span><span class="p">,</span><span class="w"> </span><span class="nt">"content"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Reply with exactly: pong"</span><span class="p">}],</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">  </span><span class="nt">"settings"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"tools"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w"> </span><span class="nt">"system"</span><span class="p">:</span><span class="w"> </span><span class="s2">"n/a"</span><span class="p">}</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">}</span>
 </code></pre></div>
-<p>For an existing session (<code>session_id</code>) the messages are the delta; for a new
-one they seed the history. Turns persist by default (<code>persist: false</code> runs
-ephemeral). <code>settings.parameters</code> — and the sessions' <code>parameters</code> field,
-including the PATCH merge — is validated: known Ollama options get their
-type and range checked (the same ranges the OpenAI mapper enforces),
-unknown names pass through but are bounded to scalars and small lists with
-size caps, and non-finite numbers or nested structures are refused with a
-400.</p>
-<p>Concrete requests — a new session seeds the history, an existing one gets the
-delta (<code>persist</code> defaults to true) — and the turn's URLs come back immediately:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:11440/v1/agent/turns<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">    </span>-H<span class="w"> </span><span class="s1">'Content-Type: application/json'</span><span class="w"> </span>-d<span class="w"> </span><span class="err">'</span><span class="o">{</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="go">      "session_id": "ses_…",</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="go">      "messages": [{"role": "user", "content": "now file it under reports"}],</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="go">      "settings": {"approval": "interactive"}</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="go">    }'</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="go">{"id": "trn_…", "object": "turn", "session_id": "ses_…", "status": "queued",</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="go"> "created_at": "…", "status_url": "/v1/agent/turns/trn_…",</span>
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="go"> "events_url": "/v1/agent/turns/trn_…/events",</span>
-<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="go"> "cancel_url": "/v1/agent/turns/trn_…/cancel"}</span>
-<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>
-<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:11440/v1/agent/turns<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">    </span>-H<span class="w"> </span><span class="s1">'Content-Type: application/json'</span><span class="w"> </span>-d<span class="w"> </span><span class="err">'</span><span class="o">{</span>
-<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="go">      "model": "qwen3:8b",</span>
-<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="go">      "messages": [{"role": "user", "content": "Summarize this repo"}],</span>
-<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="go">      "persist": false,</span>
-<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="go">      "settings": {"max_rounds": 4, "system": "One paragraph, no lists.",</span>
-<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="go">                   "num_ctx": "max-gpu", "gpu_layers": "80%"}</span>
-<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="go">    }'</span>
+<p>The response is immediate — the turn runs in a worker thread:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"turn_2e7a284c4149"</span><span class="p">,</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">"object"</span><span class="p">:</span><span class="w"> </span><span class="s2">"turn"</span><span class="p">,</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="nt">"session_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"20261018-131729-6386"</span><span class="p">,</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span><span class="nt">"status"</span><span class="p">:</span><span class="w"> </span><span class="s2">"queued"</span><span class="p">,</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">  </span><span class="nt">"created_at"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2026-10-18T13:17:29.948845-03:00"</span><span class="p">,</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">  </span><span class="nt">"status_url"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/v1/agent/turns/turn_2e7a284c4149"</span><span class="p">,</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">  </span><span class="nt">"events_url"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/v1/agent/turns/turn_2e7a284c4149/events"</span><span class="p">,</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">  </span><span class="nt">"cancel_url"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/v1/agent/turns/turn_2e7a284c4149/cancel"</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="p">}</span>
 </code></pre></div>
-<p>The snapshot endpoint gives the same result with no stream (and a finished
-turn has no live events, so this — or <code>?after=0</code> — is how a late client
-catches up):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:11440/v1/agent/turns/trn_…
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="go">{"id": "trn_…", "object": "turn", "session_id": "ses_…", "status": "completed",</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="go"> "seq": 5, "result": {"status": "completed", "content": "…", "rounds": 2,</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="go"> "usage": {"prompt_tokens": 412, "completion_tokens": 96, "total_tokens": 508},</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="go"> "artifacts": [], "fit": null}, "error": null}</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://127.0.0.1:11440/v1/agent/turns/trn_…/cancel
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="go">{"id": "trn_…", "object": "turn", "cancel_requested": true, "status": "running"}</span>
+<p>For an existing session (<code>session_id</code>) the messages are the <strong>delta</strong>; for a
+new one they seed the history. Turns persist by default (<code>persist: false</code>
+runs ephemeral — the results still land in-memory and artifacts still
+register). <code>model</code> is required when creating a session; continuing one may
+omit it.</p>
+<h3 id="settings"><code>settings</code><a class="headerlink" href="#settings" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tools</code></td>
+<td>true</td>
+<td>Run the tool loop.</td>
+</tr>
+<tr>
+<td><code>max_rounds</code></td>
+<td>8</td>
+<td>Tool rounds cap.</td>
+</tr>
+<tr>
+<td><code>approval</code></td>
+<td><code>"policy"</code></td>
+<td><code>"policy"</code> decides via the allowlist/rules (denying the rest), <code>"interactive"</code> parks undecided calls — see <a href="../approvals/">Approvals</a>.</td>
+</tr>
+<tr>
+<td><code>system</code></td>
+<td>null</td>
+<td>System-prompt override (<code>"auto"</code>, text, or absent for none).</td>
+</tr>
+<tr>
+<td><code>parameters</code></td>
+<td>{}</td>
+<td>Validated Ollama options merged into the request.</td>
+</tr>
+<tr>
+<td><code>num_ctx</code></td>
+<td>—</td>
+<td>A window, or <code>"max-gpu"</code>/<code>"max-cpu"</code> to estimate at turn start (see <a href="../fits/">Context fits</a>).</td>
+</tr>
+<tr>
+<td><code>cpu_percent</code></td>
+<td>—</td>
+<td>With <code>num_ctx: "max-cpu"</code>.</td>
+</tr>
+<tr>
+<td><code>gpu_layers</code></td>
+<td>—</td>
+<td>Placement spec; a change unloads the resident model.</td>
+</tr>
+<tr>
+<td><code>cancel_on_disconnect</code></td>
+<td>false</td>
+<td>Cancel when the events stream drops (default: keep running).</td>
+</tr>
+</tbody>
+</table>
+<p><code>parameters</code> validation is strict: known Ollama options get type and range
+checks, unknown names pass through bounded to scalars and small lists, and
+non-finite numbers or nested structures are refused with a 400.</p>
+<h2 id="the-snapshot">The snapshot<a class="headerlink" href="#the-snapshot" title="Permanent link">&para;</a></h2>
+<p>The status endpoint gives the same result with no stream:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="p">{</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"turn_2e7a284c4149"</span><span class="p">,</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="nt">"object"</span><span class="p">:</span><span class="w"> </span><span class="s2">"turn"</span><span class="p">,</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="nt">"session_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"20261018-131729-6386"</span><span class="p">,</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span><span class="nt">"status"</span><span class="p">:</span><span class="w"> </span><span class="s2">"completed"</span><span class="p">,</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">  </span><span class="nt">"seq"</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">  </span><span class="nt">"oldest_seq"</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">  </span><span class="nt">"latest_seq"</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">  </span><span class="nt">"truncated"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">  </span><span class="nt">"context"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"used"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="nt">"total"</span><span class="p">:</span><span class="w"> </span><span class="mi">8192</span><span class="p">,</span><span class="w"> </span><span class="nt">"source"</span><span class="p">:</span><span class="w"> </span><span class="s2">"loaded runner"</span><span class="p">},</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">  </span><span class="nt">"error"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">  </span><span class="nt">"result"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">    </span><span class="nt">"status"</span><span class="p">:</span><span class="w"> </span><span class="s2">"completed"</span><span class="p">,</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">    </span><span class="nt">"content"</span><span class="p">:</span><span class="w"> </span><span class="s2">"pong"</span><span class="p">,</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">    </span><span class="nt">"thinking"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="w">    </span><span class="nt">"tool_calls"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="w">    </span><span class="nt">"rounds"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="w">    </span><span class="nt">"usage"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"prompt_tokens"</span><span class="p">:</span><span class="w"> </span><span class="mi">32</span><span class="p">,</span><span class="w"> </span><span class="nt">"completion_tokens"</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="nt">"total_tokens"</span><span class="p">:</span><span class="w"> </span><span class="mi">34</span><span class="p">},</span>
+<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="w">    </span><span class="nt">"stats"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"total_duration"</span><span class="p">:</span><span class="w"> </span><span class="mf">1.658</span><span class="p">,</span><span class="w"> </span><span class="nt">"load_duration"</span><span class="p">:</span><span class="w"> </span><span class="mf">0.003</span><span class="p">,</span><span class="w"> </span><span class="nt">"prompt_tokens"</span><span class="p">:</span><span class="w"> </span><span class="mi">32</span><span class="p">,</span>
+<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a><span class="w">              </span><span class="nt">"completion_tokens"</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="nt">"eval_tps"</span><span class="p">:</span><span class="w"> </span><span class="mf">12.27</span><span class="p">,</span><span class="w"> </span><span class="nt">"prompt_tps"</span><span class="p">:</span><span class="w"> </span><span class="mf">21.51</span><span class="p">,</span><span class="w"> </span><span class="nt">"done_reason"</span><span class="p">:</span><span class="w"> </span><span class="s2">"stop"</span><span class="p">},</span>
+<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a><span class="w">    </span><span class="nt">"artifacts"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a><span class="w">    </span><span class="nt">"fit"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span>
+<a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a><span class="w">  </span><span class="p">}</span>
+<a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a><span class="p">}</span>
 </code></pre></div>
-<h2 id="records-and-limits">Records and limits<a class="headerlink" href="#records-and-limits" title="Permanent link">&para;</a></h2>
-<p>Turn records live in memory — a restart loses live turns (404/410), while
-session history stays under <code>~/etc/data/ollamarun/sessions/</code>. One active
-turn per session (<code>409 session_busy</code> with <code>active_turn_id</code>; editing or
-deleting the session is the same 409 while the turn runs), a global cap
-(config <code>serve_max_active_turns</code>, <code>429</code>), and an optional wall-clock limit
-per turn (config <code>serve_turn_timeout</code>, <code>0</code> = no limit).</p>
 <ul>
-<li><a href="../events/">Event stream</a> — following a turn.</li>
+<li><code>status</code> is <code>queued</code> / <code>running</code> / <code>waiting_approval</code> / <code>completed</code> /
+  <code>failed</code> / <code>cancelled</code>.</li>
+<li><code>seq</code>/<code>oldest_seq</code>/<code>latest_seq</code>/<code>truncated</code> describe the event ring (see
+  <a href="../events/#replay-and-gaps">Replay and gaps</a>) — a late client can resume
+  exactly.</li>
+<li><code>context</code> is the live window (used/total/source) when known.</li>
+<li><code>result.artifacts</code> lists published <a href="../artifacts/">artifacts</a>;
+  <code>result.fit</code> carries a turn-start <a href="../fits/">fit</a> when one ran.</li>
+<li>A failed turn keeps a stable <code>error</code> message; the raw crash text goes to
+  the <code>--debug</code> log, not the client.</li>
+</ul>
+<h2 id="cancelling">Cancelling<a class="headerlink" href="#cancelling" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://127.0.0.1:11440/v1/agent/turns/turn_d1b7a7128a1b/cancel
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="go">{"id": "turn_d1b7a7128a1b", "object": "turn", "cancel_requested": true, "status": "running"}</span>
+</code></pre></div>
+<p>The response reflects the <em>request</em>; the cancel resolves asynchronously into
+a <code>turn.cancelled</code> terminal and the snapshot's <code>status: "cancelled"</code>. A
+partial answer stays on the session. Cancellation aborts the in-flight
+generation, kills cancellable subprocess tools and resolves a parked
+approval as cancelled.</p>
+<h2 id="records-and-limits">Records and limits<a class="headerlink" href="#records-and-limits" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Turn records live in memory — a restart loses live turns (<code>404</code> unknown,
+  <code>410</code> for swept ones), while session history stays in the store.</li>
+<li>One active turn per session: a second submission gets <code>409 session_busy</code>
+  with the <code>active_turn_id</code>; editing or deleting the session is refused the
+  same way while the turn runs (or a fit holds it).</li>
+<li>A global cap (<code>serve_max_active_turns</code>, default 4) answers <code>429</code>:</li>
+</ul>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="p">{</span><span class="nt">"error"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"message"</span><span class="p">:</span><span class="w"> </span><span class="s2">"too many active turns"</span><span class="p">,</span><span class="w"> </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"rate_limit_error"</span><span class="p">,</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w"> </span><span class="nt">"param"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="nt">"code"</span><span class="p">:</span><span class="w"> </span><span class="s2">"rate_limit_error"</span><span class="p">,</span><span class="w"> </span><span class="nt">"limit"</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">}}</span>
+</code></pre></div>
+<ul>
+<li>Completed turns are kept for <code>serve_turn_event_ttl</code> (default 24 h; <code>0</code>
+  keeps them) so late clients can still replay.</li>
+<li>
+<p><code>serve_turn_timeout</code> (default 0 = off) is a wall-clock cap; hitting it
+  cancels the turn with reason <code>timeout</code>.</p>
+</li>
+<li>
+<p><a href="../events/">Event stream</a> — following a turn.</p>
+</li>
 <li><a href="../approvals/">Approvals</a> — resolving parked tool calls.</li>
 <li><a href="../sessions/">Sessions</a> — the durable record.</li>
-<li><a href="../../#lifecycle">Disconnects and cancellation</a>.</li>
 </ul>
 
 

@@ -2452,6 +2452,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Context fits
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -2468,6 +2486,69 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#estimate-post-v1agentfit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Estimate — POST /v1/agent/fit
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#probe-job-post-v1agentfits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Probe job — POST /v1/agent/fits
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#turn-start-fits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Turn-start fits
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gates
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3453,58 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#estimate-post-v1agentfit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Estimate — POST /v1/agent/fit
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#probe-job-post-v1agentfits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Probe job — POST /v1/agent/fits
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#turn-start-fits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Turn-start fits
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gates
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3404,50 +3537,86 @@
 
 
 <h1 id="context-fits">Context fits<a class="headerlink" href="#context-fits" title="Permanent link">&para;</a></h1>
-<p>Context and placement over the API come in two speeds.</p>
-<p><code>POST /v1/agent/fit</code> estimates synchronously (no model loads) —
-<code>{model?, session_id?, mode: "gpu"|"cpu", cpu_percent, gpu_layers?, apply?}</code>
-— and returns the <code>num_ctx</code>, the bound and a report (parameters, weights,
-per-token KV, machine budget); <code>apply: true</code> writes it to the session.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp"># </span>estimate<span class="w"> </span>only<span class="w"> </span>--<span class="w"> </span>never<span class="w"> </span>loads<span class="w"> </span>the<span class="w"> </span>model<span class="p">;</span><span class="w"> </span><span class="sb">`</span>apply<span class="sb">`</span><span class="w"> </span>writes<span class="w"> </span>it<span class="w"> </span>to<span class="w"> </span>the<span class="w"> </span>session
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:11440/v1/agent/fit<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span>-H<span class="w"> </span><span class="s1">'Content-Type: application/json'</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span>-d<span class="w"> </span><span class="s1">'{"session_id": "ses_…", "mode": "gpu", "apply": true}'</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="go">{"object": "fit", "model": "qwen3:8b", "mode": "gpu", "num_ctx": 131072,</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="go"> "source": "estimate", "bound": "max_gpu", "gpu_layers": null, "applied": true,</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="go"> "report": {"weights_bytes": …, "kv_per_token": …, "free_bytes": …, …}}</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="gp"># </span>verify<span class="w"> </span>by<span class="w"> </span>loading:<span class="w"> </span>an<span class="w"> </span>asynchronous<span class="w"> </span>probe<span class="w"> </span>job<span class="w"> </span><span class="o">(</span><span class="m">202</span><span class="o">)</span>,<span class="w"> </span><span class="k">then</span><span class="w"> </span>poll<span class="w"> </span>it
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:11440/v1/agent/fits<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">    </span>-H<span class="w"> </span><span class="s1">'Content-Type: application/json'</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">    </span>-d<span class="w"> </span><span class="s1">'{"session_id": "ses_…", "mode": "cpu", "cpu_percent": 80}'</span>
-<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="go">{"id": "fit_…", "object": "fit", "status": "queued", "session_id": "ses_…",</span>
-<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="go"> "mode": "cpu", "probe": true, "apply": false, "warnings": [],</span>
-<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="go"> "status_url": "/v1/agent/fits/fit_…",</span>
-<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="go"> "cancel_url": "/v1/agent/fits/fit_…/cancel"}</span>
-<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>
-<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:11440/v1/agent/fits/fit_…
-<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="go">{"id": "fit_…", "object": "fit", "status": "completed",</span>
-<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="go"> "progress": {"stage": "probe", "mode": "cpu", "ctx": 65536},</span>
-<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="go"> "applied": false, "result": {"model": "qwen3:8b", "mode": "cpu",</span>
-<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="go"> "num_ctx": 65536, "source": "probe", "bound": "max_cpu", …}}</span>
+<p>Context and placement over the API, at two speeds: a synchronous estimate
+and an asynchronous probe job.</p>
+<h2 id="estimate-post-v1agentfit">Estimate — <code>POST /v1/agent/fit</code><a class="headerlink" href="#estimate-post-v1agentfit" title="Permanent link">&para;</a></h2>
+<p>Body: <code>{model?, session_id?, mode: "gpu"|"cpu", cpu_percent, gpu_layers?,
+apply?}</code>. No model loads; the same arithmetic the CLI's
+<a href="../../../cli/context/max-gpu/"><code>max-gpu</code></a>/<a href="../../../cli/context/max-cpu/"><code>max-cpu</code></a>
+use. <code>apply: true</code> writes the result to the session.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:11440/v1/agent/fit<span class="w"> </span>-H<span class="w"> </span><span class="s1">'Content-Type: application/json'</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">    </span>-d<span class="w"> </span><span class="s1">'{"model": "qwen3:0.6b", "mode": "gpu"}'</span>
 </code></pre></div>
-<p><code>POST /v1/agent/fits</code> starts the same fit as an asynchronous probe job that
-verifies the boundary by actually loading the model: <code>202</code> with the job id
-and warnings (other resident models or active turns make it slower; prior
-measurements on this host make it faster), <code>GET /v1/agent/fits/{id}</code> for
-status/progress/result, <code>POST .../cancel</code> to stop it. A job with a session
-holds it — turns, edits and a second fit get <code>409 session_busy</code> with
-<code>active_fit_id</code> — a global cap (<code>serve_max_active_fits</code>) answers <code>429</code>, and
-completed jobs live until <code>serve_fit_ttl</code>.</p>
-<p>Turn <code>settings.num_ctx</code> also accepts <code>"max-gpu"</code> / <code>"max-cpu"</code> (with
-<code>settings.cpu_percent</code>): the turn estimates at start — never a blocking probe
-— persists the fitted context and reports it as a typed <code>session.fit</code> event
-and <code>result.fit</code> on the turn status; a failed fit leaves the context
-unchanged.</p>
-<p><code>serve_fit</code> gates the whole surface: <code>"probe"</code> (default), <code>"estimate"</code> (no
-probing) or <code>"off"</code>.</p>
-<p>The CLI equivalents are in <a href="../../../cli/context/overview/">Context and placement</a>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">"model"</span><span class="p">:</span><span class="w"> </span><span class="s2">"qwen3:0.6b"</span><span class="p">,</span><span class="w"> </span><span class="nt">"mode"</span><span class="p">:</span><span class="w"> </span><span class="s2">"gpu"</span><span class="p">,</span><span class="w"> </span><span class="nt">"num_ctx"</span><span class="p">:</span><span class="w"> </span><span class="mi">22528</span><span class="p">,</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">"source"</span><span class="p">:</span><span class="w"> </span><span class="s2">"estimate"</span><span class="p">,</span><span class="w"> </span><span class="nt">"bound"</span><span class="p">:</span><span class="w"> </span><span class="s2">"max_gpu"</span><span class="p">,</span><span class="w"> </span><span class="nt">"gpu_layers"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="nt">"applied"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="nt">"report"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">"weights_bytes"</span><span class="p">:</span><span class="w"> </span><span class="mi">522653767</span><span class="p">,</span><span class="w"> </span><span class="nt">"weights_source"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/api/tags size"</span><span class="p">,</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="nt">"kv_per_token"</span><span class="p">:</span><span class="w"> </span><span class="mi">114688</span><span class="p">,</span><span class="w"> </span><span class="nt">"kv_bytes_at_ctx"</span><span class="p">:</span><span class="w"> </span><span class="mi">2583691264</span><span class="p">,</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="nt">"free_bytes"</span><span class="p">:</span><span class="w"> </span><span class="mi">4220518400</span><span class="p">,</span><span class="w"> </span><span class="nt">"usable_bytes"</span><span class="p">:</span><span class="w"> </span><span class="mi">3146776576</span><span class="p">,</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">"margin_bytes"</span><span class="p">:</span><span class="w"> </span><span class="mi">1073741824</span><span class="p">,</span><span class="w"> </span><span class="nt">"overhead_bytes"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="nt">"credited_bytes"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="nt">"total_layers"</span><span class="p">:</span><span class="w"> </span><span class="mi">29</span><span class="p">,</span><span class="w"> </span><span class="nt">"model_max"</span><span class="p">:</span><span class="w"> </span><span class="mi">40960</span><span class="p">,</span><span class="w"> </span><span class="nt">"capped_by_model"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="nt">"ctx_no_margin"</span><span class="p">:</span><span class="w"> </span><span class="mi">31744</span><span class="p">,</span><span class="w"> </span><span class="nt">"calibrated"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">    </span><span class="nt">"devices"</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">"total_bytes"</span><span class="p">:</span><span class="w"> </span><span class="mi">4096</span><span class="p">,</span><span class="w"> </span><span class="nt">"free_bytes"</span><span class="p">:</span><span class="w"> </span><span class="mi">4025</span><span class="p">}],</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">    </span><span class="nt">"notes"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"all layers are placed on the GPU"</span><span class="p">,</span>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">              </span><span class="s2">"weights split: 103.0 MiB token embeddings + …"</span><span class="p">]</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">  </span><span class="p">},</span>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">  </span><span class="nt">"object"</span><span class="p">:</span><span class="w"> </span><span class="s2">"fit"</span>
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="p">}</span>
+</code></pre></div>
+<p>The <code>report</code> is the full working: weights, per-token KV, the usable budget
+after the margin, what was credited back from residents, the weights split
+and any notes. <code>bound</code> names which constraint chose the number
+(<code>max_gpu</code>/<code>max_cpu</code>); <code>capped_by_model</code> says the model's own maximum was the
+binding constraint.</p>
+<p>When the machine cannot be read — no GPU probe, unreachable ssh — the
+estimate fails structurally rather than inventing a number:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="p">{</span><span class="nt">"error"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"message"</span><span class="p">:</span><span class="w"> </span><span class="s2">"cannot read VRAM on http://100.107.146.36:11434"</span><span class="p">,</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w"> </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"invalid_request_error"</span><span class="p">,</span><span class="w"> </span><span class="nt">"param"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="nt">"code"</span><span class="p">:</span><span class="w"> </span><span class="s2">"fit_failed"</span><span class="p">}}</span><span class="w">   </span><span class="err">#</span><span class="w"> </span><span class="mi">400</span>
+</code></pre></div>
+<h2 id="probe-job-post-v1agentfits">Probe job — <code>POST /v1/agent/fits</code><a class="headerlink" href="#probe-job-post-v1agentfits" title="Permanent link">&para;</a></h2>
+<p>The same fit, verified by actually loading the model at candidate contexts
+(the API version of <code>--probe</code>). <code>202</code> with the job id and warnings:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">{</span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"fit_bc6e2228c7af"</span><span class="p">,</span><span class="w"> </span><span class="nt">"object"</span><span class="p">:</span><span class="w"> </span><span class="s2">"fit"</span><span class="p">,</span><span class="w"> </span><span class="nt">"status"</span><span class="p">:</span><span class="w"> </span><span class="s2">"queued"</span><span class="p">,</span><span class="w"> </span><span class="nt">"model"</span><span class="p">:</span><span class="w"> </span><span class="s2">"qwen3:0.6b"</span><span class="p">,</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w"> </span><span class="nt">"mode"</span><span class="p">:</span><span class="w"> </span><span class="s2">"gpu"</span><span class="p">,</span><span class="w"> </span><span class="nt">"probe"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">"apply"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w"> </span><span class="nt">"warnings"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w"> </span><span class="nt">"status_url"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/v1/agent/fits/fit_bc6e2228c7af"</span><span class="p">,</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w"> </span><span class="nt">"cancel_url"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/v1/agent/fits/fit_bc6e2228c7af/cancel"</span><span class="p">}</span>
+</code></pre></div>
+<p><code>GET /v1/agent/fits/{id}</code> reports progress and then the result — the live
+run, condensed:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>{"status": "running", "progress": {"stage": "machine", "mode": "gpu"}}
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>{"status": "running", "progress": {"stage": "probe", "mode": "gpu", "ctx": 22784, "attempt": 2, "max": 10}}
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>{"status": "running", "progress": {"stage": "probe", "mode": "gpu", "ctx": 22528, "attempt": 3, "max": 10}}
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>{"status": "completed", "progress": {"stage": "probe", "mode": "gpu", "ctx": 22272, "attempt": 4, "max": 10}}
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nt">"result"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">"model"</span><span class="p">:</span><span class="w"> </span><span class="s2">"qwen3:0.6b"</span><span class="p">,</span><span class="w"> </span><span class="nt">"mode"</span><span class="p">:</span><span class="w"> </span><span class="s2">"gpu"</span><span class="p">,</span><span class="w"> </span><span class="nt">"num_ctx"</span><span class="p">:</span><span class="w"> </span><span class="mi">22272</span><span class="p">,</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span><span class="nt">"source"</span><span class="p">:</span><span class="w"> </span><span class="s2">"probe"</span><span class="p">,</span><span class="w"> </span><span class="nt">"bound"</span><span class="p">:</span><span class="w"> </span><span class="s2">"max_gpu"</span><span class="p">,</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span><span class="nt">"report"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"kv_per_token"</span><span class="p">:</span><span class="w"> </span><span class="mi">114688</span><span class="p">,</span><span class="w"> </span><span class="nt">"kv_bytes_at_ctx"</span><span class="p">:</span><span class="w"> </span><span class="mi">2466250752</span><span class="p">,</span><span class="w"> </span><span class="err">…</span><span class="p">}</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="p">}</span>
+</code></pre></div>
+<p>The estimate said 22 528, the probe measured <strong>22 272</strong> — that margin is the
+difference between arithmetic and a loaded runner. <code>POST
+/v1/agent/fits/{id}/cancel</code> stops a job (progress and status reflect it);
+completed jobs live until <code>serve_fit_ttl</code> (default 24 h). A job with a
+<code>session_id</code> holds that session: turns, edits and a second fit get
+<code>409 session_busy</code> with <code>active_fit_id</code>, and the global cap
+(<code>serve_max_active_fits</code>, default 2) answers <code>429</code>.</p>
+<h2 id="turn-start-fits">Turn-start fits<a class="headerlink" href="#turn-start-fits" title="Permanent link">&para;</a></h2>
+<p>A turn may ask for a fit instead of a number: <code>"settings": {"num_ctx":
+"max-gpu"}</code> (or <code>"max-cpu"</code> with <code>settings.cpu_percent</code>). The turn estimates
+<strong>at start — never a blocking probe</strong>, persists the fitted context and
+reports it as a typed <code>session.fit</code> event plus <code>result.fit</code> on the status:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nt">"result"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"content"</span><span class="p">:</span><span class="w"> </span><span class="s2">"pong"</span><span class="p">,</span><span class="w"> </span><span class="nt">"fit"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"model"</span><span class="p">:</span><span class="w"> </span><span class="s2">"qwen3:0.6b"</span><span class="p">,</span><span class="w"> </span><span class="nt">"mode"</span><span class="p">:</span><span class="w"> </span><span class="s2">"gpu"</span><span class="p">,</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w"> </span><span class="nt">"num_ctx"</span><span class="p">:</span><span class="w"> </span><span class="mi">22528</span><span class="p">,</span><span class="w"> </span><span class="nt">"source"</span><span class="p">:</span><span class="w"> </span><span class="s2">"estimate"</span><span class="p">,</span><span class="w"> </span><span class="nt">"bound"</span><span class="p">:</span><span class="w"> </span><span class="s2">"max_gpu"</span><span class="p">,</span><span class="w"> </span><span class="nt">"report"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="err">…</span><span class="p">}}}</span>
+</code></pre></div>
+<p>A failed fit leaves the context unchanged and reports why; the turn proceeds
+either way.</p>
+<h2 id="gates">Gates<a class="headerlink" href="#gates" title="Permanent link">&para;</a></h2>
+<p><code>serve_fit</code> decides what exists: <code>"probe"</code> (default) allows both endpoints,
+<code>"estimate"</code> refuses probe jobs, <code>"off"</code> refuses the whole fit surface. The
+same switch guards turn-start fits. See
+<a href="../../../config/file/#serve-keys">Config file</a>.</p>
 
 
 
