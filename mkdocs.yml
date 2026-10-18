@@ -1,0 +1,76 @@
+site_name: ollamarun
+site_url: https://vinibretas.github.io/ollamarun/
+site_description: >-
+  A terminal agent harness for Ollama — a drop-in ollama run superset with an
+  approval-gated tool loop, persistent sessions, live rendering and an
+  OpenAI-compatible API layer.
+
+repo_url: https://github.com/vinibretas/ollamarun
+repo_name: vinibretas/ollamarun
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.sections
+    - navigation.tracking
+    - navigation.top
+    - navigation.footer
+    - content.action.edit
+    - content.action.view
+    - content.code.copy
+    - search.suggest
+    - search.highlight
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Home: index.md
+  - Architecture: architecture.md
+  - Development: development.md
+  - Design notes:
+      - API layer: design/api-layer.md
+
+watch:
+  - README.md
+  - AGENTS.md
+  - ollamarunAPILayerPlan.md

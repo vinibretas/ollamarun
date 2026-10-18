@@ -1,4 +1,6 @@
-OllamaRun API Layer — index
+# OllamaRun API Layer
+
+<!-- --8<-- [start:api-layer] -->
 
 Evolve ollamarun from a CLI-oriented agent harness into a reusable agent
 backend: an OpenAI-compatible HTTP API plus native endpoints for
@@ -9,7 +11,7 @@ The layer landed across Phases 1–10 (all rows below are done); **v2.0** is
 the milestone release that marks the surface as the supported, tested
 contract.
 
-Design principles (locked)
+## Design principles (locked)
 
 - OpenAI-compatible at heart. Familiar request/response schemas, endpoints,
   streaming semantics and error formats; the same style for extensions.
@@ -26,7 +28,7 @@ Design principles (locked)
   only, never exposed to the public internet. Tool policy is preserved
   exactly — network access is never authorization.
 
-Phase index
+## Phase index
 
 | Phase | Status | Plan | Delivers |
 |---|---|---|---|
@@ -42,7 +44,7 @@ Phase index
 | 9 | done | `plans/done/phase-9-compatibility.md` | Compatibility completion: `/v1/embeddings`, `n > 1`, `parallel_tool_calls`, remote image URLs (Phase 5 handoff) and the recorded closures for backend-impossible features |
 | 10 | done | `plans/done/phase-10-context-control.md` | Context and placement control over the API: first-class `num_ctx`/`gpu_layers`, a synchronous fit estimate, asynchronous probe jobs and turn-start estimation |
 
-Locked decisions (cross-phase)
+## Locked decisions (cross-phase)
 
 - LAN-accessible without authentication. `0.0.0.0:11440` by default,
   `--bind IP [--port N]` to change it; the API listener stays separate from
@@ -76,7 +78,7 @@ Locked decisions (cross-phase)
   there is no session to configure and fitting per request would mean
   load churn per completion).
 
-Definition of done
+## Definition of done
 
 - ollamarun runs as a reusable backend without terminal interaction; the CLI
   keeps using the same runtime.
@@ -90,3 +92,5 @@ Definition of done
 
 Out of scope for this stage: building the web UI, redesigning the reasoning
 loop, distributed orchestration, replacing existing tool implementations.
+
+<!-- --8<-- [end:api-layer] -->

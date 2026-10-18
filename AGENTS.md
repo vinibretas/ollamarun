@@ -103,6 +103,12 @@ docstring convention) — it is binding, not optional, for edits in this repo.
   (`python3 examples/openai_client.py`,
   `python3 examples/agent_client.py`) double as end-to-end checks against a
   running `ollamarun serve`.
+- Docs site: `mkdocs serve` for a live preview and `mkdocs build --strict`
+  (must be warning-free) before `mkdocs gh-deploy`, which builds the site and
+  pushes the `gh-pages` branch GitHub Pages serves. The pages under `docs/`
+  are assembled from `README.md`, marked `AGENTS.md` sections and
+  `ollamarunAPILayerPlan.md` through `pymdownx.snippets` includes — edit the
+  source files, never a generated page, and keep the snippet markers intact.
 - The entry-point script is executable and shebang-pinned to
   `#! /bin/python3.10` (system Python). Do not use stdlib features newer
   than 3.10 without a try/except fallback (see the `HAS_PYLATEXENC`/
@@ -120,7 +126,8 @@ docstring convention) — it is binding, not optional, for edits in this repo.
   `Summary of changes in this version:` in the top-level `ollamarun` entry
   script's module docstring — read the existing entries there before adding
   one; that block is the changelog, there is no separate CHANGELOG file.
-  Docs-only commits (README/CLAUDE.md/AGENTS.md) don't need a bump.
+  Docs-only commits (README/CLAUDE.md/AGENTS.md, `docs/`, `mkdocs.yml`)
+  don't need a bump.
 - Config lives at `~/etc/config_files/ollamarun.json`, created from
   `DEFAULT_CONFIG` on first run. Session state is one atomic JSON file per
   conversation plus `index.json` under `~/etc/data/ollamarun/sessions/`.
@@ -138,6 +145,10 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 - Docs move with behavior: `README.md` is the feature reference (tool table,
   command table, config), `CLAUDE.md`/`AGENTS.md` are the working guidance —
   update them in the same change, keeping the two guidance files identical.
+  The docs site under `docs/` renders those same files through snippet
+  includes, so it must never duplicate their text; when a marked section
+  moves, the site follows automatically — re-check with `mkdocs build
+  --strict`.
 - Inspection-style flags (`--list`, `--show`, `--search`, `--export`) share
   one output convention: rich table by default, `--json`/`--csv`/`--markdown`
   plus `--out FILE` to redirect — implemented once in `emit()`
@@ -151,6 +162,8 @@ docstring convention) — it is binding, not optional, for edits in this repo.
   need to redirect/record it.
 
 ## Architecture
+
+<!-- --8<-- [start:architecture] -->
 
 `ollamarun_lib/` is organized as pipeline stages, one module per stage; read
 a module's own docstring for what lives there before editing:
@@ -608,7 +621,11 @@ reaching "backwards" (e.g. don't import from `repl.py` inside
 hint only, the way `renderer.py` does for `Session` (defined later, in
 `session.py`).
 
+<!-- --8<-- [end:architecture] -->
+
 ### Where to change what
+
+<!-- --8<-- [start:where-to-change] -->
 
 - **New tool**: add `defs/tools/NAME.json` (description, JSON schema, safety
   flags, optional `requires`/`aliases`, `handler` name), the handler function
@@ -648,8 +665,16 @@ hint only, the way `renderer.py` does for `Session` (defined later, in
 - **Streaming/rendering UX**: `renderer.py` (the TUI consumes the same frames
   through `StreamSink`), and `ui.py`'s `StatusSnapshot`/`format_status()` when
   it shows up in the status bar.
+- **New docs page**: add `docs/NAME.md`, register it in `mkdocs.yml`'s `nav`
+  and assemble it from existing sources with `--8<--` snippet includes
+  (`README.md`, a marked `AGENTS.md` section, `plans/`) rather than copying
+  text; verify with `mkdocs build --strict`.
+
+<!-- --8<-- [end:where-to-change] -->
 
 ## Testing notes
+
+<!-- --8<-- [start:testing] -->
 
 The suite is two files: `test_ollamarun.py` (the shared harness, CLI,
 renderer and tool tests) and `test_ollamarun_serve.py` (everything
@@ -769,3 +794,5 @@ job API (202 + warnings, status/progress, cancel, apply, 404/409/429) and
 the turn-start estimate (`session.fit`, `result.fit`, persistence, the
 no-change failure path). Fit tests inject the machine (`MachineGpu`) and
 read-only RAM probes, so they need no GPU.
+
+<!-- --8<-- [end:testing] -->
