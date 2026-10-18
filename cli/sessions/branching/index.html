@@ -3404,9 +3404,40 @@
 
 
 <h1 id="branching">Branching<a class="headerlink" href="#branching" title="Permanent link">&para;</a></h1>
-<p><code>/branch [TITLE]</code> forks the current conversation into a new session — the
-history is copied, the original stays untouched, and the branch becomes the
-active session from then on.</p>
+<p><code>/branch [TITLE]</code> forks the conversation into a new session, leaving the
+current one untouched — the safe way to explore a different direction
+without losing the path you were on.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>llama3.2:3b › /branch side quest
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>branched 20261018-122252-de60
+</code></pre></div>
+<p>The current session is saved first, then the branch is created as a full
+copy and becomes the active session. Everything conversational and
+behavioral comes along:</p>
+<ul>
+<li>all messages so far (the branch starts with the same history),</li>
+<li><code>system</code>, <code>parameters</code>, <code>think</code>, <code>keepalive</code>, <code>format</code>, <code>gpu_layers</code>,</li>
+<li>tags, stats, the approval <code>tool_allow</code> fingerprints and <code>tool_rules</code>,</li>
+<li><code>tools_disabled</code> and the tts settings.</li>
+</ul>
+<p>What it does <strong>not</strong> copy: the title (unless you pass one, it becomes
+<code>&lt;original title&gt; (branch)</code>) and the id — the branch is an independent
+session from the moment it is created, so future turns on either side never
+interfere.</p>
+<p>Typical uses:</p>
+<ul>
+<li><strong>Try an alternative.</strong> Branch, then <code>/retry</code> or <code>/edit</code> on the branch;
+  the original stays exactly as it was.</li>
+<li><strong>Fork at a decision point.</strong> Get a file to a working state, branch, and
+  keep one line of work "clean" while you experiment.</li>
+<li><strong>Split a long session</strong> into per-topic children before the context gets
+  tight.</li>
+</ul>
+<p>Going back is ordinary session work: <code>/sessions</code> (or <code>-c</code>/<code>--session</code>/
+<code>--show</code> from the CLI) lists both, and the original is one pick away. The
+prompt column in <code>/sessions</code> shows the title, so <code>(branch)</code> children are easy
+to spot.</p>
+<p>See <a href="../search-export/">Search and export</a> for finding a parent again by
+content, and <a href="../save-load/">Save and load</a> for resuming options.</p>
 
 
 

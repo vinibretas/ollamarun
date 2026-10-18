@@ -1186,6 +1186,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -1202,6 +1220,80 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#where-things-live" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where things live
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-session-file" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The session file
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#writes-are-atomic-and-the-index-is-locked" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Writes are atomic, and the index is locked
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#deletes-go-to-the-trash" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Deletes go to the trash
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#not-every-run-is-saved" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Not every run is saved
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3464,69 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#where-things-live" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where things live
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-session-file" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The session file
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#writes-are-atomic-and-the-index-is-locked" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Writes are atomic, and the index is locked
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#deletes-go-to-the-trash" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Deletes go to the trash
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#not-every-run-is-saved" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Not every run is saved
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3404,20 +3559,156 @@
 
 
 <h1 id="storage">Storage<a class="headerlink" href="#storage" title="Permanent link">&para;</a></h1>
-<p>Every conversation is one atomic JSON file plus <code>index.json</code> under
-<code>~/etc/data/ollamarun/sessions/</code> (prompt history in <code>~/etc/data/ollamarun/</code>,
-honoring <code>OLLAMA_NOHISTORY</code>); this is a session store, not a cache — nothing
-is deleted without going through <code>trash-put</code>.</p>
+<p>Sessions are the durable half of the harness. One conversation is one JSON
+file plus a shared index — a store, not a cache, and nothing is deleted
+without going through the trash.</p>
+<h2 id="where-things-live">Where things live<a class="headerlink" href="#where-things-live" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>What</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>~/etc/data/ollamarun/sessions/&lt;id&gt;.json</code></td>
+<td>One session file per conversation.</td>
+</tr>
+<tr>
+<td><code>~/etc/data/ollamarun/index.json</code></td>
+<td>The list view's index: id, title, model, host, timestamps, counts, tags.</td>
+</tr>
+<tr>
+<td><code>~/etc/data/ollamarun/index.json.lock</code></td>
+<td>The flock file guarding index read-modify-write.</td>
+</tr>
+<tr>
+<td><code>~/etc/data/ollamarun/history</code></td>
+<td>Prompt input history (unless <code>OLLAMA_NOHISTORY</code>).</td>
+</tr>
+<tr>
+<td><code>~/etc/data/ollamarun/artifacts/</code></td>
+<td>The serve artifact store (<a href="../../../api/agent/artifacts/">Artifacts</a>).</td>
+</tr>
+<tr>
+<td><code>~/etc/data/ollamarun/ctxfit-calibration.json</code></td>
+<td>Context-fit measurements (<a href="../../context/probes/">Probes and calibration</a>).</td>
+</tr>
+</tbody>
+</table>
+<p>Session ids look like <code>20261018-122556-a496</code> (timestamp plus a short random
+suffix). Anywhere an id is taken — <code>--show</code>, <code>--export</code>, <code>-c</code>, <code>/load</code> — a
+unique prefix or an unambiguous title reference works, so you rarely type the
+whole thing.</p>
+<h2 id="the-session-file">The session file<a class="headerlink" href="#the-session-file" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p">{</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"20261018-121947-845b"</span><span class="p">,</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span><span class="nt">"schema"</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="nt">"model"</span><span class="p">:</span><span class="w"> </span><span class="s2">"llama3.2:3b"</span><span class="p">,</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">  </span><span class="nt">"host"</span><span class="p">:</span><span class="w"> </span><span class="s2">"http://127.0.0.1:11434"</span><span class="p">,</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">  </span><span class="nt">"remote"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">  </span><span class="nt">"title"</span><span class="p">:</span><span class="w"> </span><span class="s2">"demo"</span><span class="p">,</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">  </span><span class="nt">"system"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">  </span><span class="nt">"parameters"</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">  </span><span class="nt">"options"</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">  </span><span class="nt">"think"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">  </span><span class="nt">"keepalive"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2h"</span><span class="p">,</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">  </span><span class="nt">"format"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">  </span><span class="nt">"gpu_layers"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="w">  </span><span class="nt">"tags"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="w">  </span><span class="nt">"stats"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="w">    </span><span class="nt">"turns"</span><span class="p">:</span><span class="w"> </span><span class="mi">7</span><span class="p">,</span>
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="w">    </span><span class="nt">"prompt_tokens"</span><span class="p">:</span><span class="w"> </span><span class="mi">1087</span><span class="p">,</span>
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="w">    </span><span class="nt">"completion_tokens"</span><span class="p">:</span><span class="w"> </span><span class="mi">14</span><span class="p">,</span>
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="w">    </span><span class="nt">"duration_s"</span><span class="p">:</span><span class="w"> </span><span class="mf">10.55</span><span class="p">,</span>
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="w">    </span><span class="nt">"last_eval_tps"</span><span class="p">:</span><span class="w"> </span><span class="mf">13.75</span><span class="p">,</span>
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="w">    </span><span class="nt">"last_prompt_tokens"</span><span class="p">:</span><span class="w"> </span><span class="mi">207</span><span class="p">,</span>
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a><span class="w">    </span><span class="nt">"last_completion_tokens"</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span>
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a><span class="w">  </span><span class="p">},</span>
+<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a><span class="w">  </span><span class="nt">"tool_allow"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a><span class="w">  </span><span class="nt">"tool_rules"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a><span class="w">  </span><span class="nt">"tools_disabled"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a><span class="w">  </span><span class="nt">"artifacts"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a><span class="w">  </span><span class="nt">"created_at"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2026-10-18T12:19:47.745015-03:00"</span><span class="p">,</span>
+<a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a><span class="w">  </span><span class="nt">"updated_at"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2026-10-18T12:19:52.281753-03:00"</span><span class="p">,</span>
+<a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a><span class="w">  </span><span class="nt">"messages"</span><span class="p">:</span><span class="w"> </span><span class="p">[]</span>
+<a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a><span class="p">}</span>
+</code></pre></div>
+<p>Messages carry <code>role</code>, <code>content</code> and <code>ts</code>, plus whatever the turn produced —
+the same data <code>--show</code> and the exports read back:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>On</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>thinking</code></td>
+<td>assistant</td>
+<td>The reasoning text a thinking model produced.</td>
+</tr>
+<tr>
+<td><code>tool_calls</code></td>
+<td>assistant</td>
+<td>The call array the model asked for.</td>
+</tr>
+<tr>
+<td><code>tool_name</code></td>
+<td>tool</td>
+<td>Which tool produced this result.</td>
+</tr>
+<tr>
+<td><code>images</code></td>
+<td>user</td>
+<td>Attached images (path/name/sha1/size, base64 when embedded).</td>
+</tr>
+<tr>
+<td><code>files</code></td>
+<td>user</td>
+<td><code>@file</code> mentions that were inlined.</td>
+</tr>
+<tr>
+<td><code>cancelled</code></td>
+<td>either</td>
+<td>The turn was interrupted here.</td>
+</tr>
+</tbody>
+</table>
+<p>Settings live on the session too: <code>system</code>, <code>parameters</code>, <code>think</code>,
+<code>keepalive</code>, <code>format</code>, <code>gpu_layers</code>, <code>tools_disabled</code>, the approval
+<code>tool_allow</code>/<code>tool_rules</code>, and the tts fields — so <code>/load</code> restores the
+whole working context, not just the chat.</p>
+<h2 id="writes-are-atomic-and-the-index-is-locked">Writes are atomic, and the index is locked<a class="headerlink" href="#writes-are-atomic-and-the-index-is-locked" title="Permanent link">&para;</a></h2>
+<p>Saving goes through a temp file named per writer plus <code>os.replace</code>, so an
+interrupted write can never leave a half session. The index read-modify-write
+runs under a shared <code>RLock</code> <strong>and</strong> an exclusive <code>flock</code> on
+<code>index.json.lock</code>: a CLI saving while <code>ollamarun serve</code> runs cannot lose
+entries, and <code>--reindex</code> rebuilds the index from the session files if it ever
+drifts.</p>
+<h2 id="deletes-go-to-the-trash">Deletes go to the trash<a class="headerlink" href="#deletes-go-to-the-trash" title="Permanent link">&para;</a></h2>
+<p><code>--delete ID</code> (asks; <code>-y</code> skips) and the store's delete move the session
+file to the XDG trash via <code>trash-put</code> — never a raw unlink:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gp">$ </span>ollamarun<span class="w"> </span>--delete<span class="w"> </span><span class="m">20261018</span>-111147-a9d6<span class="w"> </span>-y
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="go">trashed 20261018-111147-a9d6</span>
+</code></pre></div>
+<p>The file is recoverable from <code>~/.local/share/Trash/</code> (with a <code>.trashinfo</code>
+recording where it came from), and <code>--list</code> no longer shows it. In the REPL,
+<code>/clear</code> empties the context but keeps the session's settings and starts a new
+id under the same file; <code>/new</code> saves the current session and starts a fresh
+one.</p>
+<h2 id="not-every-run-is-saved">Not every run is saved<a class="headerlink" href="#not-every-run-is-saved" title="Permanent link">&para;</a></h2>
+<p><code>--no-save</code> keeps a run out of the store entirely — useful for scripting and
+for throwaway checks — and <code>--json</code>/<code>--raw</code> runs still respect it. The REPL's
+prompt history is the only other thing persisted by default, and
+<code>OLLAMA_NOHISTORY</code> disables that too.</p>
 <ul>
-<li><code>--no-save</code> keeps a run out of the store entirely; <code>--json</code>/<code>--raw</code> cover
-  scripting.</li>
-<li><code>/set</code>, <code>/show</code>, <code>/load</code>, <code>/save</code> (<code>/api/create</code>), <code>/clear</code>, <code>/new</code>, <code>/bye</code>
-  mirror ollama's REPL; <code>/undo</code>, <code>/retry</code>, <code>/edit</code>, <code>/branch</code>, <code>/context</code>,
-  <code>/summarize</code>, <code>/image</code>, <code>/copy</code>, <code>/export</code>, <code>/stats</code>, <code>/title</code>, <code>/tag</code>,
-  <code>/sessions</code> and the rest are described in <a href="../../commands/">Slash commands</a>.</li>
+<li><a href="../save-load/">Save and load</a> — resuming conversations.</li>
+<li><a href="../search-export/">Search and export</a> — getting data back out.</li>
 </ul>
-<p>Paths and the debug log are listed under
-<a href="../../../config/data-and-logs/">Data and logs</a>.</p>
 
 
 

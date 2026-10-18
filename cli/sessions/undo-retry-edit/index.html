@@ -1242,6 +1242,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Undo, retry and edit
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -1258,6 +1276,69 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#undo-drop-the-last-exchange" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /undo — drop the last exchange
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#retry-ask-again" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /retry — ask again
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#edit-fix-the-question" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /edit — fix the question
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#which-one" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Which one?
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3453,58 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#undo-drop-the-last-exchange" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /undo — drop the last exchange
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#retry-ask-again" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /retry — ask again
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#edit-fix-the-question" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /edit — fix the question
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#which-one" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Which one?
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3404,12 +3537,69 @@
 
 
 <h1 id="undo-retry-and-edit">Undo, retry and edit<a class="headerlink" href="#undo-retry-and-edit" title="Permanent link">&para;</a></h1>
-<p>Three ways to rework the last exchange without starting over:</p>
-<ul>
-<li><code>/undo</code> — drop the last exchange.</li>
-<li><code>/retry</code> — regenerate the last response.</li>
-<li><code>/edit</code> — edit the last message in <code>$EDITOR</code> and resend.</li>
-</ul>
+<p>Three ways to redo the recent past. All of them operate on the <strong>last
+exchange</strong>, where an exchange is everything from one user message through the
+model's answer — tool rounds included, so a turn that called tools goes away
+as one unit.</p>
+<h2 id="undo-drop-the-last-exchange"><code>/undo</code> — drop the last exchange<a class="headerlink" href="#undo-drop-the-last-exchange" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>llama3.2:3b › /undo
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>undone
+</code></pre></div>
+<p>The last user message and everything after it are removed, the stats'
+turn count drops by one, and the session is saved. With an empty history it
+says <code>nothing to undo</code>.</p>
+<h2 id="retry-ask-again"><code>/retry</code> — ask again<a class="headerlink" href="#retry-ask-again" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>llama3.2:3b › /retry
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>retrying…
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>llama3.2:3b › Blue
+</code></pre></div>
+<p>The last user message stays; every assistant/tool message after it is
+discarded and the request is made again, so you get a fresh sample. Retrying
+after a cancelled or failed answer is the usual reason.</p>
+<h2 id="edit-fix-the-question"><code>/edit</code> — fix the question<a class="headerlink" href="#edit-fix-the-question" title="Permanent link">&para;</a></h2>
+<p><code>/edit</code> reopens the last user message in <code>$OLLAMA_EDITOR</code>, replaces it with
+what you save, drops the old answer and regenerates — the scalpel of the
+three:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>llama3.2:3b › Name one color. Answer with one word.
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>Blue
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>llama3.2:3b › /edit
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>resending edited message…
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>Apple
+</code></pre></div>
+<p>The editor was prefilled with the original message and returned
+<code>Name one fruit. Answer with one word.</code>; the exchange was replaced, not
+appended. An empty editor result cancels (<code>edit cancelled</code>). Full mechanics
+on the <a href="../../editor/">Editor</a> page.</p>
+<h2 id="which-one">Which one?<a class="headerlink" href="#which-one" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Goal</th>
+<th>Command</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Forget the last exchange and go on</td>
+<td><code>/undo</code></td>
+</tr>
+<tr>
+<td>Same question, another answer</td>
+<td><code>/retry</code></td>
+</tr>
+<tr>
+<td>Change the question itself</td>
+<td><code>/edit</code></td>
+</tr>
+<tr>
+<td>Fork instead of rewriting</td>
+<td><a href="../branching/"><code>/branch</code></a></td>
+</tr>
+</tbody>
+</table>
+<p>All three keep the rest of the conversation (and every setting) intact, and
+all three are saved immediately — closing the session afterwards does not
+bring the undone exchange back.</p>
 
 
 

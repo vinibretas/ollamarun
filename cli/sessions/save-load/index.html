@@ -1214,6 +1214,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Save and load
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -1230,6 +1248,80 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#resuming-from-the-command-line" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resuming from the command line
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#load-and-switching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /load and switching
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#saving-a-model-out-of-a-session" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Saving a model out of a session
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#starting-over" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Starting over
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#titles-and-tags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Titles and tags
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3464,69 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#resuming-from-the-command-line" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resuming from the command line
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#load-and-switching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /load and switching
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#saving-a-model-out-of-a-session" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Saving a model out of a session
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#starting-over" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Starting over
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#titles-and-tags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Titles and tags
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3404,15 +3559,110 @@
 
 
 <h1 id="save-and-load">Save and load<a class="headerlink" href="#save-and-load" title="Permanent link">&para;</a></h1>
+<p>Every interactive session and every one-shot (unless <code>--no-save</code>) lands in
+the store, and any of them can be picked back up — from the command line or
+from inside the REPL.</p>
+<h2 id="resuming-from-the-command-line">Resuming from the command line<a class="headerlink" href="#resuming-from-the-command-line" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Form</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-c [ID]</code>, <code>--continue [ID]</code></td>
+<td>Continue the most recent session, or the given one.</td>
+</tr>
+<tr>
+<td><code>-r</code>, <code>--resume</code></td>
+<td>Browse saved sessions and pick one.</td>
+</tr>
+<tr>
+<td><code>--session NAME</code></td>
+<td>Continue the session named <code>NAME</code>, or create it.</td>
+</tr>
+<tr>
+<td><code>--new</code></td>
+<td>Force a fresh session even with <code>-c</code>/<code>--session</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>A named session keeps its name as its title, and later runs can omit the
+model — it comes from the session:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span>ollamarun<span class="w"> </span>--no-tools<span class="w"> </span>--session<span class="w"> </span>demo<span class="w"> </span>llama3.2:3b<span class="w"> </span><span class="s2">"Remember the number 41. Reply with OK only."</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="go">OK</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="gp">$ </span>ollamarun<span class="w"> </span>--no-tools<span class="w"> </span>--session<span class="w"> </span>demo<span class="w"> </span><span class="s2">"What number did I ask you to remember? Answer with the number only."</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="go">41</span>
+</code></pre></div>
+<p><code>-c</code> continues the most recently updated session, with its model:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gp">$ </span>ollamarun<span class="w"> </span>--no-tools<span class="w"> </span>-c<span class="w"> </span><span class="s2">"Now add one to that number. Answer with the number only."</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="go">42</span>
+</code></pre></div>
+<div class="admonition warning">
+<p class="admonition-title"><code>-c</code> and similar prompts</p>
+<p>Because stored titles are derived from prompts, a prompt that matches an
+existing title can be mistaken for a session reference by <code>-c</code> and get
+swallowed (the run then reports no prompt). Reusing prompt wording is the
+trigger; <code>--session</code> or <code>--continue ID</code> avoids it. Tracked as
+<a href="https://github.com/vinibretas/ollamarun/issues/44">issue #44</a>.</p>
+</div>
+<p><code>-r</code> opens the same browser as <code>/sessions</code>: a table where you type a number,
+an id, a filter to narrow, or <code>q</code> to quit.</p>
+<p>Resuming also reconnects to the machine the session last ran on, unless
+<code>--host</code>/<code>--remote</code> override it — see <a href="../../remote/">Remote</a>.</p>
+<h2 id="load-and-switching"><code>/load</code> and switching<a class="headerlink" href="#load-and-switching" title="Permanent link">&para;</a></h2>
 <ul>
-<li>Start/resume: <code>-c/--continue [ID]</code>, <code>--session NAME</code>, <code>-r/--resume</code> picker,
-  <code>--new</code> to force a fresh session, <code>--title TEXT</code>, <code>--tag TAG</code> (repeatable),
-  <code>--auto-title</code> to ask the model for a title after the first turn.</li>
+<li><code>/load SESSION</code> resumes a saved session; when its model differs from the
+  current one the harness asks which model to run and unloads the current
+  one before switching.</li>
+<li><code>/load MODEL</code> (or <code>/model NAME</code>) switches the model instead, unloading the
+  previous resident unless it is an embedding model.</li>
 </ul>
-<p>In the REPL, <code>/load [MODEL|SESSION]</code> opens a saved session or switches model,
-<code>/save NAME</code> creates an Ollama model from the session, <code>/sessions [filter]</code>
-browses saved sessions, and <code>/clear</code>/<code>/new</code> start over. See
-<a href="../../commands/">Slash commands</a>.</p>
+<h2 id="saving-a-model-out-of-a-session">Saving a model out of a session<a class="headerlink" href="#saving-a-model-out-of-a-session" title="Permanent link">&para;</a></h2>
+<p><code>/save NAME</code> bakes the current conversation into an Ollama model, using the
+session as its messages and the effective system prompt as its <code>SYSTEM</code> — a
+snapshot you can <code>ollamarun NAME</code> later:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>llama3.2:3b › /save olladocs-test:latest
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>creating olladocs-test:latest from llama3.2:3b…
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>  using existing layer sha256:dde5aa3fc5ff…
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>  creating new layer sha256:7b935f8b1107…
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>  writing manifest
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>  success
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>created olladocs-test:latest — `ollamarun olladocs-test:latest`
+</code></pre></div>
+<p>(Created model above was removed again with the API's <code>/api/delete</code> after the
+check.)</p>
+<h2 id="starting-over">Starting over<a class="headerlink" href="#starting-over" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/clear</code></td>
+<td>Empties the context; keeps settings, keeps the file's identity (<code>context cleared</code>), starts a new id so the old file stays.</td>
+</tr>
+<tr>
+<td><code>/new [TITLE]</code></td>
+<td>Saves the current session and starts a brand-new one (<code>new session 20261018-122626-02cd</code>).</td>
+</tr>
+<tr>
+<td><code>/branch</code></td>
+<td>Forks instead of starting over — see <a href="../branching/">Branching</a>.</td>
+</tr>
+</tbody>
+</table>
+<p>Both are also reachable by just starting another run with <code>--new</code> or a
+different <code>--session</code>.</p>
+<h2 id="titles-and-tags">Titles and tags<a class="headerlink" href="#titles-and-tags" title="Permanent link">&para;</a></h2>
+<p>Created automatically from the first prompt, settable with <code>--title</code>,
+<code>--tag</code>, <code>/title</code> and <code>/tag</code>, or asked from the model with <code>--auto-title</code>:
+see <a href="../titles-tags/">Titles and tags</a>.</p>
 
 
 

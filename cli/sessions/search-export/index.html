@@ -1298,6 +1298,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Search and export
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -1314,6 +1332,91 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#-list-every-session" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        --list — every session
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#-search-inside-the-messages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        --search — inside the messages
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#-show-replay-a-transcript" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        --show — replay a transcript
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#-export-take-a-session-away" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        --export — take a session away
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#-reindex" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        --reindex
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-convention" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The convention
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3475,80 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#-list-every-session" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        --list — every session
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#-search-inside-the-messages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        --search — inside the messages
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#-show-replay-a-transcript" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        --show — replay a transcript
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#-export-take-a-session-away" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        --export — take a session away
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#-reindex" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        --reindex
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-convention" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The convention
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3404,16 +3581,132 @@
 
 
 <h1 id="search-and-export">Search and export<a class="headerlink" href="#search-and-export" title="Permanent link">&para;</a></h1>
+<p>Four inspection commands read the store without touching it, all sharing one
+output convention: a rich table on a terminal, or <code>--json</code> / <code>--csv</code> /
+<code>--markdown</code> with <code>--out FILE</code> for scripts.</p>
+<h2 id="-list-every-session"><code>--list</code> — every session<a class="headerlink" href="#-list-every-session" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>$ ollamarun --list
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>                                 saved sessions
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>╭────────────┬────────────┬─────────────┬────────────┬───────┬──────────┬──────╮
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>│ id         │ title      │ model       │ updated_at │ turns │ messages │ tags │
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>├────────────┼────────────┼─────────────┼────────────┼───────┼──────────┼──────┤
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>│ 20261018-… │ new        │ llama3.2:3b │ 2026-10-1… │ 0     │ 0        │ []   │
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>│            │ session    │             │            │       │          │      │
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>│ 20261018-… │ Use        │ llama3.2:3b │ 2026-10-1… │ 1     │ 4        │ []   │
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>│            │ write_file │             │            │       │          │      │
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>│            │ to write…  │             │            │       │          │      │
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>╰────────────┴────────────┴─────────────┴────────────┴───────┴──────────┴──────╯
+</code></pre></div>
+<h2 id="-search-inside-the-messages"><code>--search</code> — inside the messages<a class="headerlink" href="#-search-inside-the-messages" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>$ ollamarun --search color
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>                                 search: color
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>╭───────────────┬───────────────┬───────────────┬───────────────┬──────────────╮
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>│ id            │ title         │ model         │ updated_at    │ match        │
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>├───────────────┼───────────────┼───────────────┼───────────────┼──────────────┤
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>│ 20261018-113… │ What color    │ minicpm-v4.6… │ 2026-10-18T1… │ What color   │
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>│               │ fills the     │               │               │ fills the    │
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>│               │ attached      │               │               │ attached     │
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>│               │ image? …      │               │               │ image? …     │
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>│ 20261018-113… │ Reply with a  │ llama3.2:3b   │ 2026-10-18T1… │ …wo-item     │
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>│               │ two-item …    │               │               │ markdown …   │
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>╰───────────────┴───────────────┴───────────────┴───────────────┴──────────────╯
+</code></pre></div>
+<p>Search covers what is in the session files — including thinking, tool calls
+and results — since it scans the stored JSON.</p>
+<h2 id="-show-replay-a-transcript"><code>--show</code> — replay a transcript<a class="headerlink" href="#-show-replay-a-transcript" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>$ ollamarun --show 20261018-113558-13ec
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>────────── Use write_file to write the text hello-from-the-model to /t… ──────────
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>id 20261018-113558-13ec · model llama3.2:3b · created 2026-10-18 11:35:58 ·
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>updated 2026-10-18 11:37:11 · 4 messages
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>        ╭──────────────────────────────────────────────────────────────── you ─╮
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>        │ Use write_file to write the text hello-from-the-model to             │
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>        │ /tmp/olladocs-demo.txt. Then confirm you did it.                     │
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>        ╰──────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>╭─ tool · write_file ──────────────────────────────────────────────────────────╮
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>│ { "append": false, "content": "hello-from-the-model",                        │
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>│   "path": "/tmp/olladocs-demo.txt" }                                         │
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>╰──────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>╭─ tool · write_file · ok ─────────────────────────────────────────────────────╮
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>│ wrote 20 chars to /tmp/olladocs-demo.txt                                     │
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>╰──────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>The written text is indeed "hello-from-the-model" and its length is 20 characters.
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>1 turns · 2937 prompt tok · 51 completion tok · 71s total
+</code></pre></div>
+<p>It is the live view's rendering again — boxes, tool panels, colours,
+thinking — plus a stats line. In the REPL, <code>/show [topic]</code> shows <em>model</em>
+details (<code>info</code>, <code>license</code>, <code>modelfile</code>, …, ollama-style); the transcript
+replay is the CLI's <code>--show ID</code>.</p>
+<h2 id="-export-take-a-session-away"><code>--export</code> — take a session away<a class="headerlink" href="#-export-take-a-session-away" title="Permanent link">&para;</a></h2>
+<p><code>--export ID</code> writes the session out; <code>--export-format md|json|html</code> picks
+the shape (default <code>md</code>). The markdown export serializes the tool calls as
+JSON blocks:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="gh"># Use write_file to write the text hello-from-the-model to /t…</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="k">-</span><span class="w"> </span><span class="gs">**id:**</span> <span class="sb">`20261018-113558-13ec`</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="k">-</span><span class="w"> </span><span class="gs">**model:**</span> <span class="sb">`llama3.2:3b`</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="k">-</span><span class="w"> </span><span class="gs">**created:**</span> 2026-10-18T11:35:58.014222-03:00
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="k">-</span><span class="w"> </span><span class="gs">**updated:**</span> 2026-10-18T11:37:11.740373-03:00
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="gu">## User</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>Use write_file to write the text hello-from-the-model to /tmp/olladocs-demo.txt.
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>Then confirm you did it.
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>
+<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="gu">## Assistant</span>
+<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>
+<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="sb">```json</span>
+<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="p">[{</span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"call_1ftvnkvz"</span><span class="p">,</span><span class="w"> </span><span class="nt">"function"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"write_file"</span><span class="p">,</span>
+<a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="w">  </span><span class="nt">"arguments"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"path"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/tmp/olladocs-demo.txt"</span><span class="p">,</span><span class="w"> </span><span class="nt">"content"</span><span class="p">:</span><span class="w"> </span><span class="s2">"hello-from-the-model"</span><span class="p">}}}]</span>
+<a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="sb">```</span>
+</code></pre></div>
+<p>The JSON export is the session file plus the derived presentation fields
+(<code>title</code>, <code>display_title</code>) — the machine-readable copy. The HTML one renders
+the same transcript the replay shows into a self-contained styled document
+(<code>recorder.export_html</code>), which is what <code>--out session.html</code> is for.</p>
+<div class="admonition note">
+<p class="admonition-title">Two open issues with the printed forms</p>
 <ul>
-<li>Inspect: <code>--list</code>, <code>--show ID</code>, <code>--search TEXT</code>, <code>--export ID</code>
-  (<code>--export-format md|json|html</code>), <code>--delete ID [-y]</code>, <code>--reindex</code> — all with
-  the shared output convention: rich table by default, <code>--json</code>/<code>--csv</code>/
-  <code>--markdown</code> plus <code>--out FILE</code> to redirect.</li>
+<li>Printing a machine format to a <strong>narrow terminal</strong> can wrap long lines
+  (rich printing), which breaks <code>--json</code>/<code>--csv</code> parsing; <code>--out FILE</code> is
+  immune. Tracked as
+  <a href="https://github.com/vinibretas/ollamarun/issues/42">issue #42</a>.</li>
+<li><code>--export-format html</code> currently prints the transcript to stdout before
+  the document, even with <code>--out</code>; the file itself is correct. Tracked as
+  <a href="https://github.com/vinibretas/ollamarun/issues/43">issue #43</a>.</li>
 </ul>
-<p><code>--show ID</code> replays the transcript the way it looked live — see
-<a href="../../rendering/transcript/">Transcript replay</a>. In the REPL, <code>/sessions
-[filter]</code> browses and switches, and <code>/export [--format md|json|html] [FILE]</code>
-exports the current session.</p>
+</div>
+<h2 id="-reindex"><code>--reindex</code><a class="headerlink" href="#-reindex" title="Permanent link">&para;</a></h2>
+<p><code>--reindex</code> rebuilds <code>index.json</code> from the session files. It is the repair
+step when the index ever drifts (a manual file copy, a killed process) —
+sessions themselves are the source of truth.</p>
+<h2 id="the-convention">The convention<a class="headerlink" href="#the-convention" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--json</code></td>
+<td>JSON array of records (list/search) or the API payload (chat runs).</td>
+</tr>
+<tr>
+<td><code>--csv</code></td>
+<td>CSV with the table's columns.</td>
+</tr>
+<tr>
+<td><code>--markdown</code></td>
+<td>The same table as a markdown pipe table.</td>
+</tr>
+<tr>
+<td><code>--out FILE</code></td>
+<td>Write the format to a file instead of stdout.</td>
+</tr>
+</tbody>
+</table>
+<p>All four commands accept them; without a format flag you get the rich table.</p>
 
 
 
