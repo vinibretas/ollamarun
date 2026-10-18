@@ -1,9 +1,48 @@
 # num-ctx
 
-`/num-ctx` sizes the window:
+`/num-ctx N` sets the session's context window; `--num-ctx N` does it for a
+run. The value is capped to the model's trained maximum with a warning:
 
-- `N` sets it (capped to the model's max with a warning).
+```text
+qwen3:0.6b › /num-ctx 8192
+num_ctx set to 8192
+qwen3:0.6b › /num-ctx 99999999
+99999999 exceeds qwen3:0.6b's max context (40960) — capped to 40960
+num_ctx set to 40960
+```
 
-CLI forms: `--num-ctx N | max-gpu`, plus `--probe` and `--max-cpu N`. The
-fitting forms live in [max-gpu](max-gpu.md), [max-cpu](max-cpu.md) and
-[probes](probes.md).
+The maximum comes from `/api/show`'s model metadata and is cached per model
+for the run. After the change the resident model is reloaded on the next
+request — the window is a load-time property, not a per-request one.
+
+## The two fit forms
+
+`/num-ctx` also accepts the calculated forms, which pick the number for you:
+
+| Form | Picks |
+| --- | --- |
+| `--max-gpu` | The largest context that keeps the model fully on the GPU ([details](max-gpu.md)). |
+| `--max-cpu N` | The largest context where the model's host RAM fills N% of available DRAM ([details](max-cpu.md)). |
+| Either with `--probe` | Same, but verified by actually loading the model ([details](probes.md)). |
+
+The CLI mirrors them: `--num-ctx max-gpu`, `--num-ctx --max-cpu N`, and
+`--probe` as a modifier.
+
+## What "effective" means
+
+The session value is the first of, in order: session `num_ctx` → the loaded
+runner's window from `/api/ps` → the model's default from `/api/show`.
+Setting `num_ctx` here is therefore authoritative until you change it; the
+[`/context` table](overview.md#seeing-where-you-stand) and the
+[footer counter](../rendering/footer.md) always show which window is really
+in force.
+
+```text
+qwen3:0.6b › /context
+│ context length │ 9216 │
+```
+
+**The raw option is not the managed path.** `/set parameter num_ctx 8192`
+does land in the request's `options`, but it skips the cap warning, the
+reload coordination and the effective-window bookkeeping — prefer
+`/num-ctx`.
