@@ -692,6 +692,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Slash commands
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -708,6 +726,518 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#model-and-session-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Model and session lifecycle
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Model and session lifecycle">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#model-models-name-list-sort-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /model, /models [NAME | --list | --sort KEY]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#load-model-session" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /load [MODEL | SESSION]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#save-name" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /save NAME
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#clear-new-title" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /clear, /new [TITLE]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sessions-filter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /sessions [filter]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bye-exit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /bye, /exit
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#title-text-auto" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /title [TEXT | --auto]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tag-list-add-tag-rm-tag" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /tag [list | add TAG… | rm TAG]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#branch-title" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /branch [TITLE]
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#editing-the-conversation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Editing the conversation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Editing the conversation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#undo-retry-edit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /undo, /retry, /edit
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#copy-n" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /copy [N]
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-model-and-the-request" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The model and the request
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The model and the request">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#set-parameter-name-value-set-system-text" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /set parameter NAME [VALUE], /set system TEXT
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#params" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /params
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#think-on-off-low-medium-high" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /think [on | off | low | medium | high]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#show-info-license-modelfile-parameters-system-template" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /show [info | license | modelfile | parameters | system | template]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pull-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /pull [MODEL]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /ps
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#context-and-placement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Context and placement
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Context and placement">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#num-ctx-n-max-gpu-probe-max-cpu-n-probe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /num-ctx [N | --max-gpu [--probe] | --max-cpu N [--probe]]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gpu-layers-n-n-n-n-all-cpu-auto" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /gpu-layers [N | N% | +N | -N | all | cpu | auto]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /context
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#summarize" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /summarize
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tools
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Tools">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#tools-spec" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /tools [SPEC]
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#display-and-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Display and output
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Display and output">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#render-markdown-plain-raw" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /render [markdown | plain | raw]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#math-on-off" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /math [on | off]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#thinking-show-collapse-hide-toggle-full" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /thinking [show | collapse | hide | toggle | full]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tps-on-off" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /tps [on | off]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pager-on-off" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /pager [on | off]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#image-path-clear" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /image PATH… | clear
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sessions-and-longer-arcs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sessions and longer arcs
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Sessions and longer arcs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#export-format-mdjsonhtml-file" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /export [--format md|json|html] [FILE]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#stats" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /stats
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#queue-list-clear-rm-n" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /queue [list | clear | rm N]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tts-on-off-voice-name-lang-code-tools-onoff-voices" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /tts [on | off | voice NAME | lang CODE | tools on|off | voices]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#help-topic" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /help [topic], /?
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shortcuts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Shortcuts
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3370,6 +3900,507 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#model-and-session-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Model and session lifecycle
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Model and session lifecycle">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#model-models-name-list-sort-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /model, /models [NAME | --list | --sort KEY]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#load-model-session" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /load [MODEL | SESSION]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#save-name" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /save NAME
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#clear-new-title" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /clear, /new [TITLE]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sessions-filter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /sessions [filter]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bye-exit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /bye, /exit
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#title-text-auto" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /title [TEXT | --auto]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tag-list-add-tag-rm-tag" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /tag [list | add TAG… | rm TAG]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#branch-title" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /branch [TITLE]
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#editing-the-conversation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Editing the conversation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Editing the conversation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#undo-retry-edit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /undo, /retry, /edit
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#copy-n" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /copy [N]
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-model-and-the-request" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The model and the request
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The model and the request">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#set-parameter-name-value-set-system-text" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /set parameter NAME [VALUE], /set system TEXT
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#params" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /params
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#think-on-off-low-medium-high" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /think [on | off | low | medium | high]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#show-info-license-modelfile-parameters-system-template" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /show [info | license | modelfile | parameters | system | template]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pull-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /pull [MODEL]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /ps
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#context-and-placement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Context and placement
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Context and placement">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#num-ctx-n-max-gpu-probe-max-cpu-n-probe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /num-ctx [N | --max-gpu [--probe] | --max-cpu N [--probe]]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gpu-layers-n-n-n-n-all-cpu-auto" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /gpu-layers [N | N% | +N | -N | all | cpu | auto]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /context
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#summarize" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /summarize
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tools
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Tools">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#tools-spec" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /tools [SPEC]
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#display-and-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Display and output
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Display and output">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#render-markdown-plain-raw" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /render [markdown | plain | raw]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#math-on-off" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /math [on | off]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#thinking-show-collapse-hide-toggle-full" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /thinking [show | collapse | hide | toggle | full]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tps-on-off" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /tps [on | off]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pager-on-off" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /pager [on | off]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#image-path-clear" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /image PATH… | clear
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sessions-and-longer-arcs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sessions and longer arcs
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Sessions and longer arcs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#export-format-mdjsonhtml-file" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /export [--format md|json|html] [FILE]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#stats" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /stats
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#queue-list-clear-rm-n" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /queue [list | clear | rm N]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tts-on-off-voice-name-lang-code-tools-onoff-voices" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /tts [on | off | voice NAME | lang CODE | tools on|off | voices]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#help-topic" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        /help [topic], /?
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shortcuts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Shortcuts
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3402,168 +4433,292 @@
 
 
 <h1 id="slash-commands">Slash commands<a class="headerlink" href="#slash-commands" title="Permanent link">&para;</a></h1>
-<p>Dispatched in the REPL and the TUI; <code>/help</code> also lists the shortcuts (<code>/?</code>).</p>
+<p>Everything interactive is a slash command, dispatched identically in the
+inline REPL and the TUI. <code>/help</code> prints the live table; <code>/help shortcuts</code>
+lists the keys. Syntax below is the canonical form — prefixes and
+convenience spellings are noted per command.</p>
+<h2 id="model-and-session-lifecycle">Model and session lifecycle<a class="headerlink" href="#model-and-session-lifecycle" title="Permanent link">&para;</a></h2>
+<h3 id="model-models-name-list-sort-key"><code>/model</code>, <code>/models [NAME | --list | --sort KEY]</code><a class="headerlink" href="#model-models-name-list-sort-key" title="Permanent link">&para;</a></h3>
+<p>Without an argument: the interactive <a href="../models/picker/">picker</a>. With a
+name: switch model (unloading the current one). <code>--list</code> prints the table
+instead, <code>--sort KEY</code> orders it (<code>modified</code>, <code>name</code>, <code>size</code>, <code>parameters</code>,
+<code>context</code>).</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>llama3.2:3b › /model --list --sort size
+</code></pre></div>
+<h3 id="load-model-session"><code>/load [MODEL | SESSION]</code><a class="headerlink" href="#load-model-session" title="Permanent link">&para;</a></h3>
+<p><code>/load SESSION</code> resumes a saved session; if its model differs from the
+current one, it asks <em>current or last</em> and unloads on the switch. <code>/load
+MODEL</code> is a model switch (<code>/model</code> with a different verb):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>llama3.2:3b › /load llama3.2:3b
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>already using that model
+</code></pre></div>
+<p>See <a href="../sessions/save-load/">Save and load</a>.</p>
+<h3 id="save-name"><code>/save NAME</code><a class="headerlink" href="#save-name" title="Permanent link">&para;</a></h3>
+<p>Creates an Ollama model from the session — messages plus the effective
+system prompt:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>llama3.2:3b › /save olladocs-test:latest
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>creating olladocs-test:latest from llama3.2:3b…
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>  … writing manifest
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>  success
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>created olladocs-test:latest — `ollamarun olladocs-test:latest`
+</code></pre></div>
+<h3 id="clear-new-title"><code>/clear</code>, <code>/new [TITLE]</code><a class="headerlink" href="#clear-new-title" title="Permanent link">&para;</a></h3>
+<p><code>/clear</code> empties the context but keeps settings (a fresh session id under
+the same file); <code>/new</code> saves the current session and starts a brand-new one.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>llama3.2:3b › /clear
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>context cleared
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>llama3.2:3b › /new fresh start
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>new session 20261018-122626-02cd
+</code></pre></div>
+<h3 id="sessions-filter"><code>/sessions [filter]</code><a class="headerlink" href="#sessions-filter" title="Permanent link">&para;</a></h3>
+<p>The session browser: a numbered table, then <code>session number, ID, filter or
+'q' to quit</code>. Typing text filters; a number or id switches.
+See <a href="../sessions/search-export/">Search and export</a>.</p>
+<h3 id="bye-exit"><code>/bye</code>, <code>/exit</code><a class="headerlink" href="#bye-exit" title="Permanent link">&para;</a></h3>
+<p>Save and leave (Ctrl+D does the same). Unloads the session model unless
+<code>--keep-loaded</code>/<a href="../models/housekeeping/">housekeeping</a>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>llama3.2:3b › /bye
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>unloaded llama3.2:3b
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>session 20261018-124236-e402 saved · ~/etc/data/ollamarun/sessions
+</code></pre></div>
+<h3 id="title-text-auto"><code>/title [TEXT | --auto]</code><a class="headerlink" href="#title-text-auto" title="Permanent link">&para;</a></h3>
+<p>Show, set, or ask the model to (re)title the session — see
+<a href="../sessions/titles-tags/">Titles and tags</a>.</p>
+<h3 id="tag-list-add-tag-rm-tag"><code>/tag [list | add TAG… | rm TAG]</code><a class="headerlink" href="#tag-list-add-tag-rm-tag" title="Permanent link">&para;</a></h3>
+<p>Session tags: <code>add</code>/<code>rm</code> take several at once.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>llama3.2:3b › /tag add demo docs
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>tags demo, docs
+</code></pre></div>
+<h3 id="branch-title"><code>/branch [TITLE]</code><a class="headerlink" href="#branch-title" title="Permanent link">&para;</a></h3>
+<p>Fork the conversation into a new session (settings, rules and tags included)
+and switch to it — see <a href="../sessions/branching/">Branching</a>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>llama3.2:3b › /branch side quest
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>branched 20261018-122252-de60
+</code></pre></div>
+<h2 id="editing-the-conversation">Editing the conversation<a class="headerlink" href="#editing-the-conversation" title="Permanent link">&para;</a></h2>
+<h3 id="undo-retry-edit"><code>/undo</code>, <code>/retry</code>, <code>/edit</code><a class="headerlink" href="#undo-retry-edit" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>llama3.2:3b › /undo
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>undone
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>llama3.2:3b › /retry
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>retrying…
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>llama3.2:3b › /edit
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>resending edited message…
+</code></pre></div>
+<p><code>/undo</code> drops the last exchange as a unit; <code>/retry</code> keeps the question and
+regenerates; <code>/edit</code> reopens the last user message in <code>$OLLAMA_EDITOR</code> and
+resends the edited text. Full semantics in
+<a href="../sessions/undo-retry-edit/">Undo, retry and edit</a> and
+<a href="../editor/">Editor</a>.</p>
+<h3 id="copy-n"><code>/copy [N]</code><a class="headerlink" href="#copy-n" title="Permanent link">&para;</a></h3>
+<p>Copies the last response (or its Nth code block) to the clipboard. Needs
+<code>pyperclip</code>; reports <code>pyperclip is not installed</code> otherwise.</p>
+<h2 id="the-model-and-the-request">The model and the request<a class="headerlink" href="#the-model-and-the-request" title="Permanent link">&para;</a></h2>
+<h3 id="set-parameter-name-value-set-system-text"><code>/set parameter NAME [VALUE]</code>, <code>/set system TEXT</code><a class="headerlink" href="#set-parameter-name-value-set-system-text" title="Permanent link">&para;</a></h3>
+<p>Set a model option (values are coerced: <code>0.2</code> → float, <code>true</code> → bool, JSON
+passes through); no value clears it. <code>/set system</code> is the system prompt.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>llama3.2:3b › /set parameter temperature 0.2
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>set temperature = 0.2
+</code></pre></div>
+<h3 id="params"><code>/params</code><a class="headerlink" href="#params" title="Permanent link">&para;</a></h3>
+<p>The session's parameters table — see <a href="../models/parameters/">Parameters</a>.</p>
+<h3 id="think-on-off-low-medium-high"><code>/think [on | off | low | medium | high]</code><a class="headerlink" href="#think-on-off-low-medium-high" title="Permanent link">&para;</a></h3>
+<p>The <strong>model's</strong> thinking mode (sent as Ollama's <code>think</code>). <code>/thinking</code>
+controls the display instead — see <a href="../rendering/thinking/">Thinking panel</a>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>llama3.2:3b › /think low
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>think low
+</code></pre></div>
+<h3 id="show-info-license-modelfile-parameters-system-template"><code>/show [info | license | modelfile | parameters | system | template]</code><a class="headerlink" href="#show-info-license-modelfile-parameters-system-template" title="Permanent link">&para;</a></h3>
+<p>Model details, <code>ollama show</code>-style. <code>info</code> prints the model table and the
+session parameters together:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>llama3.2:3b › /show info
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>             model · llama3.2:3b
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>╭────────────────┬───────────────────────────╮
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>│ field          │ value                     │
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>├────────────────┼───────────────────────────┤
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>│ family         │ llama                     │
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>│ parameter size │ 3.2B                      │
+<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>│ quantization   │ Q4_K_M                    │
+<a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a>│ format         │ gguf                      │
+<a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>│ capabilities   │ completion, tools         │
+<a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a>│ context length │ 131072                    │
+<a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a>│ modified       │ 2026-09-14T01:41:20-03:00 │
+<a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a>╰────────────────┴───────────────────────────╯
+<a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a>             session parameters
+<a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a>…
+</code></pre></div>
+<p>(Transcript replay is the CLI's <code>--show ID</code> — see
+<a href="../rendering/transcript/">Transcript replay</a>.)</p>
+<h3 id="pull-model"><code>/pull [MODEL]</code><a class="headerlink" href="#pull-model" title="Permanent link">&para;</a></h3>
+<p>Pull or update a model on the Ollama machine with live progress — see
+<a href="../models/pulling/">Pulling models</a>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>llama3.2:3b › /pull llama3.2:3b
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>llama3.2:3b is installed — checking for updates
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>pulling llama3.2:3b · pulling manifest …
+</code></pre></div>
+<h3 id="ps"><code>/ps</code><a class="headerlink" href="#ps" title="Permanent link">&para;</a></h3>
+<p>Resident models (<code>ollama ps</code>) with VRAM, quant and keep-alive countdown.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>llama3.2:3b › /ps
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>                                ollama ps
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>│ model       │ size    │ VRAM    │ quant  │ until               │
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>│ llama3.2:3b │ 3.2 GiB │ 2.7 GiB │ Q4_K_M │ 2026-10-18 12:51:04 │
+</code></pre></div>
+<h2 id="context-and-placement">Context and placement<a class="headerlink" href="#context-and-placement" title="Permanent link">&para;</a></h2>
+<h3 id="num-ctx-n-max-gpu-probe-max-cpu-n-probe"><code>/num-ctx [N | --max-gpu [--probe] | --max-cpu N [--probe]]</code><a class="headerlink" href="#num-ctx-n-max-gpu-probe-max-cpu-n-probe" title="Permanent link">&para;</a></h3>
+<p>The window size, the GPU fit or the DRAM fill — <a href="../context/num-ctx/">num-ctx</a>
+and the <a href="../context/overview/">context overview</a>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>qwen3:0.6b › /num-ctx 8192
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>num_ctx set to 8192
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>qwen3:0.6b › /num-ctx 99999999
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>99999999 exceeds qwen3:0.6b's max context (40960) — capped to 40960
+</code></pre></div>
+<p>With no argument it prints the current value, the model's maximum and the
+two fit forms.</p>
+<h3 id="gpu-layers-n-n-n-n-all-cpu-auto"><code>/gpu-layers [N | N% | +N | -N | all | cpu | auto]</code><a class="headerlink" href="#gpu-layers-n-n-n-n-all-cpu-auto" title="Permanent link">&para;</a></h3>
+<p>Pin the GPU/CPU layer split — <a href="../context/gpu-layers/">GPU layers</a>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>qwen3:0.6b › /gpu-layers 50%
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>gpu layers 50% → 15 of 29 layers
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a>unloaded qwen3:0.6b
+<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a>the model will reload with the new setting
+</code></pre></div>
+<h3 id="context"><code>/context</code><a class="headerlink" href="#context" title="Permanent link">&para;</a></h3>
+<p>Window usage: message counts, last request's tokens, effective length.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>llama3.2:3b › /context
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>│ messages               │     2 │
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>│ last prompt tokens     │    94 │
+<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>│ context used           │   100 │
+<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>│ context length         │  8192 │
+</code></pre></div>
+<h3 id="summarize"><code>/summarize</code><a class="headerlink" href="#summarize" title="Permanent link">&para;</a></h3>
+<p>Compact the older half of the conversation into a summary —
+<a href="../context/compaction/">Compaction</a>.</p>
+<h2 id="tools">Tools<a class="headerlink" href="#tools" title="Permanent link">&para;</a></h2>
+<h3 id="tools-spec"><code>/tools [SPEC]</code><a class="headerlink" href="#tools-spec" title="Permanent link">&para;</a></h3>
+<p>The whole harness lives here:</p>
 <table>
 <thead>
 <tr>
-<th>Command</th>
-<th>What it does</th>
+<th>Form</th>
+<th>Effect</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>/help, /? [topic]</code></td>
-<td>Show commands (topic: shortcuts)</td>
+<td><code>/tools</code> (or <code>list</code>/<code>status</code>)</td>
+<td>The state table and the policy line.</td>
 </tr>
 <tr>
-<td><code>/set parameter NAME VALUE \| system TEXT</code></td>
-<td>Session parameters / system prompt</td>
+<td><code>/tools on \| off</code></td>
+<td>Enable/disable the harness for the session.</td>
 </tr>
 <tr>
-<td><code>/show [info\|license\|modelfile\|parameters\|system\|template]</code></td>
-<td>Model details</td>
+<td><code>/tools policy auto\|allowlist\|ask</code></td>
+<td>Global approval policy.</td>
 </tr>
 <tr>
-<td><code>/load [MODEL\|SESSION]</code></td>
-<td>Load a saved session or switch model</td>
+<td><code>/tools enable NAME… \| disable NAME…</code></td>
+<td>Toggle several tools.</td>
 </tr>
 <tr>
-<td><code>/save NAME</code></td>
-<td>Create an Ollama model from this session</td>
+<td><code>/tools NAME on \| off</code></td>
+<td>Toggle one tool (aliases resolve).</td>
 </tr>
 <tr>
-<td><code>/pull [MODEL]</code></td>
-<td>Pull a model onto this host (updates if present)</td>
+<td><code>/tools NAME help</code></td>
+<td>Generated from the definition JSON.</td>
 </tr>
 <tr>
-<td><code>/clear</code></td>
-<td>Forget the context, keep settings, start a new session</td>
+<td><code>/tools NAME call ARGS</code></td>
+<td>Run it yourself through the approval gate.</td>
 </tr>
 <tr>
-<td><code>/new</code></td>
-<td>Start a brand new session</td>
+<td><code>/tools allow</code></td>
+<td>The safe shell-command allowlist.</td>
 </tr>
 <tr>
-<td><code>/sessions [filter]</code></td>
-<td>Browse and switch saved sessions</td>
+<td><code>/tools rules [add\|rm]</code></td>
+<td>Stored approval rules.</td>
 </tr>
 <tr>
-<td><code>/title [TEXT\|--auto]</code></td>
-<td>Show or set the session title</td>
-</tr>
-<tr>
-<td><code>/tag [list\|add TAG…\|rm TAG]</code></td>
-<td>Session tags</td>
-</tr>
-<tr>
-<td><code>/model, /models [NAME\|--list\|--sort KEY]</code></td>
-<td>Switch model, list or sort the installed models</td>
-</tr>
-<tr>
-<td><code>/ps</code></td>
-<td>Show resident models (ollama ps)</td>
-</tr>
-<tr>
-<td><code>/num-ctx [N \| --max-gpu [--probe] \| --max-cpu N [--probe]]</code></td>
-<td>Context window: N, the largest that keeps the GPU, or N% of DRAM</td>
-</tr>
-<tr>
-<td><code>/gpu-layers [N\|N%\|+N\|-N\|all\|cpu\|auto]</code></td>
-<td>GPU layers for this model</td>
-</tr>
-<tr>
-<td><code>/params</code></td>
-<td>Show session parameters</td>
-</tr>
-<tr>
-<td><code>/tools [on\|off\|policy MODE\|enable\|disable NAME…\|NAME on\|off\|NAME help\|NAME call ARGS\|allow\|rules\|help]</code></td>
-<td>Tool harness, per-tool control (aliases resolve), generated help pages and direct calls</td>
-</tr>
-<tr>
-<td><code>/tts [on\|off\|voice NAME\|lang CODE\|tools on\|off\|voices]</code></td>
-<td>Auto-speak via tts-remote</td>
-</tr>
-<tr>
-<td><code>/think [on\|off\|low\|medium\|high]</code></td>
-<td>Thinking mode</td>
-</tr>
-<tr>
-<td><code>/thinking [show\|collapse\|hide\|toggle\|full]</code></td>
-<td>Thinking display (Ctrl+T while streaming)</td>
-</tr>
-<tr>
-<td><code>/system [TEXT\|clear\|off]</code></td>
-<td>Show or set the system prompt (built-in default when unset)</td>
-</tr>
-<tr>
-<td><code>/undo</code></td>
-<td>Drop the last exchange</td>
-</tr>
-<tr>
-<td><code>/retry</code></td>
-<td>Regenerate the last response</td>
-</tr>
-<tr>
-<td><code>/edit</code></td>
-<td>Edit the last message in <code>$EDITOR</code> and resend</td>
-</tr>
-<tr>
-<td><code>/branch [TITLE]</code></td>
-<td>Fork this conversation into a new session</td>
-</tr>
-<tr>
-<td><code>/context</code></td>
-<td>Context-window usage</td>
-</tr>
-<tr>
-<td><code>/summarize</code></td>
-<td>Compact older messages into a summary</td>
-</tr>
-<tr>
-<td><code>/image PATH… \| clear</code></td>
-<td>Attach images to the next message</td>
-</tr>
-<tr>
-<td><code>/render [markdown\|plain\|raw]</code></td>
-<td>Response rendering mode</td>
-</tr>
-<tr>
-<td><code>/math [on\|off]</code></td>
-<td>LaTeX→Unicode math conversion</td>
-</tr>
-<tr>
-<td><code>/pager [on\|off]</code></td>
-<td>Page long transcripts</td>
-</tr>
-<tr>
-<td><code>/tps [on\|off]</code></td>
-<td>Tokens/s footer while streaming</td>
-</tr>
-<tr>
-<td><code>/copy [N]</code></td>
-<td>Copy the last response (or its Nth code block)</td>
-</tr>
-<tr>
-<td><code>/export [--format md\|json\|html] [FILE]</code></td>
-<td>Export this session</td>
-</tr>
-<tr>
-<td><code>/stats</code></td>
-<td>Session and last-generation stats</td>
-</tr>
-<tr>
-<td><code>/queue [list\|clear\|rm N]</code></td>
-<td>Messages and commands typed while busy</td>
-</tr>
-<tr>
-<td><code>/bye, /exit</code></td>
-<td>Leave</td>
+<td><code>/tools help</code></td>
+<td>The reference table.</td>
 </tr>
 </tbody>
 </table>
-<p>Auto-speak: <code>--speak</code> / config <code>tts_auto</code> / <code>/tts on</code> read every final answer
-aloud through <code>tts-remote say --markdown</code> (fire-and-forget; the <code>speaking</code>
-line ends with the same <code>X → Y</code> as the tool's result box).</p>
+<p>See <a href="../tools/">Tools</a> and
+<a href="../tools/approvals/">Approvals and policy</a>.</p>
+<h2 id="display-and-output">Display and output<a class="headerlink" href="#display-and-output" title="Permanent link">&para;</a></h2>
+<h3 id="render-markdown-plain-raw"><code>/render [markdown | plain | raw]</code><a class="headerlink" href="#render-markdown-plain-raw" title="Permanent link">&para;</a></h3>
+<p>Response rendering — <a href="../rendering/markdown/">Streaming markdown</a>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>llama3.2:3b › /render plain
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>render plain
+</code></pre></div>
+<h3 id="math-on-off"><code>/math [on | off]</code><a class="headerlink" href="#math-on-off" title="Permanent link">&para;</a></h3>
+<p>LaTeX → Unicode conversion — <a href="../rendering/math/">2D math</a>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>llama3.2:3b › /math off
+<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>math off
+</code></pre></div>
+<h3 id="thinking-show-collapse-hide-toggle-full"><code>/thinking [show | collapse | hide | toggle | full]</code><a class="headerlink" href="#thinking-show-collapse-hide-toggle-full" title="Permanent link">&para;</a></h3>
+<p>Thinking display; <code>full</code> prints the stored reasoning after the fact —
+<a href="../rendering/thinking/">Thinking panel</a>.</p>
+<h3 id="tps-on-off"><code>/tps [on | off]</code><a class="headerlink" href="#tps-on-off" title="Permanent link">&para;</a></h3>
+<p>The live tokens/s + context footer — <a href="../rendering/footer/">Footer</a>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>llama3.2:3b › /tps off
+<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>tps footer off
+</code></pre></div>
+<h3 id="pager-on-off"><code>/pager [on | off]</code><a class="headerlink" href="#pager-on-off" title="Permanent link">&para;</a></h3>
+<p>Buffer responses into <code>$PAGER</code> — <a href="../pager/">Pager</a>.</p>
+<h3 id="image-path-clear"><code>/image PATH… | clear</code><a class="headerlink" href="#image-path-clear" title="Permanent link">&para;</a></h3>
+<p>Attach images to the <strong>next</strong> message; <code>clear</code> drops pending ones —
+<a href="../images/">Images and vision</a>.</p>
+<h2 id="sessions-and-longer-arcs">Sessions and longer arcs<a class="headerlink" href="#sessions-and-longer-arcs" title="Permanent link">&para;</a></h2>
+<h3 id="export-format-mdjsonhtml-file"><code>/export [--format md|json|html] [FILE]</code><a class="headerlink" href="#export-format-mdjsonhtml-file" title="Permanent link">&para;</a></h3>
+<p>Export the current session, mid-run — same formats as the CLI
+<a href="../sessions/search-export/"><code>--export</code></a>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>llama3.2:3b › /export --format md /tmp/session.md
+<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a>wrote /tmp/session.md
+</code></pre></div>
+<h3 id="stats"><code>/stats</code><a class="headerlink" href="#stats" title="Permanent link">&para;</a></h3>
+<p>Session and last-generation stats: turns, tokens, duration, last eval rate.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>llama3.2:3b › /stats
+<a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a>                   stats
+<a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a>╭───────────────────┬──────────────────────╮
+<a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a>│ field             │                value │
+<a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a>├───────────────────┼──────────────────────┤
+<a id="__codelineno-20-6" name="__codelineno-20-6" href="#__codelineno-20-6"></a>│ session           │ 20261018-130942-c98d │
+<a id="__codelineno-20-7" name="__codelineno-20-7" href="#__codelineno-20-7"></a>│ model             │          llama3.2:3b │
+<a id="__codelineno-20-8" name="__codelineno-20-8" href="#__codelineno-20-8"></a>│ turns             │                    0 │
+<a id="__codelineno-20-9" name="__codelineno-20-9" href="#__codelineno-20-9"></a>│ messages          │                    0 │
+<a id="__codelineno-20-10" name="__codelineno-20-10" href="#__codelineno-20-10"></a>│ prompt tokens     │                    0 │
+<a id="__codelineno-20-11" name="__codelineno-20-11" href="#__codelineno-20-11"></a>│ completion tokens │                    0 │
+<a id="__codelineno-20-12" name="__codelineno-20-12" href="#__codelineno-20-12"></a>│ generation time   │                 0 ms │
+<a id="__codelineno-20-13" name="__codelineno-20-13" href="#__codelineno-20-13"></a>╰───────────────────┴──────────────────────╯
+</code></pre></div>
+<h3 id="queue-list-clear-rm-n"><code>/queue [list | clear | rm N]</code><a class="headerlink" href="#queue-list-clear-rm-n" title="Permanent link">&para;</a></h3>
+<p>What is waiting while a turn runs — the queue is the deprecated
+<a href="../../tui/">TUI</a>'s typing-ahead list; the inline REPL reads one line
+at a time.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>llama3.2:3b › /queue list
+<a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a>queue is empty
+</code></pre></div>
+<h3 id="tts-on-off-voice-name-lang-code-tools-onoff-voices"><code>/tts [on | off | voice NAME | lang CODE | tools on|off | voices]</code><a class="headerlink" href="#tts-on-off-voice-name-lang-code-tools-onoff-voices" title="Permanent link">&para;</a></h3>
+<p>Auto-speak final answers through <code>tts-remote</code>; <code>tools</code> toggles the model's
+speech tools — see <a href="../tools/reference/#speech">Tools</a> and the config keys
+<code>tts_*</code>.</p>
+<h3 id="help-topic"><code>/help [topic]</code>, <code>/?</code><a class="headerlink" href="#help-topic" title="Permanent link">&para;</a></h3>
+<p>The command table; <code>/help shortcuts</code> the key bindings.</p>
+<h2 id="shortcuts">Shortcuts<a class="headerlink" href="#shortcuts" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>╭─────────┬────────────────────────────────────────────────────────────────╮
+<a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a>│ Ctrl+D  │ exit                                                           │
+<a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a>│ Ctrl+C  │ cancel input / generation                                      │
+<a id="__codelineno-22-4" name="__codelineno-22-4" href="#__codelineno-22-4"></a>│ Ctrl+T  │ expand or collapse the thinking panel while a response streams │
+<a id="__codelineno-22-5" name="__codelineno-22-5" href="#__codelineno-22-5"></a>│ Ctrl+G  │ $OLLAMA_EDITOR for the current prompt                          │
+<a id="__codelineno-22-6" name="__codelineno-22-6" href="#__codelineno-22-6"></a>│ Ctrl+J  │ insert newline                                                 │
+<a id="__codelineno-22-7" name="__codelineno-22-7" href="#__codelineno-22-7"></a>│ Ctrl+R  │ search prompt history                                          │
+<a id="__codelineno-22-8" name="__codelineno-22-8" href="#__codelineno-22-8"></a>│ Up/Down │ history navigation                                             │
+<a id="__codelineno-22-9" name="__codelineno-22-9" href="#__codelineno-22-9"></a>│ Tab     │ complete commands, ids, models, @files                         │
+<a id="__codelineno-22-10" name="__codelineno-22-10" href="#__codelineno-22-10"></a>│ @path   │ inline a file into the prompt                                  │
+<a id="__codelineno-22-11" name="__codelineno-22-11" href="#__codelineno-22-11"></a>╰─────────┴────────────────────────────────────────────────────────────────╯
+</code></pre></div>
 
 
 

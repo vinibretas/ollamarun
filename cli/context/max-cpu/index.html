@@ -1748,6 +1748,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    max-cpu
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -1764,6 +1782,36 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#config-and-verification" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Config and verification
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3420,25 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#config-and-verification" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Config and verification
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3404,20 +3471,77 @@
 
 
 <h1 id="max-cpu">max-cpu<a class="headerlink" href="#max-cpu" title="Permanent link">&para;</a></h1>
-<p><code>--max-cpu N</code> fills DRAM instead: it raises the context until the model's host
-RAM reaches N% (1-100) of the DRAM available to it — <code>/proc/meminfo</code>'s
-MemAvailable on the Ollama machine (one ssh probe for <code>--remote</code> hosts) plus
-the RAM the loaded model already holds (<code>/api/ps</code> <code>size - size_vram</code>, back
-when it reloads), less a <code>max_cpu_overhead_mb</code> allowance. The same per-layer
-KV, sliding-window, recurrent-state and weight-split profile decides the
-placement: some layers may stay on the GPU unless
-<a href="../gpu-layers/">gpu-layers</a> is <code>cpu</code>; a pinned layer count is honoured and
-only the host side counts.</p>
-<p><code>--probe</code> solves the measured footprint line the same way and never chooses a
-context above the target — see <a href="../probes/">Probes and calibration</a>.
-Compatible probe/resident data calibrates future CPU estimates as well;
-automatic GPU placement is checked before a cached slope is applied.</p>
-<p>From the REPL: <code>/num-ctx --max-cpu N [--probe]</code>.</p>
+<p><code>/num-ctx --max-cpu N</code> is the other direction: instead of keeping the model
+on the GPU, it raises the context window until the model's <strong>host RAM</strong> fills
+N% (1-100) of the DRAM available to it. The GPU keeps whatever layers the
+budget allows; the rest runs on the CPU.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>llama3.2:3b › /num-ctx --max-cpu 80
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>          context fit · llama3.2:3b on this machine
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>╭────────────────┬───────────────────────────────────────────╮
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>│ model          │ 3.21B params · Q4_K_M · llama · 1.9 GiB   │
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>│ machine memory │ 31.2 GiB total · 16.0 GiB available       │
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>│ model now      │ 6.8 GiB of host RAM (back on reload)      │
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>│ budget         │ 22.8 GiB = available + the resident model │
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>│ target         │ 18.2 GiB = 80% of the budget              │
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>│ placement      │ gpu-layers ~1 of 29 (fitted)              │
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>│ cpu weights    │ 1.7 GiB of 1.9 GiB                        │
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>│ kv cache       │ 112.0 KiB per token · 14.0 GiB at 131,072 │
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>│ overhead       │ 256.0 MiB reserved                        │
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>│ model max      │ 131,072 tokens                            │
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>╰────────────────┴───────────────────────────────────────────╯
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>· the loaded model holds 6.8 GiB of host RAM -- counted back into the budget, a reload returns it
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>· calibrated from 1 measured context point(s): 112.0 KiB per token
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>· weights split: 236.2 MiB token embeddings + 236.2 MiB output layer (separate) + 1.4 GiB blocks
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>num_ctx 131,072 (capped by the model's max context)
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>· at the model's max the host holds 15.9 GiB = 69% of the budget (80% requested)
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>estimate only — /num-ctx --max-cpu --probe loads the model and verifies the real host RAM
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>num_ctx set to 131072
+</code></pre></div>
+<p>Reading that report:</p>
+<ul>
+<li><strong>budget</strong> = MemAvailable (<code>/proc/meminfo</code> on the Ollama machine, one ssh
+  probe for <code>--remote</code>) <strong>plus</strong> the RAM the loaded model already holds — a
+  reload returns it.</li>
+<li><strong>target</strong> = N% of the budget. If the target sits beyond the model's
+  maximum context, the cap binds and the note at the bottom says by how
+  much (<code>69% of the budget (80% requested)</code>).</li>
+<li><strong>cpu weights</strong> = the share of the weights that will live in host RAM,
+  given the placement the fit chose.</li>
+<li><strong>kv cache</strong> = per-token KV (the same profile <a href="../max-gpu/">max-gpu</a> uses)
+  times the candidate context.</li>
+<li><strong>overhead</strong> = <code>max_cpu_overhead_mb</code> (default 256 MiB) reserved for
+  everything that is not weights or KV.</li>
+</ul>
+<p>A pinned <a href="../gpu-layers/"><code>/gpu-layers</code></a> is honored: with <code>cpu</code> every layer
+counts on the host side; with a fixed N, only the host share does. Without a
+pin the fit itself decides how many layers stay on the GPU (the
+<code>gpu-layers ~1 of 29 (fitted)</code> line above) before sizing the CPU side.</p>
+<h2 id="config-and-verification">Config and verification<a class="headerlink" href="#config-and-verification" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Knob</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>max_cpu_overhead_mb</code></td>
+<td>256</td>
+<td>Host-RAM allowance beyond weights + KV.</td>
+</tr>
+<tr>
+<td><code>max_cpu_probes</code></td>
+<td>10</td>
+<td>Load attempts a <code>--probe</code> may spend.</td>
+</tr>
+</tbody>
+</table>
+<p>CLI: <code>--num-ctx --max-cpu N</code> (with <code>--probe</code> to verify by loading — see
+<a href="../probes/">Probes and calibration</a>). Like the GPU fit, this is an estimate:
+it is meant to pick a sensible starting window, and the probe exists for when
+close counts.</p>
 
 
 

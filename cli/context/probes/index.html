@@ -1776,6 +1776,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Probes and calibration
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -1792,6 +1810,58 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#when-the-estimate-and-the-probe-disagree" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When the estimate and the probe disagree
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#calibration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Calibration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-same-thing-over-the-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The same thing over the API
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3442,47 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#when-the-estimate-and-the-probe-disagree" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When the estimate and the probe disagree
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#calibration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Calibration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-same-thing-over-the-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The same thing over the API
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3404,19 +3515,83 @@
 
 
 <h1 id="probes-and-calibration">Probes and calibration<a class="headerlink" href="#probes-and-calibration" title="Permanent link">&para;</a></h1>
-<p><code>--probe</code> turns an estimate into a measurement: candidates are actually
-loaded and each real GPU split is read back from <code>/api/ps</code>, solving the
-measured bytes-per-token line for the capacity. Both <a href="../max-gpu/">max-gpu</a> and
-<a href="../max-cpu/">max-cpu</a> take it (<code>/num-ctx --max-gpu --probe</code>,
-<code>/num-ctx --max-cpu N --probe</code>).</p>
-<p>Resident and probe measurements calibrate future estimates using a
-conservative per-token slope and fixed overhead; the profile formula remains
-the fallback. The bounded cache is scoped to model digest, host, hardware,
-placement and KV settings, expires after 180 days, and is stored at
-<code>~/etc/data/ollamarun/ctxfit-calibration.json</code>.</p>
-<p>Config knobs: <code>max_gpu_margin_mb</code> (1 GiB), <code>max_gpu_overhead_mb</code> (0; the fit
-margin already covers llama.cpp's projected buffers), <code>max_gpu_probes</code> (10),
-<code>max_cpu_overhead_mb</code> (256 MiB) and <code>max_cpu_probes</code> (10).</p>
+<p>The two fits (<a href="../max-gpu/">max-gpu</a>, <a href="../max-cpu/">max-cpu</a>) are estimates:
+they combine the model profile with machine numbers but never load anything.
+<code>--probe</code> is the verification pass — load the model at candidate contexts,
+read what the machine actually reported, and pick from measurements instead
+of arithmetic.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="go">smollm2:360m › /num-ctx --max-gpu --probe</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="go">probe 1: smollm2:360m at num_ctx 8,192…</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="go">          context fit · smollm2:360m on this machine</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="go">╭────────────┬────────────────────────────────────────────────╮</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="go">│ model      │ 0.36B params · F16 · llama · 692.0 MiB         │</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="go">│ gpu memory │ 1.0 GiB free + 2.8 GiB resident → 3.8 GiB pool │</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="go">│ margin     │ 1.0 GiB per device → 2.8 GiB usable            │</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="go">│ weights    │ 692.0 MiB                                      │</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="go">│ kv cache   │ 40.0 KiB per token · 320.0 MiB at 8,192        │</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="go">│ model max  │ 8,192 tokens                                   │</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="go">╰────────────┴────────────────────────────────────────────────╯</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="go">· crediting smollm2:360m (215.5 MiB on the GPU) — it reloads at the new context and releases that memory</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="go">· crediting llama3.2:3b (2.6 GiB on the GPU) — it reloads at the new context and releases that memory</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="go">num_ctx 8,192 (capped by the model's max context)</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="go">               context probe · smollm2:360m</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="go">╭─────────┬───────────┬───────────┬─────┬─────────────────╮</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="go">│ num_ctx │      size │      vram │ gpu │ result          │</span>
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="go">├─────────┼───────────┼───────────┼─────┼─────────────────┤</span>
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="go">│   8,192 │ 633.8 MiB │ 215.5 MiB │ 34% │ partial offload │</span>
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="go">╰─────────┴───────────┴───────────┴─────┴─────────────────╯</span>
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="go">no probed context stayed fully on the GPU (best 34% at num_ctx 8,192)</span>
+</code></pre></div>
+<p>That run also shows the honest side of probing: the <em>estimate</em> assumed the
+two resident models would be evicted on reload and credited their VRAM back,
+but the probe loaded while they were still resident, so the model only got
+34% of its layers onto the GPU. The probe reports what happened instead of
+the estimate's assumption.</p>
+<p>What each probe does:</p>
+<ol>
+<li><strong>Load</strong> the model at one candidate context (<code>/api/chat</code> with the
+   candidate <code>num_ctx</code> and a tiny generation, <code>keep_alive</code> from the
+   session).</li>
+<li><strong>Read back</strong> the real split — <code>/api/ps</code> reports the bytes on the GPU vs
+   the rest, for the running model.</li>
+<li><strong>Solve the line.</strong> A model's footprint is affine in the context size:
+   <code>bytes = weights + kv_per_token × ctx</code>. Two measured points are enough to
+   solve for the slope; the fit then computes the capacity directly instead
+   of bisecting the candidate range.</li>
+<li><strong>Finish warm.</strong> For <code>--max-gpu</code> the model is left loaded at the largest
+   100%-GPU context; for <code>--max-cpu</code> never above the requested target.</li>
+</ol>
+<h2 id="when-the-estimate-and-the-probe-disagree">When the estimate and the probe disagree<a class="headerlink" href="#when-the-estimate-and-the-probe-disagree" title="Permanent link">&para;</a></h2>
+<p>The estimate can be conservative — the fit margin is deliberately generous.
+If the estimate declares a context infeasible but a probe might still make
+it, the command says so and keeps probing:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>probing anyway — the estimate's buffers may be conservative
+</code></pre></div>
+<p><code>max_gpu_probes</code> / <code>max_cpu_probes</code> (default 10 each) bound how many loads a
+probe run may spend. A probe that cannot find a feasible context leaves the
+session untouched and reports the reason instead of guessing.</p>
+<h2 id="calibration">Calibration<a class="headerlink" href="#calibration" title="Permanent link">&para;</a></h2>
+<p>Every good measurement — probe results <strong>and</strong> ordinary resident-model
+readings — is recorded in a bounded cache at
+<code>~/etc/data/ollamarun/ctxfit-calibration.json</code>:</p>
+<ul>
+<li><strong>Scoped</strong> to the model digest, host, hardware, placement and KV settings,
+  so data never leaks between machines or configurations.</li>
+<li><strong>Expires</strong> after 180 days; incompatible or stale data is ignored, never
+  trusted blindly.</li>
+<li><strong>Feeds back</strong>: later estimates start from the measured slope (the fit
+  report says <code>calibrated from N measured context point(s)</code>) and probe
+  searches start near the previous answer, so the second run is faster than
+  the first.</li>
+</ul>
+<p>The profile formula remains the fallback whenever the cache is empty — the
+calibration changes how <em>confident</em> the number is, not whether you get one.</p>
+<h2 id="the-same-thing-over-the-api">The same thing over the API<a class="headerlink" href="#the-same-thing-over-the-api" title="Permanent link">&para;</a></h2>
+<p><code>POST /v1/agent/fits</code> runs a probe as an asynchronous job (202 + warnings,
+progress, cancel) and <code>POST /v1/agent/fit</code> the synchronous estimate — see
+<a href="../../../api/agent/fits/">Context fits</a>. Turn <code>settings.num_ctx:
+"max-gpu"|"max-cpu"</code> always estimates (never a blocking probe) and reports
+the result as a <code>session.fit</code> event.</p>
 
 
 

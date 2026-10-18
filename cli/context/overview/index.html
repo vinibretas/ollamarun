@@ -1636,6 +1636,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview and warnings
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -1652,6 +1670,69 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-managed-knobs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The managed knobs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#seeing-where-you-stand" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Seeing where you stand
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-80-warning-and-85-compaction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The 80% warning, and 85% compaction
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-each-piece-lives" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where each piece lives
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3453,58 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-managed-knobs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The managed knobs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#seeing-where-you-stand" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Seeing where you stand
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-80-warning-and-85-compaction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The 80% warning, and 85% compaction
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-each-piece-lives" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where each piece lives
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3404,21 +3537,86 @@
 
 
 <h1 id="context-and-placement">Context and placement<a class="headerlink" href="#context-and-placement" title="Permanent link">&para;</a></h1>
-<p>Two things decide how the model runs: the <strong>context window</strong> and its <strong>GPU
-placement</strong>.</p>
+<p>Two numbers decide how a model runs: the <strong>context window</strong> (how much
+conversation it can hold) and its <strong>GPU placement</strong> (how many layers run on
+the GPU versus the CPU). Ollama picks both automatically; this section is
+about overriding them deliberately — and about the tools that calculate what
+the machine can actually afford.</p>
+<h2 id="the-managed-knobs">The managed knobs<a class="headerlink" href="#the-managed-knobs" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Knob</th>
+<th>Command / flag</th>
+<th>What it sets</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Window size</td>
+<td><code>/num-ctx N</code>, <code>--num-ctx N</code></td>
+<td>The session's <code>num_ctx</code>, capped to the model's trained maximum.</td>
+</tr>
+<tr>
+<td>Largest GPU window</td>
+<td><code>/num-ctx --max-gpu</code>, <code>--num-ctx max-gpu</code></td>
+<td>Estimates the largest context that keeps the model fully on the GPU.</td>
+</tr>
+<tr>
+<td>DRAM fill</td>
+<td><code>/num-ctx --max-cpu N</code>, <code>--num-ctx --max-cpu N</code></td>
+<td>Raises the window until the model's host RAM fills N% of available DRAM.</td>
+</tr>
+<tr>
+<td>Verification</td>
+<td><code>--probe</code> on either</td>
+<td>Loads the model at candidate contexts and reads the real split back.</td>
+</tr>
+<tr>
+<td>Layer split</td>
+<td><code>/gpu-layers SPEC</code>, <code>--gpu-layers SPEC</code></td>
+<td>Pins how many layers run on the GPU (<code>N</code>, <code>P%</code>, <code>+N</code>/<code>-N</code>, <code>all</code>, <code>cpu</code>, <code>auto</code>).</td>
+</tr>
+</tbody>
+</table>
+<p>Everything is stored <strong>on the session</strong>, so <code>/load</code> restores it, and it wins
+over the equivalent raw options (<code>/set parameter num_ctx</code> / <code>num_gpu</code>).</p>
+<h2 id="seeing-where-you-stand">Seeing where you stand<a class="headerlink" href="#seeing-where-you-stand" title="Permanent link">&para;</a></h2>
+<p><code>/context</code> reports the working numbers:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>qwen3:0.6b › /context
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>             context
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>╭────────────────────────┬───────╮
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>│ field                  │ value │
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>├────────────────────────┼───────┤
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>│ messages               │     0 │
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>│ last prompt tokens     │     ? │
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>│ last completion tokens │     ? │
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>│ context used           │     ? │
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>│ context length         │  8192 │
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>╰────────────────────────┴───────╯
+</code></pre></div>
+<p><code>context length</code> is the <em>effective</em> window, resolved in this order: the
+session's <code>num_ctx</code> → the loaded runner's window (<code>/api/ps</code>) → the model's
+default (<code>/api/show</code>). The same value feeds the
+<a href="../../rendering/footer/">footer's ctx counter</a> and the warning below.</p>
+<h2 id="the-80-warning-and-85-compaction">The 80% warning, and 85% compaction<a class="headerlink" href="#the-80-warning-and-85-compaction" title="Permanent link">&para;</a></h2>
+<p>When <code>context used / context length</code> reaches 80%, the REPL prints:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>context 13112/16384 tokens (80%) — /summarize to compact
+</code></pre></div>
+<p>and <a href="../compaction/">compaction</a> takes over from there — manually with
+<code>/summarize</code>, or automatically at 85% when config <code>auto_compact</code> is
+<code>"auto"</code>. The same warning runs headlessly at turn start for the
+<a href="../../../api/agent/turns/">agent API</a>, where it is a <code>turn.warning</code> event.</p>
+<h2 id="where-each-piece-lives">Where each piece lives<a class="headerlink" href="#where-each-piece-lives" title="Permanent link">&para;</a></h2>
 <ul>
-<li><a href="../num-ctx/">/num-ctx</a> sizes the window; <a href="../max-gpu/">max-gpu</a> and
-  <a href="../max-cpu/">max-cpu</a> fit it to the machine, and <a href="../probes/">probes</a> verify
-  by loading.</li>
-<li><a href="../gpu-layers/">/gpu-layers</a> pins how many layers run on the GPU.</li>
-<li><code>/context</code> reports window usage, and the
-  <a href="../../rendering/footer/">footer</a>'s ctx counter ticks live — its
-  denominator is the window the model is actually loaded with (<code>/api/ps</code>; a
-  session <code>num_ctx</code> wins, the architectural maximum is only the fallback).</li>
-<li><a href="../compaction/">Compaction</a> keeps long sessions inside the window.</li>
+<li><a href="../num-ctx/">num-ctx</a> — setting the window, and the cap.</li>
+<li><a href="../max-gpu/">max-gpu</a> / <a href="../max-cpu/">max-cpu</a> — the two fits, with real
+  reports from a 4 GB GPU.</li>
+<li><a href="../probes/">Probes and calibration</a> — verifying by loading, and the
+  measured-data cache.</li>
+<li><a href="../gpu-layers/">GPU layers</a> — the placement spec.</li>
+<li><a href="../compaction/">Compaction</a> — keeping long sessions inside the window.</li>
 </ul>
-<p>The CLI takes the same as <code>--num-ctx</code>, <code>--gpu-layers</code> and <code>--probe</code>; the API
-exposes it per session — see <a href="../../../api/agent/fits/">Context fits</a>.</p>
 
 
 

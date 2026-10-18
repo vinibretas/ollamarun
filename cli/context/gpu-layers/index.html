@@ -1804,6 +1804,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GPU layers
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -1820,6 +1838,47 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-spec" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The spec
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-it-is-used" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where it is used
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3431,36 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-spec" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The spec
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-it-is-used" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where it is used
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3404,14 +3493,81 @@
 
 
 <h1 id="gpu-layers">GPU layers<a class="headerlink" href="#gpu-layers" title="Permanent link">&para;</a></h1>
-<p><code>--gpu-layers SPEC</code> / <code>/gpu-layers</code> sets how many layers run on the GPU: <code>N</code>,
-<code>P%</code> of the model's layers (<code>block_count</code> from <code>/api/show</code>), <code>+N</code>/<code>-N</code>
-adjustments (baseline: the current value, else a full offload), <code>all</code>, <code>cpu</code>
-or <code>auto</code>. It is stored in the session, re-resolved per model, wins over
-<code>/set parameter num_gpu</code>, and unloads a resident model so the next request
-reloads with the new placement.</p>
-<p>The API exposes the same field per session — see
-<a href="../../../api/agent/fits/">Context fits</a>.</p>
+<p><code>/gpu-layers</code> pins how many of the model's layers run on the GPU; the rest
+go to the CPU. It is stored on the session, re-resolved per model, and wins
+over a raw <code>num_gpu</code> option.</p>
+<h2 id="the-spec">The spec<a class="headerlink" href="#the-spec" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Spec</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>N</code></td>
+<td>An absolute count.</td>
+</tr>
+<tr>
+<td><code>P%</code></td>
+<td>A percentage of the model's layers — <code>block_count</code> from <code>/api/show</code> (29 for <code>qwen3:0.6b</code> below).</td>
+</tr>
+<tr>
+<td><code>+N</code> / <code>-N</code></td>
+<td>Adjust the current value (baseline: the session's current spec, else a full offload).</td>
+</tr>
+<tr>
+<td><code>all</code></td>
+<td>Every layer on the GPU.</td>
+</tr>
+<tr>
+<td><code>cpu</code></td>
+<td>No layers on the GPU.</td>
+</tr>
+<tr>
+<td><code>auto</code></td>
+<td>Back to Ollama's own decision.</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>qwen3:0.6b › /gpu-layers 50%
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>gpu layers 50% → 15 of 29 layers
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>unloaded qwen3:0.6b
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>the model will reload with the new setting
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>qwen3:0.6b › /gpu-layers
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>gpu layers 50% → 15 of 29 layers
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>N (absolute), P% (of the model's layers), +N/-N (adjust the current value), all, cpu or auto
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>qwen3:0.6b › /gpu-layers auto
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>gpu layers auto (ollama decides)
+</code></pre></div>
+<p>Three things worth noting in that transcript:</p>
+<ul>
+<li>The percentage resolves against <strong>this model's</strong> layer count (29) at
+  command time, so switching models later re-resolves the spec for the new
+  model instead of reusing a stale number.</li>
+<li>Changing the placement <strong>unloads a resident model</strong> — <code>num_gpu</code> is a
+  load-time property, so the next request reloads with the new split. The
+  command says so rather than silently keeping the old runner.</li>
+<li><code>/gpu-layers</code> with no argument shows the current value plus the accepted
+  forms.</li>
+</ul>
+<h2 id="where-it-is-used">Where it is used<a class="headerlink" href="#where-it-is-used" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Launch flag: <code>--gpu-layers SPEC</code>; config key <code>gpu_layers</code> seeds it.</li>
+<li>Session field: it persists across <code>--load</code>/<code>-c</code>, and the
+  <a href="../max-gpu/">context fits</a> honor it — when a placement is pinned, the
+  output layer and the topmost blocks are counted as offloaded, not the
+  whole model.</li>
+<li>API: <code>PATCH /v1/sessions/{id}</code> and turn <code>settings</code> accept <code>gpu_layers</code>
+  with the same spec and the same unload behavior —
+  see <a href="../../../api/agent/sessions/">Sessions API</a>.</li>
+<li><code>/params</code> reports it as <code>gpu layers</code> (resolved label or <code>auto (ollama
+  decides)</code>).</li>
+</ul>
+<p>A pinned spec beats <code>/set parameter num_gpu</code> in the payload: the session
+setting is the managed path, and the resolved number is what actually goes
+into the request's <code>options</code>.</p>
 
 
 

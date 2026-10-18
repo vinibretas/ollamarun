@@ -1720,6 +1720,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    max-gpu
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -1736,6 +1754,58 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#how-the-number-is-computed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How the number is computed
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verifying-with-a-probe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verifying with a probe
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-and-cli-forms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration and CLI forms
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3442,47 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#how-the-number-is-computed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How the number is computed
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verifying-with-a-probe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verifying with a probe
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-and-cli-forms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration and CLI forms
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3404,27 +3515,88 @@
 
 
 <h1 id="max-gpu">max-gpu<a class="headerlink" href="#max-gpu" title="Permanent link">&para;</a></h1>
-<p><code>--max-gpu</code> picks the largest context that still keeps the model fully on the
-GPU. The model is profiled first: <code>/api/show</code>'s GGUF metadata supplies the
-per-layer KV geometry (hybrid attention, sliding windows and their per-layer
-key/value dims, MLA's compressed latent, recurrent <code>ssm.*</code> state) and the
-parameter count, <code>/api/tags</code> supplies the on-disk size and quantization, and
-the two are cross-checked (<code>params × bytes/param</code>; the model row in the report
-names all of it). Free VRAM (nvidia-smi, locally or over one ssh probe for
-<code>--remote</code> machines) is then reduced by llama.cpp's fit margin
-(<code>max_gpu_margin_mb</code>, 1 GiB by default); the separate <code>max_gpu_overhead_mb</code>
-reserve defaults to 0 because the fit margin already covers the buffers
-llama.cpp projects. Resident models' VRAM is credited back (it returns when
-they reload at the new context), and a pinned
-<a href="../gpu-layers/">gpu-layers</a> is honoured: the output layer and the topmost
-blocks are counted as the offloaded share, and the non-block weights (token
-embeddings, output layer, vision projector) are estimated rather than split
-evenly.</p>
-<p><code>--probe</code> then verifies by loading candidates and reading each real GPU split
-back from <code>/api/ps</code>, solving the measured bytes-per-token line for the
-capacity, and leaves the model warm at the largest 100%-GPU context — see
-<a href="../probes/">Probes and calibration</a>.</p>
-<p>From the REPL: <code>/num-ctx --max-gpu [--probe]</code>.</p>
+<p><code>/num-ctx --max-gpu</code> answers one question: <strong>what is the largest context
+window that still keeps every layer of this model on the GPU?</strong> It profiles
+the model, measures the machine, does the arithmetic, and writes the result
+to the session.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>llama3.2:3b › /num-ctx --max-gpu
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>        context fit · llama3.2:3b on this machine
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>╭────────────┬───────────────────────────────────────────╮
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>│ model      │ 3.21B params · Q4_K_M · llama · 1.9 GiB   │
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>│ gpu memory │ 3.9 GiB free                              │
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>│ margin     │ 1.0 GiB per device → 2.9 GiB usable       │
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>│ weights    │ 1.9 GiB                                   │
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>│ kv cache   │ 112.0 KiB per token · 1008.0 MiB at 9,216 │
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>│ model max  │ 131,072 tokens                            │
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>╰────────────┴───────────────────────────────────────────╯
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>· all layers are placed on the GPU
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>· weights split: 236.2 MiB token embeddings + 236.2 MiB output layer (separate) + 1.4 GiB blocks
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>num_ctx 9,216
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>estimate only — /num-ctx --max-gpu --probe loads the model and verifies the real GPU split
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>num_ctx set to 9216
+</code></pre></div>
+<p>That run is from a 4 GB GTX 1050 with a 1.9 GiB Q4 model: 2.9 GiB usable
+after llama.cpp's fit margin, 1.9 GiB of weights, 112 KiB of KV per token —
+and 9,216 tokens is what fits. <code>/context</code> then reports <code>context length 9216</code>.</p>
+<h2 id="how-the-number-is-computed">How the number is computed<a class="headerlink" href="#how-the-number-is-computed" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Profile the model.</strong> <code>/api/show</code>'s GGUF metadata supplies the per-layer
+   KV geometry — key/value head counts, sliding-window settings, MLA's
+   compressed latent, recurrent <code>ssm.*</code> state — plus the architecture and
+   parameter count; <code>/api/tags</code> supplies the on-disk size and quantization.
+   The two are cross-checked (<code>params × bytes/param</code>), and the weights split
+   into token embeddings, output layer and blocks instead of being treated as
+   one lump (the report's last line).</li>
+<li><strong>Measure the machine.</strong> Free VRAM from <code>nvidia-smi</code> — locally, or over
+   one ssh probe for a <code>--remote</code> target.</li>
+<li><strong>Subtract the fit margin.</strong> <code>max_gpu_margin_mb</code> (default 1 GiB) is
+   llama.cpp's own allowance for projected buffers; <code>max_gpu_overhead_mb</code>
+   (default 0) adds an extra reserve if your stack needs one.</li>
+<li><strong>Credit residents.</strong> Other loaded models' VRAM is counted back in — it
+   returns when they reload at the new context.</li>
+<li><strong>Honor a pinned placement.</strong> With <code>/gpu-layers</code> set, the output layer
+   and the topmost blocks are counted as offloaded, not the whole model.</li>
+</ol>
+<p>The result is the largest context whose KV cache plus weights fit in the
+usable VRAM.</p>
+<h2 id="verifying-with-a-probe">Verifying with a probe<a class="headerlink" href="#verifying-with-a-probe" title="Permanent link">&para;</a></h2>
+<p>The report ends by saying so: this is an estimate. <code>--probe</code> loads the model
+at candidate contexts, reads the real GPU split from <code>/api/ps</code>, solves the
+measured bytes-per-token line and leaves the model warm at the largest
+100%-GPU context. See <a href="../probes/">Probes and calibration</a>.</p>
+<h2 id="configuration-and-cli-forms">Configuration and CLI forms<a class="headerlink" href="#configuration-and-cli-forms" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Knob</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>max_gpu_margin_mb</code></td>
+<td>1024</td>
+<td>llama.cpp's fit margin, subtracted from free VRAM.</td>
+</tr>
+<tr>
+<td><code>max_gpu_overhead_mb</code></td>
+<td>0</td>
+<td>Extra reserve beyond the margin.</td>
+</tr>
+<tr>
+<td><code>max_gpu_probes</code></td>
+<td>10</td>
+<td>Load attempts a probe may spend.</td>
+</tr>
+</tbody>
+</table>
+<p>CLI: <code>--num-ctx max-gpu</code> (with <code>--probe</code> to verify). The result is stored on
+the session and wins over a raw <code>num_ctx</code> option — and a pinned
+<a href="../gpu-layers/"><code>/gpu-layers</code></a> is respected when the layers are counted.</p>
+<p>If the estimate can't be trusted (no GPU probe available, exotic metadata),
+the command says so instead of inventing a number; <code>/num-ctx N</code> remains the
+fallback, and the <a href="../max-cpu/">CPU fit</a> is the other direction.</p>
 
 
 

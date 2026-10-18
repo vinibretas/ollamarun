@@ -1692,6 +1692,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    num-ctx
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -1708,6 +1726,47 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-two-fit-forms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The two fit forms
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-effective-means" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What "effective" means
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3372,6 +3431,36 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-two-fit-forms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The two fit forms
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-effective-means" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What "effective" means
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3404,13 +3493,57 @@
 
 
 <h1 id="num-ctx">num-ctx<a class="headerlink" href="#num-ctx" title="Permanent link">&para;</a></h1>
-<p><code>/num-ctx</code> sizes the window:</p>
-<ul>
-<li><code>N</code> sets it (capped to the model's max with a warning).</li>
-</ul>
-<p>CLI forms: <code>--num-ctx N | max-gpu</code>, plus <code>--probe</code> and <code>--max-cpu N</code>. The
-fitting forms live in <a href="../max-gpu/">max-gpu</a>, <a href="../max-cpu/">max-cpu</a> and
-<a href="../probes/">probes</a>.</p>
+<p><code>/num-ctx N</code> sets the session's context window; <code>--num-ctx N</code> does it for a
+run. The value is capped to the model's trained maximum with a warning:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>qwen3:0.6b › /num-ctx 8192
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>num_ctx set to 8192
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>qwen3:0.6b › /num-ctx 99999999
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>99999999 exceeds qwen3:0.6b's max context (40960) — capped to 40960
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>num_ctx set to 40960
+</code></pre></div>
+<p>The maximum comes from <code>/api/show</code>'s model metadata and is cached per model
+for the run. After the change the resident model is reloaded on the next
+request — the window is a load-time property, not a per-request one.</p>
+<h2 id="the-two-fit-forms">The two fit forms<a class="headerlink" href="#the-two-fit-forms" title="Permanent link">&para;</a></h2>
+<p><code>/num-ctx</code> also accepts the calculated forms, which pick the number for you:</p>
+<table>
+<thead>
+<tr>
+<th>Form</th>
+<th>Picks</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--max-gpu</code></td>
+<td>The largest context that keeps the model fully on the GPU (<a href="../max-gpu/">details</a>).</td>
+</tr>
+<tr>
+<td><code>--max-cpu N</code></td>
+<td>The largest context where the model's host RAM fills N% of available DRAM (<a href="../max-cpu/">details</a>).</td>
+</tr>
+<tr>
+<td>Either with <code>--probe</code></td>
+<td>Same, but verified by actually loading the model (<a href="../probes/">details</a>).</td>
+</tr>
+</tbody>
+</table>
+<p>The CLI mirrors them: <code>--num-ctx max-gpu</code>, <code>--num-ctx --max-cpu N</code>, and
+<code>--probe</code> as a modifier.</p>
+<h2 id="what-effective-means">What "effective" means<a class="headerlink" href="#what-effective-means" title="Permanent link">&para;</a></h2>
+<p>The session value is the first of, in order: session <code>num_ctx</code> → the loaded
+runner's window from <code>/api/ps</code> → the model's default from <code>/api/show</code>.
+Setting <code>num_ctx</code> here is therefore authoritative until you change it; the
+<a href="../overview/#seeing-where-you-stand"><code>/context</code> table</a> and the
+<a href="../../rendering/footer/">footer counter</a> always show which window is really
+in force.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>qwen3:0.6b › /context
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>│ context length │ 9216 │
+</code></pre></div>
+<p><strong>The raw option is not the managed path.</strong> <code>/set parameter num_ctx 8192</code>
+does land in the request's <code>options</code>, but it skips the cap warning, the
+reload coordination and the effective-window bookkeeping — prefer
+<code>/num-ctx</code>.</p>
 
 
 
