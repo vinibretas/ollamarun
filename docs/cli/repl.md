@@ -1,14 +1,116 @@
 # The REPL
 
-The inline prompt_toolkit REPL is the default (`--ui inline`). It is a
-superset of ollama's own commands, with [@path file mentions](file-mentions.md)
-(inlined into the prompt), Tab completion for commands/session ids/models/
-`@files`, prompt history (unless `OLLAMA_NOHISTORY` is set) and
-[Ctrl+G](editor.md) to open `$OLLAMA_EDITOR` on the current input. The full
-command set is in [Slash commands](commands.md).
+With no `PROMPT` argument, `ollamarun` starts the interactive front end: the
+inline prompt_toolkit REPL (the default, `--ui inline`). A model-less run
+opens the [picker](../cli/models/picker.md) first.
 
-While a response streams, Ctrl+T expands or collapses the thinking panel —
-see [Thinking panel](rendering/thinking.md).
+## Starting up
 
-The alternative front end, [Textual TUI](../tui/index.md) (`--ui tui`), is
-deprecated; the inline REPL is the supported one meanwhile.
+```console
+$ ollamarun llama3.2:3b
+```
+
+The banner names what is in effect:
+
+```text
+╭─ ollamarun ──────────────────────────────────────────────────────────╮
+│ model   llama3.2:3b                                                  │
+│ session 20261018-105614-b08e · new session                           │
+│ host    http://127.0.0.1:11434                                       │
+│ render  markdown · thinking collapsed · 95 local models              │
+│ /help for commands · Ctrl+D to exit · Ctrl+T thinking                │
+╰──────────────────────────────────────────────────────────────────────╯
+llama3.2:3b › 
+```
+
+The model starts loading in the background the moment the session opens —
+the prompt is available immediately, with a `waiting for <model>…` spinner on
+its right while the load runs. When the model becomes resident, a one-time
+[`ollama ps`](../cli/models/housekeeping.md) table prints what is loaded and
+for how long.
+
+## Typing prompts
+
+- Plain text goes to the model and streams back with the live
+  [footer](rendering/footer.md) and, for thinking models, the collapsed
+  [thinking panel](rendering/thinking.md).
+- `@path` inlines a file's contents — see
+  [@file mentions](file-mentions.md).
+- `/command` runs a slash command — the full set is in
+  [Slash commands](commands.md).
+- **Tab** completes commands, session ids, model names and `@files`.
+- **Up/Down** walks the prompt history (kept in
+  `~/etc/data/ollamarun/history`; set `OLLAMA_NOHISTORY` to disable it).
+- **Ctrl+J** inserts a newline for multi-line prompts.
+- **Ctrl+R** searches the prompt history.
+- **Ctrl+G** opens `$OLLAMA_EDITOR` on the current input — see
+  [Editor](editor.md).
+- **Ctrl+D** leaves (equivalent to `/bye`).
+
+## While an answer streams
+
+The input line becomes a rule above the live view; keystrokes are not read
+until the turn ends. Two keys work mid-stream:
+
+- **Ctrl+T** expands the thinking panel in place; press it again to collapse.
+  The stream never pauses either way.
+- **Ctrl+C** cancels: generation stops, providers that support abort are
+  told to stop, and the prompt returns with a `cancelled` note.
+
+```text
+llama3.2:3b › ────────────────────────────────────────────────────────
+cancelled
+llama3.2:3b › 
+```
+
+(The queueing behavior — typing ahead while the model works and having the
+message land at the next sub-task boundary — belongs to the deprecated
+[Textual TUI](../tui/index.md); the inline REPL reads one line at a time.)
+
+## Help inside the session
+
+`/help` prints the command table; `/help shortcuts` the key bindings:
+
+```text
+╭─────────┬────────────────────────────────────────────────────────────────╮
+│ key     │ action                                                         │
+├─────────┼────────────────────────────────────────────────────────────────┤
+│ Ctrl+D  │ exit                                                           │
+│ Ctrl+C  │ cancel input / generation                                      │
+│ Ctrl+T  │ expand or collapse the thinking panel while a response streams │
+│ Ctrl+G  │ $OLLAMA_EDITOR for the current prompt                          │
+│ Ctrl+J  │ insert newline                                                 │
+│ Ctrl+R  │ search prompt history                                          │
+│ Up/Down │ history navigation                                             │
+│ Tab     │ complete commands, ids, models, @files                         │
+│ @path   │ inline a file into the prompt                                  │
+╰─────────┴────────────────────────────────────────────────────────────────╯
+```
+
+## Leaving
+
+`/bye` (or `/exit`, or Ctrl+D) ends the session. The session is saved on the
+way out, and — unless `--keep-loaded` / config `unload_on_exit: false` — the
+model is unloaded:
+
+```text
+llama3.2:3b › /bye
+session 20261018-105614-b08e saved · ~/etc/data/ollamarun/sessions
+```
+
+Sessions are [persistent](sessions/storage.md): `-c` continues the most
+recent one and `--session NAME` continues a named one.
+
+!!! note "Without prompt_toolkit"
+
+    `prompt_toolkit` powers the input line. If the package is missing (or the
+    output is not a terminal), the REPL still runs, but with plain
+    `input()` prompts: no Tab completion, no history, no Ctrl+G/Ctrl+R.
+    Install it as shown in [Installation](../getting-started/installation.md)
+    to get the real thing.
+
+## The other front end
+
+`--ui tui` starts the Textual TUI — panes, an always-available input box and
+a message queue. It is [deprecated](../tui/index.md) ahead of the web-UI
+rewrite; the inline REPL is the supported front end.
