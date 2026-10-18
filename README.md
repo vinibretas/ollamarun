@@ -3,6 +3,9 @@
 > A terminal agent harness for Ollama — a personal project about how far local
 > models go when you hand them tools.
 
+**Documentation:** guides, reference and API docs for every surface live at
+<https://vinibretas.github.io/ollamarun/>.
+
 ollamarun began as a nicer `ollama run`: streamed markdown, 2D Unicode math,
 sessions that actually persist. It has since grown into a full harness — an
 approval-gated tool loop, two front ends, remote inference, context/GPU
