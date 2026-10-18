@@ -32,13 +32,12 @@ HTTP 400 on /api/chat: Multimodal data provided, but model does not support
 multimodal requests.
 ```
 
-A missing file exits 2 with the path as the message — currently without
-further context (tracked as
-[issue #40](https://github.com/vinibretas/ollamarun/issues/40)):
+A missing file exits 2 with a message naming the problem and the failing
+path (an empty or unreadable file reports the path and the reason too):
 
 ```console
 $ ollamarun --no-save --image /tmp/does-not-exist.png llama3.2:3b "hi"
-/tmp/does-not-exist.png
+image not found: /tmp/does-not-exist.png
 $ echo $?
 2
 ```

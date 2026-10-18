@@ -345,6 +345,52 @@ def test_cmd_image() -> int:
     return failures
 
 
+def test_cli_image_errors() -> int:
+    """A bad --image names the problem and the failed path (#40)."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+        client = _FakeClient()
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store,
+                         orun.Session.create("m1", client.base))
+        repl._build_prompt_session = lambda: None
+
+        missing = str(Path(tmp) / "does-not-exist.png")
+        with orun.console.capture() as cap:
+            code = orun.attach_images(repl, [missing])
+        out = _plain(cap.get())
+        if code == 2 and "image not found" in out and missing in out \
+                and not repl.pending_images:
+            print("PASS  a missing --image names the problem and the path")
+        else:
+            print(f"FAIL  missing image: {code} {out!r}")
+            failures += 1
+
+        empty = Path(tmp) / "empty.png"
+        empty.write_bytes(b"")
+        with orun.console.capture() as cap:
+            code = orun.attach_images(repl, [str(empty)])
+        out = _plain(cap.get())
+        if code == 2 and "cannot attach image" in out and "empty file" in out \
+                and str(empty) in out and not repl.pending_images:
+            print("PASS  an empty --image reports the path and the reason")
+        else:
+            print(f"FAIL  empty image: {code} {out!r}")
+            failures += 1
+
+        good = Path(tmp) / "red.png"
+        good.write_bytes(_tiny_png())
+        if orun.attach_images(repl, [str(good)]) is None \
+                and len(repl.pending_images) == 1:
+            print("PASS  a good --image attaches without an exit code")
+        else:
+            print(f"FAIL  good image: {repl.pending_images}")
+            failures += 1
+    return failures
+
+
 def test_session_store() -> int:
     failures = 0
     with tempfile.TemporaryDirectory() as tmp:
@@ -7858,6 +7904,7 @@ if __name__ == "__main__":
              + test_tts_tools() + test_speech_hosts_note()
              + test_tts_command() + test_tts_auto_speak()
              + test_client_http() + test_cmd_image()
+             + test_cli_image_errors()
              + test_message_queue() + test_status_format() + test_cancel_token()
              + test_context_counter() + test_tps_footer()
              + test_stream_cancel() + test_boundary_delivery()

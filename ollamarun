@@ -2,6 +2,14 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 2.7
+
+Summary of changes in this version:
+  - A bad `--image` path says what is wrong: `image not found: PATH`, or
+    `cannot attach image PATH: …` for an empty or unreadable file, instead
+    of printing only the bare path. The image loop moved into a testable
+    `attach_images()` and the images page documents the message.
+
 Version: 2.6
 
 Summary of changes in this version:
