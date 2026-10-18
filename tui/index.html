@@ -3360,6 +3360,47 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-is-different-from-the-inline-repl" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is different from the inline REPL
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-it-is-deprecated" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why it is deprecated
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3393,37 +3434,75 @@
 
 <h1 id="textual-tui-deprecated">Textual TUI (deprecated)<a class="headerlink" href="#textual-tui-deprecated" title="Permanent link">&para;</a></h1>
 <blockquote>
-<p><strong>Deprecated.</strong> The Textual front end still works, but it is not the future:
-it talks to the runtime in-process, and it will be rewritten as a pure client
-of the <code>ollamarun serve</code> API — the same direction as the planned web UI. The
-inline REPL is the supported front end meanwhile.</p>
+<p><strong>Deprecated.</strong> The Textual front end still works and is smoke-tested, but
+it is not the future: it talks to the runtime <strong>in-process</strong>, and it will
+be rewritten as a pure client of the <code>ollamarun serve</code> API — the same
+direction as the planned <a href="../web-ui/">web UI</a>. The inline REPL is
+the supported front end meanwhile.</p>
 </blockquote>
 <p><code>--ui tui</code> (config <code>"ui": "tui"</code>, or <code>--ui auto</code> to use it when the optional
-<code>textual</code> package is installed) separates the interactive session into panes:
-the transcript up top, a rule, a status bar (spinner + state, model and remote,
+<code>textual</code> package is installed) splits the terminal into panes: the
+transcript on top, a rule, a status bar (spinner + state, model and remote,
 thinking/tools/render modes, context tokens and %, live tok/s, queued count,
 key hints) and an input box that stays available while the model works.</p>
+<h2 id="what-is-different-from-the-inline-repl">What is different from the inline REPL<a class="headerlink" href="#what-is-different-from-the-inline-repl" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>Type while it works.</strong> Enter queues the message and it is handed to the
   model at the next sub-task boundary — right after a tool result, or in a
   follow-up round when an answer finishes streaming — so the model continues
   with the new information instead of dropping what it was doing. Commands
   that only read state or change display knobs run immediately; the rest
-  queue and run once the turn ends, in order (<code>/queue</code> shows/edits the list).</li>
+  queue and run once the turn ends, in order.</li>
 <li><strong>Ctrl+B</strong> sends what is typed right now: it cuts a streaming answer short
-  but never kills a tool that is already running (the command keeps running
-  and the model gets its result with your message in the next round).</li>
+  but never kills a tool that is already running (the command finishes and
+  the model gets its result with your message in the next round).</li>
 <li><strong>Esc Esc</strong> stops the turn (the first Esc arms it). The partial answer is
-  kept as a cancelled message and anything queued then runs as the next turn.</li>
-<li><strong>Ctrl+T</strong> thinking, <strong>Ctrl+G</strong> <code>$EDITOR</code>, <strong>Ctrl+L</strong> clear the transcript,
-  <strong>Ctrl+Q</strong> quit (a second press when busy or with queued items), Tab
-  completion and Up/Down history shared with the inline REPL. Tool approvals
-  ask in a modal (<code>y</code>/<code>a</code>/<code>n</code>/<code>A</code>).</li>
+  kept as a cancelled message and anything queued then runs as the next
+  turn.</li>
+<li><strong>Ctrl+T</strong> thinking, <strong>Ctrl+G</strong> <code>$EDITOR</code>, <strong>Ctrl+L</strong> clear the
+  transcript, <strong>Ctrl+Q</strong> quit (a second press when busy or with queued
+  items), Tab completion and Up/Down history shared with the inline REPL.
+  Tool approvals ask in a modal with the same numbered choices (<code>y</code>/<code>a</code>/<code>n</code>
+  /<code>A</code>) as the console prompt — both are built from one list.</li>
 </ul>
+<h2 id="running-it">Running it<a class="headerlink" href="#running-it" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span>ollamarun<span class="w"> </span>--ui<span class="w"> </span>tui<span class="w"> </span>llama3.2:3b
+</code></pre></div>
+<p>(Check: a smoke run starts the app, renders the banner into the transcript
+pane and quits on Ctrl+Q.)</p>
+<p>If the front end cannot run, the harness prints the reason and stays inline:</p>
+<table>
+<thead>
+<tr>
+<th>Condition</th>
+<th>Message</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>textual</code> missing</td>
+<td><code>--ui tui needs the textual package (1.0+) — using the inline REPL</code></td>
+</tr>
+<tr>
+<td><code>textual</code> too old</td>
+<td><code>textual X is too old for the TUI (need 1.0+) — using the inline REPL</code></td>
+</tr>
+<tr>
+<td>not a terminal / <code>OLLAMA_TUI_DISABLE</code></td>
+<td>the same warning, inline REPL</td>
+</tr>
+</tbody>
+</table>
 <p><code>OLLAMARUN_TUI_FULLSCREEN=1</code> runs the app on the alternate screen (the
-transcript disappears on exit instead of staying in the terminal), and
-<code>OLLAMA_TUI_DISABLE</code> keeps <code>--ui tui</code> on the inline REPL. The inline REPL is
-also the fallback whenever Textual is missing or the output is not a terminal.</p>
+transcript disappears on exit instead of staying in the terminal);
+<code>OLLAMA_TUI_DISABLE</code> keeps even <code>--ui tui</code> on the inline REPL. <code>--ui auto</code>
+picks the TUI when it is usable, the inline REPL otherwise.</p>
+<h2 id="why-it-is-deprecated">Why it is deprecated<a class="headerlink" href="#why-it-is-deprecated" title="Permanent link">&para;</a></h2>
+<p>The TUI reaches into the runtime in-process, which means two front ends to
+keep in sync and a UI that cannot be driven from outside the process. The
+<a href="../api/agent/turns/">agent API</a> already exposes everything it renders —
+turns, typed events, parked approvals, sessions — so the rewrite is a client
+against a stable surface, not new machinery.</p>
 
 
 

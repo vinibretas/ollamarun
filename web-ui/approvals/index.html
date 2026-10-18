@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#approvals" class="md-skip">
+        <a href="#approvals-planned" class="md-skip">
           Skip to content
         </a>
       
@@ -2749,6 +2749,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Approvals
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -2765,6 +2783,58 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-interaction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The interaction
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#policy-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Policy mode
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#timeouts-and-edge-cases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Timeouts and edge cases
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3370,6 +3440,47 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-interaction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The interaction
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#policy-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Policy mode
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#timeouts-and-edge-cases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Timeouts and edge cases
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3401,8 +3512,47 @@
   
 
 
-<h1 id="approvals">Approvals<a class="headerlink" href="#approvals" title="Permanent link">&para;</a></h1>
-<p><em>This page is not written yet.</em></p>
+<h1 id="approvals-planned">Approvals (planned)<a class="headerlink" href="#approvals-planned" title="Permanent link">&para;</a></h1>
+<blockquote>
+<p><strong>Planned, not built.</strong></p>
+</blockquote>
+<p>Approvals are the one place the web UI must interrupt the flow, so the plan
+here is deliberately close to the terminal's behaviour — same engine, same
+choices, same record.</p>
+<h2 id="the-interaction">The interaction<a class="headerlink" href="#the-interaction" title="Permanent link">&para;</a></h2>
+<ol>
+<li>The turn parks (<code>waiting_approval</code>) and the stream emits
+   <code>approval.required</code> carrying the call, the reason and <strong>suggested rules</strong>
+   — everything needed to decide, no round trip.</li>
+<li>The affected tool card in the transcript becomes a decision prompt with
+   buttons mirroring the CLI's numbered choices:
+   run once · remember exactly this call · one button per suggested rule ·
+   allow everything this turn · deny.</li>
+<li><code>POST /v1/agent/approvals/{id}</code> resolves it; the first decision wins
+   (duplicates <code>409</code>), and <code>approval.resolved</code> arrives on the stream for
+   every subscriber.</li>
+<li>The tool result is the next <code>tool.result</code> — a denial renders as a
+   not-run card, not an error.</li>
+</ol>
+<h2 id="policy-mode">Policy mode<a class="headerlink" href="#policy-mode" title="Permanent link">&para;</a></h2>
+<p>With <code>"approval": "policy"</code> (the default for non-interactive clients) there
+is nothing to click: allowlisted and rule-covered calls run, everything else
+is <strong>denied with a note</strong>. The planned UI will surface the note inline, so a
+denial is visible instead of looking like a model failure — the same way the
+terminal's result panel does it.</p>
+<h2 id="timeouts-and-edge-cases">Timeouts and edge cases<a class="headerlink" href="#timeouts-and-edge-cases" title="Permanent link">&para;</a></h2>
+<ul>
+<li>An unanswered approval denies after <code>serve_approval_timeout</code> (default
+  300 s), with the tool result saying so; the page can show a countdown from
+  the event's timestamp.</li>
+<li>Cancelling a turn or shutting the server resolves parked approvals as
+  cancelled — the UI must handle browsers that close mid-decision.</li>
+<li>Rules and remembered calls persist on the session, so the next turn's
+  stream simply stops emitting <code>approval.required</code> for covered calls.</li>
+</ul>
+<p>The engine itself — rule kinds, matching, the floor no rule covers — is
+documented once, for both front ends, in
+<a href="../../cli/tools/approvals/">Approvals and policy</a>.</p>
 
 
 

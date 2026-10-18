@@ -3360,6 +3360,36 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-planned-pages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The planned pages
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-it-changes-for-the-cli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it changes for the CLI
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3392,22 +3422,62 @@
 
 
 <h1 id="web-ui-planned">Web UI (planned)<a class="headerlink" href="#web-ui-planned" title="Permanent link">&para;</a></h1>
-<p>The main thing on the roadmap is a web interface on top of <code>ollamarun serve</code>
-as its backend. The native agent API already has the shape a browser client
-needs — submit a turn, follow its event stream, answer parked approvals,
-manage sessions and files — because that is the same loop the terminal drives.
-See the <a href="../api/agent/turns/">Agent API</a> for the surface it will build on.</p>
-<p>The planned client mirrors the terminal loop, so the pages here will follow
-the same features:</p>
+<blockquote>
+<p><strong>Planned, not built.</strong> This section describes the intended design so the
+API surface it depends on is documented in the same place. Nothing here
+runs today; the terminal harness and the <a href="../api/">API</a> do.</p>
+</blockquote>
+<p>The web interface is the main item on the roadmap: a browser client on top
+of <code>ollamarun serve</code>, speaking the <a href="../api/agent/turns/">native agent API</a>
+as its only backend. The API already has the shape a browser needs — submit
+a turn, follow its event stream, answer parked approvals, manage sessions
+and files — because that is the same loop the terminal drives in-process.
+Building the client on it is what makes it a <em>second front end</em> instead of a
+parallel implementation.</p>
+<p>Why this shape:</p>
 <ul>
-<li><a href="chat/">Chat</a> — submit a turn and stream the answer.</li>
-<li><a href="turns-and-events/">Turns and events</a> — the typed event stream.</li>
-<li><a href="approvals/">Approvals</a> — answer parked tool decisions.</li>
-<li><a href="sessions/">Sessions</a> — browse, resume and manage conversations.</li>
+<li><strong>One contract.</strong> The event stream, the approval protocol and the session
+  store are already typed and tested; a browser never learns anything the
+  API does not expose.</li>
+<li><strong>No in-process coupling.</strong> The <a href="../tui/">TUI</a> talks to the
+  runtime directly and is deprecated for exactly that reason. A web client
+  that can only see HTTP keeps the boundary honest.</li>
+<li><strong>Local-first.</strong> <code>ollamarun serve</code> binds to the LAN/tailnet by default and
+  has no authentication; the web UI inherits that trust model — it is a
+  client for your own machine, not a hosted service.</li>
 </ul>
-<p>The existing Textual <a href="../tui/">TUI</a> is deprecated in the same light:
-it will be rewritten as a pure client of that API instead of reaching into the
-runtime in-process, so every front end speaks one interface.</p>
+<h2 id="the-planned-pages">The planned pages<a class="headerlink" href="#the-planned-pages" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Page</th>
+<th>Backed by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="chat/">Chat</a></td>
+<td><code>POST /v1/agent/turns</code> + the <a href="../api/agent/events/">event stream</a></td>
+</tr>
+<tr>
+<td><a href="turns-and-events/">Turns and events</a></td>
+<td>the typed <code>turn.*</code>/<code>message.*</code>/<code>tool.*</code> events</td>
+</tr>
+<tr>
+<td><a href="approvals/">Approvals</a></td>
+<td><code>approval.required</code> / <code>POST /v1/agent/approvals/{id}</code></td>
+</tr>
+<tr>
+<td><a href="sessions/">Sessions</a></td>
+<td>the <code>/v1/sessions</code> routes and the shared store</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-changes-for-the-cli">What it changes for the CLI<a class="headerlink" href="#what-it-changes-for-the-cli" title="Permanent link">&para;</a></h2>
+<p>Nothing, by design: the API layer is additive, and the terminal keeps using
+the same runtime the API runs. The deprecation note on the TUI stands
+independently — that rewrite is about its own coupling, not a prerequisite
+for the web UI.</p>
 
 
 

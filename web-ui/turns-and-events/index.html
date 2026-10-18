@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#turns-and-events" class="md-skip">
+        <a href="#turns-and-events-planned" class="md-skip">
           Skip to content
         </a>
       
@@ -2721,6 +2721,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Turns and events
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -2737,6 +2755,58 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#rendering-the-stream" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rendering the stream
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#replay-gaps-and-reconnects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Replay, gaps and reconnects
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-a-typed-stream" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why a typed stream
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3370,6 +3440,47 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#rendering-the-stream" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rendering the stream
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#replay-gaps-and-reconnects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Replay, gaps and reconnects
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-a-typed-stream" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why a typed stream
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3401,8 +3512,75 @@
   
 
 
-<h1 id="turns-and-events">Turns and events<a class="headerlink" href="#turns-and-events" title="Permanent link">&para;</a></h1>
-<p><em>This page is not written yet.</em></p>
+<h1 id="turns-and-events-planned">Turns and events (planned)<a class="headerlink" href="#turns-and-events-planned" title="Permanent link">&para;</a></h1>
+<blockquote>
+<p><strong>Planned, not built.</strong></p>
+</blockquote>
+<p>The browser's transport is the <a href="../../api/agent/events/">typed event stream</a>;
+this page is the plan for what the UI does with it.</p>
+<h2 id="rendering-the-stream">Rendering the stream<a class="headerlink" href="#rendering-the-stream" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>Planned UI</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>turn.started</code></td>
+<td>Mark the turn pending; show <code>context.used/total</code> in a side gutter.</td>
+</tr>
+<tr>
+<td><code>message.delta</code></td>
+<td>Append to the active bubble (<code>channel: "content"</code>), or to a collapsible reasoning fold (<code>channel: "thinking"</code>).</td>
+</tr>
+<tr>
+<td><code>message.completed</code></td>
+<td>Freeze the round; a tool-calling round shows as intermediate.</td>
+</tr>
+<tr>
+<td><code>tool.call</code></td>
+<td>Open a card with the tool name and pretty-printed arguments.</td>
+</tr>
+<tr>
+<td><code>tool.result</code></td>
+<td>Fill the card in place, <code>ok</code>/failed, duration; link any artifact ids.</td>
+</tr>
+<tr>
+<td><code>approval.required</code></td>
+<td>Swap the card's footer for decision buttons — see <a href="../approvals/">Approvals</a>.</td>
+</tr>
+<tr>
+<td><code>artifact.created</code></td>
+<td>Attach the file to the conversation with a download link.</td>
+</tr>
+<tr>
+<td><code>turn.warning</code></td>
+<td>Inline notice (context pressure, missing tool support).</td>
+</tr>
+<tr>
+<td>Terminal events</td>
+<td>Settle the turn: completed, failed (with the stable error), cancelled.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="replay-gaps-and-reconnects">Replay, gaps and reconnects<a class="headerlink" href="#replay-gaps-and-reconnects" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>id: &lt;turn&gt;:&lt;seq&gt;</code> makes every frame resumable; the client persists the
+  last id and reconnects with <code>Last-Event-ID</code>.</li>
+<li><code>stream.gap</code> tells the page it fell behind the ring; the documented
+  recovery is the <a href="../../api/agent/turns/#the-snapshot">status snapshot</a>,
+  then a replay with <code>?after=</code>.</li>
+<li>The status snapshot doubles as the "reload the page" path: a turn that
+  finished while the tab was closed is fetched whole, and its full replay
+  (<code>?after=0</code>) rebuilds the transcript losslessly.</li>
+</ul>
+<h2 id="why-a-typed-stream">Why a typed stream<a class="headerlink" href="#why-a-typed-stream" title="Permanent link">&para;</a></h2>
+<p>A single SSE channel carries thinking, prose, tool calls, approvals and
+artifacts as distinct events with stable names, so the client never parses
+prose to decide what happened. That is also what makes an audit view
+possible later: the stream <em>is</em> the record, and the session store keeps it.</p>
 
 
 

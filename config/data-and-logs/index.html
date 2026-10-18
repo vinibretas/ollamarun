@@ -2928,6 +2928,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data and logs
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -2944,6 +2962,69 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-session-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The session store
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-debug-log" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The debug log
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#config-creation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Config creation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-is-not-stored" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is not stored
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3370,6 +3451,58 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-session-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The session store
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-debug-log" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The debug log
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#config-creation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Config creation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-is-not-stored" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is not stored
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3402,6 +3535,7 @@
 
 
 <h1 id="data-and-logs">Data and logs<a class="headerlink" href="#data-and-logs" title="Permanent link">&para;</a></h1>
+<p>Everything the harness persists lives under three roots:</p>
 <table>
 <thead>
 <tr>
@@ -3411,21 +3545,68 @@
 </thead>
 <tbody>
 <tr>
-<td><code>~/etc/data/ollamarun/sessions/</code>, <code>index.json</code>, <code>history</code></td>
-<td>Session store, index and prompt history</td>
+<td><code>~/etc/config_files/ollamarun.json</code></td>
+<td>The <a href="../file/">config</a>.</td>
+</tr>
+<tr>
+<td><code>~/etc/config_files/ollamarun-defs/{tools,prompts}/</code></td>
+<td>Per-user overrides for the model-facing text.</td>
+</tr>
+<tr>
+<td><code>~/etc/data/ollamarun/sessions/</code></td>
+<td>One JSON per conversation.</td>
+</tr>
+<tr>
+<td><code>~/etc/data/ollamarun/index.json</code> (+ <code>.lock</code>)</td>
+<td>The session index and its flock.</td>
+</tr>
+<tr>
+<td><code>~/etc/data/ollamarun/history</code></td>
+<td>Prompt input history (off with <code>OLLAMA_NOHISTORY</code>).</td>
+</tr>
+<tr>
+<td><code>~/etc/data/ollamarun/artifacts/</code></td>
+<td>The serve <a href="../../api/agent/artifacts/">artifact store</a>.</td>
+</tr>
+<tr>
+<td><code>~/etc/data/ollamarun/ctxfit-calibration.json</code></td>
+<td>Measured <a href="../../cli/context/probes/#calibration">context-fit samples</a>.</td>
 </tr>
 <tr>
 <td><code>~/etc/logs/ollamarun.log</code></td>
-<td>Debug log (<code>--debug</code>)</td>
+<td>The debug log (<code>--debug</code>).</td>
 </tr>
 </tbody>
 </table>
-<p>The store is documented in <a href="../../cli/sessions/storage/">Storage</a>; the debug
-log receives requests, upstream detail and tracebacks for <code>ollamarun serve</code>
-too. Artifacts live under <code>~/etc/data/ollamarun/artifacts/</code> — see
-<a href="../../api/agent/artifacts/">Artifacts</a>. Context-fit calibration is kept at
-<code>~/etc/data/ollamarun/ctxfit-calibration.json</code> — see
-<a href="../../cli/context/probes/">Probes and calibration</a>.</p>
+<h2 id="the-session-store">The session store<a class="headerlink" href="#the-session-store" title="Permanent link">&para;</a></h2>
+<p>One atomic JSON file per conversation; the index is a cache over them and
+<code>--reindex</code> rebuilds it. Deletes always go through <code>trash-put</code>, so a
+mistaken delete is recoverable — see
+<a href="../../cli/sessions/storage/">Storage</a>.</p>
+<h2 id="the-debug-log">The debug log<a class="headerlink" href="#the-debug-log" title="Permanent link">&para;</a></h2>
+<p><code>--debug</code> turns on request-level logging to <code>~/etc/logs/ollamarun.log</code> for
+both the CLI and <code>ollamarun serve</code> (which also sends its tracebacks there —
+clients never see them). A one-shot with <code>--debug</code> leaves a compact trail:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>2026-10-18 13:50:56,105 DEBUG ollamarun 2.0 starting
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>2026-10-18 13:50:56,108 DEBUG Starting new HTTP connection (1): 100.107.146.36:11434
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>2026-10-18 13:50:56,114 DEBUG http://100.107.146.36:11434 "POST /api/show HTTP/1.1" 200 None
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>2026-10-18 13:50:56,310 DEBUG http://100.107.146.36:11434 "POST /api/chat HTTP/1.1" 200 None
+</code></pre></div>
+<p>The log is append-only and grows; trim or rotate it yourself if it matters
+(nothing else reads it).</p>
+<h2 id="config-creation">Config creation<a class="headerlink" href="#config-creation" title="Permanent link">&para;</a></h2>
+<p>The config file is created from the defaults on first run; the session store
+and log directory are created on demand. Removing the config file just
+recreates it with defaults — sessions and artifacts are untouched (they live
+under <code>~/etc/data/</code>).</p>
+<h2 id="what-is-not-stored">What is not stored<a class="headerlink" href="#what-is-not-stored" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Nothing is sent anywhere except your Ollama server(s): the harness is
+  local-first, and <code>--remote</code> only retargets <em>which</em> machine receives the
+  inference.</li>
+<li>Prompts and images live in the session only per your <code>image_storage</code> /
+  <code>--no-save</code> choices; there is no telemetry.</li>
+</ul>
 
 
 

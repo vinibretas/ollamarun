@@ -2923,6 +2923,84 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#every-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Every key
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Every key">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#model-server-and-prompt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Model, server and prompt
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rendering-and-input" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rendering and input
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sessions-and-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sessions and files
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#runtime" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Runtime
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tools-and-speech" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tools and speech
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#context-fits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Context fits
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#serve-keys" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2930,6 +3008,11 @@
       
     </span>
   </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -3425,6 +3508,84 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#every-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Every key
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Every key">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#model-server-and-prompt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Model, server and prompt
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rendering-and-input" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rendering and input
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sessions-and-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sessions and files
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#runtime" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Runtime
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tools-and-speech" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tools and speech
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#context-fits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Context fits
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#serve-keys" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3432,6 +3593,11 @@
       
     </span>
   </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -3469,6 +3635,7 @@
 
 
 <h1 id="config-file">Config file<a class="headerlink" href="#config-file" title="Permanent link">&para;</a></h1>
+<p>One JSON file holds every persistent setting:</p>
 <table>
 <thead>
 <tr>
@@ -3479,24 +3646,313 @@
 <tbody>
 <tr>
 <td><code>~/etc/config_files/ollamarun.json</code></td>
-<td>Config (created from defaults on first run); <code>--config FILE</code> overrides</td>
+<td>The config (created from the defaults on first run); <code>--config FILE</code> uses another file instead.</td>
 </tr>
 <tr>
 <td><code>~/etc/config_files/ollamarun-defs/{tools,prompts}/</code></td>
-<td>Per-user tool/prompt overrides</td>
+<td>Per-user <a href="../prompts/#tool-wording">tool</a> and <a href="../prompts/">prompt</a> overrides.</td>
 </tr>
 </tbody>
 </table>
-<p>Selected config keys: <code>render</code>, <code>math</code>, <code>thinking</code>, <code>ui</code>, <code>show_stats</code>,
-<code>tps_footer</code>, <code>max_render_chars</code>, <code>pager</code>, <code>auto_title</code>, <code>auto_compact</code>,
-<code>image_storage</code>, <code>max_file_kb</code>, <code>options</code>, <code>unload_on_exit</code>, <code>gpu_layers</code>,
-<code>tools*</code>, <code>tool_colors</code>, <code>tts*</code>, <code>chem_*</code>, <code>remote*</code>, <code>max_gpu_*</code>,
-<code>max_cpu_*</code>, <code>timeout</code>, plus the <code>serve_*</code> matrix below. See <code>DEFAULT_CONFIG</code>
-in <code>ollamarun_lib/constants.py</code> for the full set.</p>
-<h2 id="serve-keys">Serve keys<a class="headerlink" href="#serve-keys" title="Permanent link">&para;</a></h2>
-<p><code>ollamarun serve</code> validates every <code>serve_*</code> key at startup: an invalid
-value names itself and exits 2, an omitted key uses the default, and a <code>0</code>
-means exactly what the row says.</p>
+<p>User values merge over the defaults key by key, so a config file only needs
+the keys you actually change (and <code>--config</code> demonstrates it: a file
+containing just <code>{"render": "raw", "keepalive": "2h", "show_stats": false}</code>
+made a one-shot print only <code>pong</code>).</p>
+<h2 id="every-key">Every key<a class="headerlink" href="#every-key" title="Permanent link">&para;</a></h2>
+<p>Defaults are <code>DEFAULT_CONFIG</code> in <code>ollamarun_lib/constants.py</code>. <code>null</code> means
+"not set" wherever a parameter is optional.</p>
+<h3 id="model-server-and-prompt">Model, server and prompt<a class="headerlink" href="#model-server-and-prompt" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>host</code></td>
+<td><code>null</code></td>
+<td>Ollama address; <code>OLLAMA_HOST</code> and <code>--host</code> override it, <code>--remote</code> wins outright.</td>
+</tr>
+<tr>
+<td><code>remote</code></td>
+<td><code>null</code></td>
+<td>A <code>--remote</code> NAME to make the default.</td>
+</tr>
+<tr>
+<td><code>remote_hosts</code></td>
+<td><code>{}</code></td>
+<td>Your own short names for tailnet machines.</td>
+</tr>
+<tr>
+<td><code>remote_ssh_user</code></td>
+<td><code>null</code></td>
+<td>ssh user for the remote probes (disk/GPU/RAM).</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td><code>null</code></td>
+<td>Default model, used when none is given.</td>
+</tr>
+<tr>
+<td><code>system</code></td>
+<td><code>null</code></td>
+<td>System prompt; <code>null</code> = built-in default, <code>""</code> = none, text = replaces.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="rendering-and-input">Rendering and input<a class="headerlink" href="#rendering-and-input" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>render</code></td>
+<td><code>"markdown"</code></td>
+<td><code>auto</code>/<code>markdown</code>/<code>plain</code>/<code>raw</code> — see <a href="../../cli/rendering/markdown/">Streaming markdown</a>.</td>
+</tr>
+<tr>
+<td><code>math</code></td>
+<td><code>true</code></td>
+<td>LaTeX → Unicode conversion.</td>
+</tr>
+<tr>
+<td><code>thinking</code></td>
+<td><code>"collapsed"</code></td>
+<td>Thinking display: <code>collapsed</code>/<code>expanded</code>/<code>hidden</code>.</td>
+</tr>
+<tr>
+<td><code>tps_footer</code></td>
+<td><code>true</code></td>
+<td>The live tok/s + ctx footer.</td>
+</tr>
+<tr>
+<td><code>show_stats</code></td>
+<td><code>true</code></td>
+<td>The <code>⏱</code> timings line (on a terminal; piped needs <code>--verbose</code>).</td>
+</tr>
+<tr>
+<td><code>pager</code></td>
+<td><code>false</code></td>
+<td>Buffer responses into <code>$PAGER</code>.</td>
+</tr>
+<tr>
+<td><code>max_render_chars</code></td>
+<td><code>12000</code></td>
+<td>Past this, the live view streams raw instead of re-rendering markdown.</td>
+</tr>
+<tr>
+<td><code>ui</code></td>
+<td><code>"inline"</code></td>
+<td><code>inline</code> (default) / <code>tui</code> (deprecated) / <code>auto</code>.</td>
+</tr>
+<tr>
+<td><code>nowordwrap</code> <em>(flag only)</em></td>
+<td>—</td>
+<td><code>--nowordwrap</code> disables wrapping; no config key.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="sessions-and-files">Sessions and files<a class="headerlink" href="#sessions-and-files" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>auto_title</code></td>
+<td><code>false</code></td>
+<td>Ask the model for a title after the first turn.</td>
+</tr>
+<tr>
+<td><code>auto_compact</code></td>
+<td><code>"ask"</code></td>
+<td><code>ask</code> = warn at 80% only; <code>auto</code> = also compact at 85%.</td>
+</tr>
+<tr>
+<td><code>max_file_kb</code></td>
+<td><code>256</code></td>
+<td><code>@file</code> mention size cap.</td>
+</tr>
+<tr>
+<td><code>image_storage</code></td>
+<td><code>"embed"</code></td>
+<td><code>embed</code> keeps image bytes in the session; other values keep the path for files over 8 MiB.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="runtime">Runtime<a class="headerlink" href="#runtime" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>options</code></td>
+<td><code>{}</code></td>
+<td>Default model options (<code>--option</code> maps here).</td>
+</tr>
+<tr>
+<td><code>think</code></td>
+<td><code>null</code></td>
+<td>Default thinking mode.</td>
+</tr>
+<tr>
+<td><code>keepalive</code></td>
+<td><code>null</code></td>
+<td>Default <code>keep_alive</code>.</td>
+</tr>
+<tr>
+<td><code>gpu_layers</code></td>
+<td><code>null</code></td>
+<td>Default placement spec.</td>
+</tr>
+<tr>
+<td><code>timeout</code></td>
+<td><code>600</code></td>
+<td>Request timeout, seconds.</td>
+</tr>
+<tr>
+<td><code>unload_on_exit</code></td>
+<td><code>true</code></td>
+<td>Unload the session model when the REPL exits.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="tools-and-speech">Tools and speech<a class="headerlink" href="#tools-and-speech" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tools</code></td>
+<td><code>true</code></td>
+<td>Offer the tool harness.</td>
+</tr>
+<tr>
+<td><code>tools_policy</code></td>
+<td><code>"allowlist"</code></td>
+<td><code>allowlist</code>/<code>ask</code>/<code>auto</code> — see <a href="../../cli/tools/approvals/">Approvals</a>.</td>
+</tr>
+<tr>
+<td><code>tools_shell_allow</code></td>
+<td><code>[]</code></td>
+<td>Extra commands for the shell allowlist.</td>
+</tr>
+<tr>
+<td><code>tools_timeout</code></td>
+<td><code>120</code></td>
+<td>Per-tool subprocess timeout.</td>
+</tr>
+<tr>
+<td><code>tools_max_output</code></td>
+<td><code>4000</code></td>
+<td>Chars of tool output that go back to the model.</td>
+</tr>
+<tr>
+<td><code>tools_max_rounds</code></td>
+<td><code>8</code></td>
+<td>Tool rounds per turn.</td>
+</tr>
+<tr>
+<td><code>tool_colors</code></td>
+<td><code>{}</code></td>
+<td>Per-tool panel colours, e.g. <code>{"run_shell": "green"}</code>.</td>
+</tr>
+<tr>
+<td><code>tts_auto</code>, <code>tts_voice</code>, <code>tts_lang</code></td>
+<td><code>false</code>, <code>null</code>, <code>null</code></td>
+<td>Auto-speak and its defaults.</td>
+</tr>
+<tr>
+<td><code>tts_remote</code></td>
+<td><code>"tts-remote"</code></td>
+<td>The speech CLI to invoke.</td>
+</tr>
+<tr>
+<td><code>tts_tools</code></td>
+<td><code>true</code></td>
+<td>Offer <code>speak</code>/<code>list_voices</code>.</td>
+</tr>
+<tr>
+<td><code>chem_inventory</code></td>
+<td><code>"chemInventoryAPI"</code></td>
+<td>The inventory CLI path.</td>
+</tr>
+<tr>
+<td><code>chem_tools</code></td>
+<td><code>true</code></td>
+<td>Offer the <code>chem_*</code> tools.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="context-fits">Context fits<a class="headerlink" href="#context-fits" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>max_gpu_margin_mb</code></td>
+<td><code>1024</code></td>
+<td>llama.cpp's fit margin, subtracted from free VRAM.</td>
+</tr>
+<tr>
+<td><code>max_gpu_overhead_mb</code></td>
+<td><code>0</code></td>
+<td>Extra GPU reserve beyond the margin.</td>
+</tr>
+<tr>
+<td><code>max_gpu_probes</code></td>
+<td><code>10</code></td>
+<td>Load attempts a <code>--probe</code> may spend.</td>
+</tr>
+<tr>
+<td><code>max_cpu_overhead_mb</code></td>
+<td><code>256</code></td>
+<td>Host-RAM allowance beyond weights + KV.</td>
+</tr>
+<tr>
+<td><code>max_cpu_probes</code></td>
+<td><code>10</code></td>
+<td>CPU probe attempts.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="serve-keys">Serve keys<a class="headerlink" href="#serve-keys" title="Permanent link">&para;</a></h3>
+<p><code>ollamarun serve</code> <strong>validates</strong> every <code>serve_*</code> key at startup: an invalid
+value names itself and exits 2 —</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span>ollamarun<span class="w"> </span>serve<span class="w"> </span>--config<span class="w"> </span>bad.json<span class="w">      </span><span class="c1"># {"serve_port": 999999}</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="go">serve_port must be &lt;= 65535</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="gp">$ </span><span class="nb">echo</span><span class="w"> </span><span class="nv">$?</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="go">2</span>
+</code></pre></div>
+<p>— an omitted (<code>null</code>) key uses the default, and a <code>0</code> means exactly what the
+row says.</p>
 <table>
 <thead>
 <tr>
@@ -3519,7 +3975,7 @@ means exactly what the row says.</p>
 <tr>
 <td><code>serve_models</code></td>
 <td><code>[]</code></td>
-<td>allowlist names/globs; empty = every model</td>
+<td>names/globs; empty = every model</td>
 </tr>
 <tr>
 <td><code>serve_workspace</code></td>
@@ -3643,6 +4099,9 @@ means exactly what the row says.</p>
 </tr>
 </tbody>
 </table>
+<p>What those boundaries mean in practice is on
+<a href="../../api/security/">Security and limits</a>, the fits on
+<a href="../../api/agent/fits/">Context fits</a>.</p>
 
 
 

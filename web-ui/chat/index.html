@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#chat" class="md-skip">
+        <a href="#chat-planned" class="md-skip">
           Skip to content
         </a>
       
@@ -2693,6 +2693,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chat
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -2709,6 +2727,47 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-shape-it-will-follow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The shape it will follow
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#choices-already-made-for-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choices already made for it
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3370,6 +3429,36 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-shape-it-will-follow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The shape it will follow
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#choices-already-made-for-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choices already made for it
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3401,8 +3490,43 @@
   
 
 
-<h1 id="chat">Chat<a class="headerlink" href="#chat" title="Permanent link">&para;</a></h1>
-<p><em>This page is not written yet.</em></p>
+<h1 id="chat-planned">Chat (planned)<a class="headerlink" href="#chat-planned" title="Permanent link">&para;</a></h1>
+<blockquote>
+<p><strong>Planned, not built.</strong></p>
+</blockquote>
+<p>The chat page is the terminal loop in a browser: type a message, submit a
+turn, watch it stream back, and keep going in the same session.</p>
+<h2 id="the-shape-it-will-follow">The shape it will follow<a class="headerlink" href="#the-shape-it-will-follow" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Submit</strong> — <code>POST /v1/agent/turns</code> with the message (and a <code>session_id</code>
+   once one exists). The <code>202</code> returns the turn id and URLs immediately.</li>
+<li><strong>Follow</strong> — <code>GET /v1/agent/turns/{id}/events</code> feeds the transcript:
+   <code>message.delta</code> chunks append text as they arrive, <code>tool.call</code> /
+   <code>tool.result</code> render inline cards, and the terminal event closes the
+   pending bubble.</li>
+<li><strong>Reconnect</strong> — an <code>EventSource</code>-style client reconnects with
+   <code>Last-Event-ID</code>; the <a href="../../api/agent/turns/#the-snapshot">status snapshot</a>
+   is the recovery path for anything longer than the event ring.</li>
+<li><strong>Stop</strong> — a cancel button is <code>POST .../cancel</code>; the stream ends in
+   <code>turn.cancelled</code> and the partial answer stays on the session.</li>
+<li><strong>Continue</strong> — the next message reuses the session; the server keeps the
+   history, so the client never has to.</li>
+</ol>
+<h2 id="choices-already-made-for-it">Choices already made for it<a class="headerlink" href="#choices-already-made-for-it" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Thinking models</strong> surface reasoning on <code>message.delta</code> with <code>channel:
+  "thinking"</code>; the UI can collapse it exactly like the terminal's
+  <a href="../../cli/rendering/thinking/">thinking panel</a>.</li>
+<li><strong>Tool output</strong> is a first-class event, not a transcript string — a card
+  can show arguments, status, duration and artifacts without parsing text.</li>
+<li><strong>Disconnects</strong> are configurable per turn (<code>cancel_on_disconnect</code>), so a
+  page closing a tab can either stop the turn or let it finish server-side.</li>
+<li><strong>Markdown and math</strong> render client-side; the server always sends the raw
+  text (the terminal's 2D math engine is a CLI presentation detail, not part
+  of the protocol).</li>
+</ul>
+<p>See <a href="../../api/agent/turns/">Turns</a> and
+<a href="../../api/agent/events/">Event stream</a> for the exact shapes.</p>
 
 
 

@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#sessions" class="md-skip">
+        <a href="#sessions-planned" class="md-skip">
           Skip to content
         </a>
       
@@ -2777,6 +2777,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sessions
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -2793,6 +2811,47 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-routes-it-will-use" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The routes it will use
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#behaviours-it-inherits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Behaviours it inherits
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3370,6 +3429,36 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-routes-it-will-use" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The routes it will use
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#behaviours-it-inherits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Behaviours it inherits
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3401,8 +3490,66 @@
   
 
 
-<h1 id="sessions">Sessions<a class="headerlink" href="#sessions" title="Permanent link">&para;</a></h1>
-<p><em>This page is not written yet.</em></p>
+<h1 id="sessions-planned">Sessions (planned)<a class="headerlink" href="#sessions-planned" title="Permanent link">&para;</a></h1>
+<blockquote>
+<p><strong>Planned, not built.</strong></p>
+</blockquote>
+<p>The web UI's session list is the <a href="../../cli/sessions/storage/">storage</a> view
+over HTTP — the same files the CLI writes, served by the same routes.</p>
+<h2 id="the-routes-it-will-use">The routes it will use<a class="headerlink" href="#the-routes-it-will-use" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Route</th>
+<th>Planned use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /v1/sessions</code></td>
+<td>The sidebar list: title, model, updated time, tags, message counts.</td>
+</tr>
+<tr>
+<td><code>POST /v1/sessions</code></td>
+<td>"New chat": create up front (title, model, tags) before the first turn.</td>
+</tr>
+<tr>
+<td><code>GET /v1/sessions/{id}</code></td>
+<td>Open a session: summary + <code>history</code> + stats + settings, without replaying turns.</td>
+</tr>
+<tr>
+<td><code>PATCH /v1/sessions/{id}</code></td>
+<td>Rename, retag, switch model, or set <code>num_ctx</code>/<code>gpu_layers</code> per the form.</td>
+</tr>
+<tr>
+<td><code>DELETE /v1/sessions/{id}</code></td>
+<td>Trash a session (recoverable, <code>trash-put</code> underneath).</td>
+</tr>
+<tr>
+<td><code>GET /v1/agent/turns/{id}/events?after=0</code></td>
+<td>Replay a stored turn's transcript when opening recent sessions.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="behaviours-it-inherits">Behaviours it inherits<a class="headerlink" href="#behaviours-it-inherits" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Busy sessions</strong> — a session with an active turn or fit refuses edits and
+  deletes with <code>409 session_busy</code>; the UI should disable those controls and
+  say why, the same way the CLI refuses.</li>
+<li><strong>First-class context</strong> — <code>num_ctx</code> and <code>gpu_layers</code> are editable session
+  fields; a placement change unloads the resident model server-side, so the
+  form can save and the next turn reloads correctly.</li>
+<li><strong>Artifacts are not cascade-deleted</strong> — deleting a session keeps its
+  files until the artifact TTL expires, so a "deleted" link may still
+  resolve for a while; the UI should say so rather than 404 silently.</li>
+<li><strong>The store is shared</strong> — the CLI, the TUI and the web UI read and write
+  the same files, and the index is locked against concurrent writers. A
+  session started in the terminal appears in the browser untouched.</li>
+</ul>
+<p>See <a href="../../api/agent/sessions/">Sessions API</a> for the exact fields and
+<a href="../../cli/sessions/search-export/">Search and export</a> for what the CLI
+offers on the same data (a future web search/filter would mirror
+<code>--search</code>).</p>
 
 
 

@@ -2900,6 +2900,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Prompts
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -2916,6 +2934,58 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-system-prompt-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The system prompt contract
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tool-wording" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tool wording
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#editing-tips" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Editing tips
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -3370,6 +3440,47 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-system-prompt-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The system prompt contract
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tool-wording" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tool wording
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#editing-tips" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Editing tips
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -3402,23 +3513,125 @@
 
 
 <h1 id="prompts">Prompts<a class="headerlink" href="#prompts" title="Permanent link">&para;</a></h1>
-<p>The model-facing text lives in files, not code:</p>
-<ul>
-<li><code>ollamarun_lib/defs/prompts/</code> — <code>system.md</code> (the built-in default system
-  prompt), <code>system_tools.md</code> (the tool, web-search, math-in-code and
-  tool-result rules, appended when tools are on), <code>title.md</code> and
-  <code>summarize.md</code> (both take the text to wrap as <code>{{content}}</code>).</li>
-</ul>
-<p>A same-named file under <code>~/etc/config_files/ollamarun-defs/prompts/</code> overrides
-the shipped one, so prompts can be tuned without touching Python.</p>
-<p>Every request carries a system prompt: the session's own (<code>--system</code>,
-<code>--system-file</code>, config <code>system</code>, <code>/system TEXT</code>) when set, the built-in
-default otherwise. <code>--no-system</code> / config <code>system: ""</code> / <code>/system off</code> send
-none, <code>/system clear</code> returns to the default, and <code>/system</code> alone shows what
-is in effect. It is sent as a leading system message and never enters the
-saved history.</p>
-<p>Tool wording is the other half of the model-facing text — see
+<p>The text sent to the model as system prompts and the text used to ask it for
+titles and summaries are files, not code:</p>
+<table>
+<thead>
+<tr>
+<th>File (<code>ollamarun_lib/defs/prompts/</code>)</th>
+<th>Used for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>system.md</code></td>
+<td>The built-in default system prompt.</td>
+</tr>
+<tr>
+<td><code>system_tools.md</code></td>
+<td>Tool, web-search, math-in-code and tool-result rules, appended when tools are on.</td>
+</tr>
+<tr>
+<td><code>title.md</code></td>
+<td><code>--auto-title</code> / <code>/title --auto</code> — wraps the conversation as <code>{{content}}</code>.</td>
+</tr>
+<tr>
+<td><code>summarize.md</code></td>
+<td><code>/summarize</code> and auto-compaction — wraps the transcript as <code>{{content}}</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>A same-named file under <code>~/etc/config_files/ollamarun-defs/prompts/</code>
+overrides the shipped one, so prompts are tunable without touching Python.
+Missing or unreadable files warn and the prompt reads as none — a bad edit
+never breaks the harness.</p>
+<h2 id="the-system-prompt-contract">The system prompt contract<a class="headerlink" href="#the-system-prompt-contract" title="Permanent link">&para;</a></h2>
+<p>Every request carries a leading <code>system</code> message built from the session:</p>
+<table>
+<thead>
+<tr>
+<th>Session <code>system</code></th>
+<th>What is sent</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>null</code> (unset)</td>
+<td>The built-in default — <code>system.md</code>, plus <code>system_tools.md</code> when tools are on.</td>
+</tr>
+<tr>
+<td><code>""</code> (empty)</td>
+<td>Nothing; no system prompt at all.</td>
+</tr>
+<tr>
+<td>text</td>
+<td>Exactly that text.</td>
+</tr>
+</tbody>
+</table>
+<p>It is assembled at request time and deliberately <strong>not</strong> stored in
+<code>session.messages</code>, so <code>/system</code> changes land on the next request and
+exports keep the history clean.</p>
+<p>Ways in and out, all sharing that one contract:</p>
+<table>
+<thead>
+<tr>
+<th>Where</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--system TEXT</code> / <code>--system-file FILE</code></td>
+<td>Set it for a run.</td>
+</tr>
+<tr>
+<td><code>--no-system</code>, config <code>system: ""</code></td>
+<td>Disable it.</td>
+</tr>
+<tr>
+<td><code>/system</code></td>
+<td>Show what is in effect (panel, labelled with its source).</td>
+</tr>
+<tr>
+<td><code>/system TEXT</code></td>
+<td>Set it (<code>system prompt set</code>).</td>
+</tr>
+<tr>
+<td><code>/system off</code></td>
+<td>Disable it (<code>system prompt disabled</code>).</td>
+</tr>
+<tr>
+<td><code>/system clear</code> / <code>/system default</code></td>
+<td>Back to the built-in default (<code>system prompt reset to the built-in default</code>).</td>
+</tr>
+<tr>
+<td><code>/set system TEXT</code></td>
+<td>Same as <code>/system TEXT</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>An override in place is visible in the banner
+(<code>system prompt: &lt;text&gt;</code>) and takes effect with no code change — verified by
+dropping a <code>system.md</code> containing <em>"You are a terse assistant. Answer in at
+most three words."</em> into the override directory: the next run answered
+<code>Endless blue waters.</code> to "Describe the ocean.".</p>
+<h2 id="tool-wording">Tool wording<a class="headerlink" href="#tool-wording" title="Permanent link">&para;</a></h2>
+<p>The other half of the model-facing text is per-tool: descriptions,
+parameter docs, safety flags and aliases in
+<code>ollamarun_lib/defs/tools/*.json</code>, with the same override directory — see
 <a href="../../cli/tools/definitions/">Tool definitions</a>.</p>
+<h2 id="editing-tips">Editing tips<a class="headerlink" href="#editing-tips" title="Permanent link">&para;</a></h2>
+<ul>
+<li>The defaults are deliberately short; the tool rules in <code>system_tools.md</code>
+  are what keep models on rails (compute with <code>run_python</code>, search again
+  instead of giving up, report tool results honestly). If you replace them,
+  keep those three.</li>
+<li><code>{{content}}</code> is the only placeholder; both title and summarize prompts
+  use it exactly once.</li>
+<li>The files are read once per process and cached, so a running REPL keeps
+  its prompts — restart to pick up edits.</li>
+</ul>
 
 
 
