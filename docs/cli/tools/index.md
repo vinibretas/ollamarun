@@ -31,6 +31,11 @@ search off` disables `web_search`, and a call to `curl` or `mkdir` resolves
 onto the real tool before the registry is searched. `/tools NAME help` lists
 a tool's aliases.
 
+With a response format set (`--format`), the harness steps aside entirely:
+the request carries no schemas **and** the system prompt drops the tool
+rules, so the model is never told about tools it cannot call. `/tools` shows
+each tool as `off` and says why, and `session_info` reports tools off.
+
 ## The four ways a call is handled
 
 1. **Auto** — read-only tools (`read_file`, `list_dir`, …) and the

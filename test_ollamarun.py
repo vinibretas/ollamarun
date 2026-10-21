@@ -7465,6 +7465,93 @@ def test_tool_payloads() -> int:
     return failures
 
 
+def test_format_tools_veto() -> int:
+    """A response format steps the whole harness aside, not just the schemas."""
+    failures = 0
+    repl, _client, _tmp = _test_repl()
+    repl.tools_enabled = True
+    base_system = orun.default_system_prompt(with_tools=False) or ""
+    tools_system = orun.default_system_prompt(with_tools=True) or ""
+    failures = _check(failures, "tools on: the tool rules ride the system prompt",
+                      repl.tools_active()
+                      and "Web search" in tools_system
+                      and repl.effective_system() == tools_system)
+
+    repl.session.format = "json"  # what --format (or a resumed session) sets
+    failures = _check(failures, "a format vetoes the active tools",
+                      repl.tools_active() is False
+                      and repl.active_tool_schemas() == [],
+                      str(repl.active_tool_schemas()))
+    failures = _check(failures, "a format drops the tool rules from the system prompt",
+                      repl.effective_system() == base_system
+                      and "run_python" not in (repl.effective_system() or ""),
+                      (repl.effective_system() or "")[:160])
+    failures = _check(failures, "the runtime sees tools off under a format",
+                      repl._turn_hooks().settings.tools_enabled() is False)
+    failures = _check(failures, "session_info reports tools off under a format",
+                      repl.session_report()["tools"]["enabled"] is False)
+    failures = _check(failures, "the status bar shows tools off under a format",
+                      repl.status_snapshot().tools == "off",
+                      repl.status_snapshot().tools)
+
+    with orun.console.capture() as cap:
+        payload = repl._payload(repl.session.message_payloads(with_tools=True),
+                                with_tools=True)
+    out = _plain(cap.get())
+    failures = _check(failures, "a format leaves the tools key out",
+                      "tools" not in payload and payload.get("format") == "json",
+                      json.dumps(payload)[:200])
+    failures = _check(failures, "a format leaves the base system message",
+                      payload["messages"][0]["role"] == "system"
+                      and payload["messages"][0]["content"] == base_system,
+                      str(payload["messages"][0])[:160])
+    failures = _check(failures, "the format/tools notice prints once",
+                      "cannot be combined" in out, out)
+    with orun.console.capture() as cap:
+        repl._payload(repl.session.message_payloads(with_tools=True), with_tools=True)
+    failures = _check(failures, "the format/tools notice does not repeat",
+                      "cannot be combined" not in _plain(cap.get()))
+
+    repl._format_tools_warned = False
+    repl.args.json = True
+    with orun.console.capture() as cap:
+        repl._payload(repl.session.message_payloads(with_tools=True), with_tools=True)
+    failures = _check(failures, "--json output stays free of the notice",
+                      "cannot be combined" not in _plain(cap.get()))
+    repl.args.json = False
+    repl._format_tools_warned = True
+
+    with orun.console.capture() as cap:
+        orun.cmd_tools(repl, "")
+    out = _plain(cap.get())
+    failures = _check(failures, "/tools shows every tool off and says why",
+                      "run_shell" in out and "off" in out
+                      and "a response format is set" in out, out)
+    with orun.console.capture() as cap:
+        orun.cmd_tools(repl, "on")
+    out = _plain(cap.get())
+    failures = _check(failures, "/tools on explains the format wins",
+                      "tools on" in out and "a response format is set" in out, out)
+    with orun.console.capture() as cap:
+        orun.cmd_tools(repl, "run_shell")
+    failures = _check(failures, "the per-tool page shows off (format)",
+                      "off (format)" in _plain(cap.get()))
+    with orun.console.capture():
+        orun.cmd_tools(repl, "enable run_shell")
+    failures = _check(failures, "a per-tool enable notes the format veto",
+                      repl._turn_hooks().settings.tools_enabled() is False)
+
+    repl.session.format = None
+    failures = _check(failures, "clearing the format restores the harness",
+                      repl.tools_active()
+                      and repl.active_tool_schemas() != []
+                      and repl.effective_system() == tools_system
+                      and repl.session_report()["tools"]["enabled"] is True
+                      and repl.status_snapshot().tools == "allowlist"
+                      and repl._turn_hooks().settings.tools_enabled() is True)
+    return failures
+
+
 def test_tool_cli_flags() -> int:
     failures = 0
     parser = orun.build_parser()
@@ -7900,7 +7987,7 @@ if __name__ == "__main__":
              + test_environment_tools()
              + test_tool_loop() + test_tool_loop_separation()
              + test_tool_commands() + test_approval_rules()
-             + test_tool_payloads() + test_tool_cli_flags()
+             + test_tool_payloads() + test_format_tools_veto() + test_tool_cli_flags()
              + test_tts_tools() + test_speech_hosts_note()
              + test_tts_command() + test_tts_auto_speak()
              + test_client_http() + test_cmd_image()

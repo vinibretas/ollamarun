@@ -138,7 +138,7 @@ plus:
 | --- | --- |
 | `--dimensions int` | Truncate output embeddings to this dimension (embedding models). |
 | `--truncate [bool]` | For embedding models: truncate inputs over the context window (default `true`; `--truncate=false` errors instead). |
-| `--format string` | Response format — `json`, or an inline JSON schema (Ollama's `format`). With a format set, the tool harness steps aside. |
+| `--format string` | Response format — `json`, or an inline JSON schema (Ollama's `format`). With a format set the harness steps aside completely: no tool schemas, and the tool rules are left out of the system prompt. |
 | `--insecure` | Skip TLS verification (HTTPS hosts). |
 
 ## Environment

@@ -74,9 +74,6 @@ def _run_once_json(args: argparse.Namespace, client: OllamaClient, store: Sessio
 
     hooks = repl._turn_hooks(presenter=present_once, allow_prompt=False,
                              quiet_tools=True)
-    # `--json --format json` never sends tools (the format wins), exactly as
-    # the hand-written loop this replaced did.
-    hooks.settings.tools_enabled = lambda: repl.tools_enabled and not session.format
     result = AgentRuntime(hooks).run()
     if result.error:
         console.print(f"[err]{escape(str(result.error))}[/err]")

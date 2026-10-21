@@ -424,6 +424,11 @@ a module's own docstring for what lives there before editing:
    text when set, the built-in default otherwise, None when disabled (empty
    string) — deliberately *not* stored in `session.messages`, so `/system`
    changes land on the next request and exports keep the history clean.
+   `Repl.tools_active()` is the one "does this request carry tools" answer
+   (the `tools_enabled` toggle vetoed by a session `format`), and everything
+   reads it — the system prompt's tool rules, the payload, `_turn_hooks`'s
+   runtime settings, `/tools` and `session_info` — so `--format` cannot leave
+   the harness looking on while it steps aside.
    `Repl.context_length()` is the one effective-window resolver behind the
    footer/status-bar ctx counter, `/context` and the 80%/85% warnings: a
    session `num_ctx` first, then the loaded runner's `/api/ps`

@@ -716,25 +716,38 @@ class Repl:
     def gpu_layers_summary(self) -> str:
         return gpu_layers_label(self.session.gpu_layers, self._model_block_count())
 
+    def tools_active(self) -> bool:
+        """Whether requests actually carry tools.
+
+        The toggle (`--tools`/`/tools on`, config `tools`) is the intent; a
+        response format (`--format`, restored with a resumed session) vetoes
+        it, because Ollama's function calling and a forced output shape do not
+        combine. Every reader -- the system prompt, the payload, the runtime
+        settings, `/tools`, `session_info` -- goes through this one predicate
+        so the harness can never look on while it is stepping aside.
+        """
+        return bool(self.tools_enabled and not self.session.format)
+
     def effective_system(self) -> Optional[str]:
         """What chat requests carry: the session's text when set, the built-in
         default otherwise (composed for the current tool state), or None when
         the session disabled system prompts with an empty string."""
         if self.session.system is not None:
             return self.session.system or None
-        return default_system_prompt(with_tools=self.tools_enabled)
+        return default_system_prompt(with_tools=self.tools_active())
 
     def _payload(self, messages: list[dict[str, Any]], *, stream: bool = True,
                  with_tools: Optional[bool] = None) -> dict[str, Any]:
         if with_tools is None:
-            with_tools = self.tools_enabled
-        tools = None
-        if with_tools and self.session.format:
-            if not self._format_tools_warned:
+            with_tools = self.tools_active()
+        if self.tools_enabled and self.session.format:
+            if (not self._format_tools_warned and not self.headless
+                    and not getattr(self.args, "json", False)):
                 self._format_tools_warned = True
                 console.print("[warn]--format and tools cannot be combined; tools "
                               "disabled for this session[/warn]")
             with_tools = False
+        tools = None
         if with_tools:
             tools = build_tool_schemas(self.tool_registry,
                                        set(self.session.tools_disabled)) or None
@@ -747,7 +760,7 @@ class Repl:
     # ── tool harness ────────────────────────────────────────────────────────
 
     def active_tool_schemas(self) -> list[dict[str, Any]]:
-        if not self.tools_enabled:
+        if not self.tools_active():
             return []
         return build_tool_schemas(self.tool_registry, set(self.session.tools_disabled))
 
@@ -920,7 +933,7 @@ class Repl:
             keepalive=self.session.keepalive or getattr(self.args, "keepalive", None),
             gpu_layers=self.gpu_layers_summary(),
             thinking=self.thinking_mode, render=self.render_mode,
-            tools_enabled=self.tools_enabled, auto_approve=self.auto_approve,
+            tools_enabled=self.tools_active(), auto_approve=self.auto_approve,
             tools_policy=self.tools_policy, tool_round=self._tool_round,
             tools_max_rounds=self.tools_max_rounds)
 
@@ -938,7 +951,7 @@ class Repl:
         return used + renderer.estimator.tokens
 
     def status_snapshot(self) -> StatusSnapshot:
-        tools = "off" if not self.tools_enabled else (
+        tools = "off" if not self.tools_active() else (
             "auto" if self.auto_approve else self.tools_policy)
         return StatusSnapshot(
             state=self.state,
@@ -1062,7 +1075,7 @@ class Repl:
             timeout=self.timeout,
             allow_prompt=allow_prompt,
             quiet_tools=quiet,
-            tools_enabled=lambda: self.tools_enabled,
+            tools_enabled=lambda: self.tools_active(),
             tools_max_rounds=lambda: self.tools_max_rounds,
         )
         return TurnHooks(
@@ -1632,9 +1645,22 @@ def _tool_state(repl: Repl, spec: Optional[ToolSpec],
         return f"[err]not installed[/err] — needs {missing}"
     if not repl.tools_enabled:
         return "[dim]harness off[/dim]"
+    if repl.session.format:
+        return "[dim]off (format)[/dim]"
     if spec.name in repl.session.tools_disabled:
         return "[warn]disabled for the model[/warn]"
     return "[ok]on[/ok]"
+
+
+def _tools_off_note(repl: Repl) -> Optional[str]:
+    """Why the harness is not carrying tools, or None when it is."""
+    if not repl.tools_enabled:
+        return ("[dim]note: the tool harness is off globally — /tools on to "
+                "bring it back[/dim]")
+    if repl.session.format:
+        return ("[dim]note: a response format is set — tool calls are not sent; "
+                "start a session without --format to use tools[/dim]")
+    return None
 
 
 def _tool_approval_line(spec: ToolSpec) -> str:
@@ -1811,9 +1837,9 @@ def _cmd_tools_named(repl: Repl, name: str, parts: list[str]) -> None:
         on = action in {"on", "enable"}
         _apply_tool_toggle(repl, spec.name, on)
         console.print(f"[ok]{escape(spec.name)} {'on' if on else 'off'}[/ok]")
-        if not repl.tools_enabled:
-            console.print("[dim]note: the tool harness is off globally — "
-                          "/tools on to bring it back[/dim]")
+        note = _tools_off_note(repl)
+        if note:
+            console.print(note)
         return
     if action == "call":
         if spec is None:
@@ -1849,7 +1875,7 @@ def cmd_tools(repl: Repl, argument: str) -> None:
         disabled = set(repl.session.tools_disabled)
         for name in sorted(repl.tool_registry):
             spec = repl.tool_registry[name]
-            if not repl.tools_enabled:
+            if not repl.tools_active():
                 state = "[dim]off[/dim]"
             elif name in disabled:
                 state = "[warn]disabled[/warn]"
@@ -1872,6 +1898,9 @@ def cmd_tools(repl: Repl, argument: str) -> None:
                       f"{repl.tools_max_rounds} · [key]timeout[/key] "
                       f"{repl.tool_ctx.timeout:.0f}s · [key]output cap[/key] "
                       f"{repl.tool_ctx.max_output} chars")
+        note = _tools_off_note(repl)
+        if note:
+            console.print(note)
         console.print("[dim]/tools NAME help shows one tool's parameters · "
                       "/tools help explains every form[/dim]")
         return
@@ -1884,6 +1913,9 @@ def cmd_tools(repl: Repl, argument: str) -> None:
     if topic == "on":
         repl.tools_enabled = True
         console.print("[ok]tools on[/ok]")
+        note = _tools_off_note(repl)
+        if note:
+            console.print(note)
         return
     if topic == "off":
         repl.tools_enabled = False
@@ -1914,8 +1946,9 @@ def cmd_tools(repl: Repl, argument: str) -> None:
                       + (", ".join(sorted(set(repl.tool_registry)
                                          - set(repl.session.tools_disabled)))
                          or "[dim]none[/dim]"))
-        if not repl.tools_enabled:
-            console.print("[dim]note: the tool harness is off globally — /tools on[/dim]")
+        note = _tools_off_note(repl)
+        if note:
+            console.print(note)
         return
     if topic == "allow":
         console.print("safe shell commands: " + ", ".join(sorted(repl.shell_allow)))

@@ -164,6 +164,9 @@ and the `speak` tool's box names where the voice is generated and where it
 will be heard (`gpu-box → desk`, `(cached)` for a phrase served from disk).
 Invented tool names (`search`, `curl`, `mkdir`, ...) and call-id-prefixed ones
 (`call_fetch_url`) resolve onto the real tools through per-tool alias lists.
+With a response format set (`--format`), the harness steps aside completely:
+no tool schemas are sent and the tool rules leave the system prompt too, so
+the model never sees a mention of a tool it cannot call.
 
 A few tools are wired to my own side projects: `speak`/`list_voices` drive
 `tts-remote` and the `chem_*` lookups go through `chemInventoryAPI`. They are
