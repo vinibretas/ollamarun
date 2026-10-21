@@ -25,17 +25,27 @@ going in the background
 ```
 
 A second `Ctrl+C` inside those 10 seconds closes the terminal and prints the
-reattach command:
+reattach command; the first press also names the two direct keys:
 
 ```text
+still running — press Ctrl+C again within 10s to detach; the session keeps
+going in the background
+Ctrl+D terminates the session · Ctrl+Q stops the current generation
 detached · the session keeps running · reattach with `ollamarun -c 20261021-074254-e164`
 ```
 
-The turn keeps streaming in the host. Nothing is cancelled and the response is
-saved when it finishes. At an idle prompt `Ctrl+C` keeps its old job: it
-clears the input line. `Ctrl+D` and `/bye` are the explicit **close** actions —
-they stop the turn and shut the host down (unloading the model per
-`unload_on_exit`).
+The Ctrl+Q part is shown only while a response is actually streaming (a
+command such as `/pull` has nothing to generate). **Ctrl+Q stops the current
+generation** and stays attached: the whole turn is cancelled — the model
+stream, a running tool or a parked approval — it is recorded as cancelled,
+and the prompt returns. **Ctrl+D terminates the session** from the prompt, and
+in the background client it also closes immediately while a response streams;
+`/bye` does the same. Both stop the turn and shut the host down (unloading
+the model per `unload_on_exit`). At an idle prompt Ctrl+Q does nothing, and
+Ctrl+C keeps its old job: it clears the input line.
+
+The turn keeps streaming in the host after a detach. Nothing is cancelled and
+the response is saved when it finishes.
 
 ## Reattaching
 

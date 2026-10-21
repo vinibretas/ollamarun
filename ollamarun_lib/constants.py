@@ -124,7 +124,7 @@ except ImportError:  # pragma: no cover - fallback path
     TEXTUAL_VERSION = ""
     TextualApp = None
 
-VERSION = "2.9"
+VERSION = "2.10"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -408,6 +408,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 THINKING_MODES = {"collapsed", "expanded", "hidden"}
 UI_MODES = {"inline", "tui", "auto"}
+CTRL_D = 0x04
+CTRL_Q = 0x11
 CTRL_T = 0x14
 
 EMBED_MODEL_HINTS = {"bert", "nomic-embed", "mxbai-embed", "all-minilm", "snowflake-arctic-embed"}

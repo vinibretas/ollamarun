@@ -491,7 +491,10 @@ a module's own docstring for what lives there before editing:
    `OutputRouter` (raw ANSI `output` messages plus a bounded replay buffer)
    and runs turns through `TurnManager` with a `_Coalescer` so a reattaching
    client can replay a running turn. It parks approvals/questions in
-   `pending_prompt`/`pending_question`, keeps an `unseen_turn` for a turn
+   `pending_prompt`/`pending_question`; `cancel_active_turn()` answers the
+   client's Ctrl+Q `cancel` op (TurnManager cancel plus a parked approval
+   resolved as a stop, with `question_cancelled` telling the client to drop
+   the prompt). It keeps an `unseen_turn` for a turn
    that finished with no terminal attached, rekeys the socket when
    `/clear`/`/new`/`/branch`/`/load` changes the session id, and applies
    launch overrides only while idle. `LineConnection` is the JSONL framing;
@@ -506,12 +509,18 @@ a module's own docstring for what lives there before editing:
    the main loop runs the prompt, `RemoteCompleter` (completion is answered
    by the host, so ids/models/files are never stale), the event-driven
    `Renderer.begin/feed/end` rendering, the question/approval prompts and
-   the `InterruptGuard` (double Ctrl+C in 10s detaches; Ctrl+D sends
-   `close`). It buffers questions/prompts while replaying an active turn,
-   renders an `unseen_turn` before the prompt, takes over from an older
-   client (the host sends `taken_over` and wakes the old prompt with
-   SIGINT), and writes command output raw so the host's ANSI is not
-   re-interpreted. `run_client()` ensures the host, attaches and returns the
+   the `InterruptGuard` (double Ctrl+C in 10s detaches). Ctrl+Q sends the
+   host's `cancel` op (whole turn: model, running tool or parked approval)
+   and stays attached; Ctrl+D sends `close`, also while a response streams.
+   The renderer's key listener sets `stop_requested`/`close_requested`
+   (Ctrl+Q/Ctrl+D) and clears IXON/XOFF while in cbreak so Ctrl+Q is not
+   eaten as XON; the client consumes those flags after every event/poll. A
+   cancelled approval arrives as `question_cancelled`, which wakes and
+   dismisses the prompt without sending an answer. It buffers
+   questions/prompts while replaying an active turn, renders an
+   `unseen_turn` before the prompt, takes over from an older client (the
+   host sends `taken_over` and wakes the old prompt with SIGINT), and writes
+   command output raw so the host's ANSI is not re-interpreted. `run_client()` ensures the host, attaches and returns the
    terminal exit code; `cli.py` falls back to the foreground REPL only when
    no host can be started.
 21. **`tui.py`** — the optional Textual front end (`--ui tui`), deprecated:
@@ -785,11 +794,15 @@ approval order with its interrupt/stopped paths, the cancel token actually
 reaching a production turn's tool, the store flock gating another process,
 and the destructive-tool refusal after a stop. The background-session
 tests (`test_interrupt_guard`, `test_session_host_protocol`,
-`test_session_host_detach_reattach`, `test_session_host_takeover`,
-`test_session_host_rekey`, plus the renderer's `test_renderer_feed_parity`)
-pin the double-Ctrl+C window, the real Repl running in a host (banner,
-commands, turn, `/bye`), a detached turn finishing and being shown on
-reattach, second-terminal takeover, and the `/clear` socket rekey. They
+`test_session_host_detach_reattach`, `test_session_host_cancel`,
+`test_session_host_cancel_approval`, `test_session_host_takeover`,
+`test_session_host_rekey`, `test_interrupt_hint`, plus the renderer's
+`test_renderer_feed_parity` and `test_renderer_stop_keys`) pin the
+double-Ctrl+C window, the real Repl running in a host (banner, commands,
+turn, `/bye`), a detached turn finishing and being shown on reattach,
+Ctrl+Q cancelling a stream or a parked approval and returning to the prompt,
+the warning's conditional Ctrl+Q hint, the Ctrl+Q/Ctrl+D renderer keys,
+second-terminal takeover, and the `/clear` socket rekey. They
 drive a real `SessionClient` with a scripted input stream and a separate
 `rich` console, so no terminal is needed; the pty-level detach/`-c` flow is
 verified manually and against a real backend. The Phase 2 tests

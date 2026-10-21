@@ -79,6 +79,9 @@ logger = logging.getLogger("ollamarun.host")
 
 #: Wire protocol version. Bump on any incompatible message-shape change.
 HOST_PROTOCOL = 1
+#: Additive capabilities advertised in `hello`; a client checks these before
+#: using an op so a newer terminal can attach to an older live host.
+HOST_FEATURES = ("cancel",)
 #: One JSON message may be this large (a full session snapshot with images
 #: travels in the launch spec, not over the live socket; this is slack).
 MAX_LINE = 64 * 1024 * 1024
@@ -1001,6 +1004,8 @@ class SessionHostServer:
                 if not self.closing:
                     self.state = "busy"
         if answer.get("cancelled"):
+            if answer.get("stop"):
+                raise KeyboardInterrupt
             if answer.get("timeout") and kind == "approval":
                 return {"action": "deny", "rule": None}
             if interrupt == "detach":
@@ -1162,6 +1167,7 @@ class SessionHostServer:
                 "created_at": snapshot.created_at, "seq": snapshot.latest_seq}
         return {
             "op": "hello", "protocol": HOST_PROTOCOL, "version": VERSION,
+            "features": list(HOST_FEATURES),
             "fresh": fresh, "pid": os.getpid(), "session": self._meta(),
             "state": self.state, "active_turn": active_turn,
             "unseen_turn": self.unseen_turn,
@@ -1332,6 +1338,9 @@ class SessionHostServer:
                     and self.unseen_turn.get("turn_id") == message.get("turn_id"):
                 self.unseen_turn = None
             return
+        if op == "cancel":
+            self.cancel_active_turn()
+            return
         if op == "close":
             self.request_shutdown("close")
             return
@@ -1344,6 +1353,26 @@ class SessionHostServer:
         if op == "chat":
             # Friendly answer for a stale/unknown protocol from a newer client.
             conn.send({"op": "error", "message": f"unknown op {op!r}"})
+
+    def cancel_active_turn(self) -> bool:
+        """Ctrl+Q: cancel the running turn, including a parked approval."""
+        turn_id = self.active_turn_id
+        if not turn_id:
+            return False
+        try:
+            self.manager.cancel(turn_id)
+        except Exception:
+            logger.debug("turn cancel failed", exc_info=True)
+        with self.lock:
+            pending = self.pending_question
+            future = self.question_future
+            active = self.active
+        if pending is not None and future is not None and not future.done():
+            if active is not None and not active.closed:
+                active.send({"op": "question_cancelled",
+                             "id": pending.get("id")})
+            future.set_result({"cancelled": True, "stop": True})
+        return True
 
     # ── Repl lifecycle ─────────────────────────────────────────────────────
 

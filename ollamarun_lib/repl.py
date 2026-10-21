@@ -564,6 +564,12 @@ class Repl:
         def _newline(event) -> None:  # pragma: no cover - interactive
             event.current_buffer.insert_text("\n")
 
+        @bindings.add("c-q")
+        def _ignore_stop(event) -> None:  # pragma: no cover - interactive
+            # Ctrl+Q stops a streaming generation; at the idle prompt it is a
+            # no-op (and must not become prompt_toolkit's quoted-insert).
+            return
+
         try:
             return PromptSession(history=history, completer=SlashCompleter(self),
                                  key_bindings=bindings, complete_while_typing=True,
@@ -1488,6 +1494,7 @@ def cmd_help(repl: Repl, argument: str) -> None:
              if repl.host_mode else "cancel input / generation"),
             ("Ctrl+T", "expand or collapse the thinking panel while a "
                        "response streams"),
+            ("Ctrl+Q", "stop the current generation (inline)"),
             ("Ctrl+G", "$OLLAMA_EDITOR for the current prompt"),
             ("Ctrl+J", "insert newline"),
             ("Ctrl+R", "search prompt history"),
@@ -1496,7 +1503,8 @@ def cmd_help(repl: Repl, argument: str) -> None:
             ("@path", "inline a file into the prompt"),
         ]
         if repl.tui_mode:
-            entries += [
+            entries = [entry for entry in entries
+                       if entry[0] != "Ctrl+Q"] + [
                 ("Enter", "send — queues the message while a turn is running"),
                 ("Ctrl+B", "send what is typed right now (a running tool finishes "
                            "first)"),

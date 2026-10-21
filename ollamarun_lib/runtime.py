@@ -309,6 +309,11 @@ class AgentRuntime:
         return result
 
     def _finish(self, result: GenerationResult, rounds: int) -> None:
+        # A cancel token set while a tool was running (or an approval was
+        # parked) interrupts that path without the round marking itself; the
+        # turn must still report cancelled, not completed.
+        if self._cancelled() and not result.error:
+            result.cancelled = True
         if result.error:
             self._emit(TURN_ERROR, message=result.error, rounds=rounds)
         elif result.cancelled:

@@ -7072,6 +7072,116 @@ def test_session_host_approval() -> int:
     return failures
 
 
+def test_interrupt_hint() -> int:
+    """The Ctrl+C warning names the close/stop keys, Ctrl+Q only when streaming."""
+    failures = 0
+    busy = "\n".join(orun.interrupt_lines(True))
+    idle = "\n".join(orun.interrupt_lines(False))
+    failures = _check(failures, "the Ctrl+C warning keeps the detach line",
+                      "press Ctrl+C again within 10s" in busy
+                      and "press Ctrl+C again within 10s" in idle)
+    failures = _check(failures, "the warning always names Ctrl+D",
+                      "Ctrl+D terminates the session" in busy
+                      and "Ctrl+D terminates the session" in idle)
+    failures = _check(failures, "Ctrl+Q is offered while generating",
+                      "Ctrl+Q stops the current generation" in busy)
+    failures = _check(failures, "Ctrl+Q is omitted when nothing streams",
+                      "Ctrl+Q" not in idle, idle)
+    return failures
+
+
+def test_session_host_cancel() -> int:
+    """Ctrl+Q cancels the turn, keeps the client attached and returns to prompt."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _SlowFakeClient()
+        server, spec, paths, store, session, root = _host_fixture(tmp, client)
+        try:
+            term, inp, out, buf = _attach_client(spec, paths)
+            assert _wait_until(lambda: "m1 ›" in out.getvalue(), 15.0)
+            inp.push("hi")
+            assert _wait_until(lambda: "Hello" in buf.getvalue(), 15.0), \
+                buf.getvalue()
+            failures = _check(failures, "Ctrl+Q sends the cancel op",
+                              term.cancel_turn())
+            failures = _check(
+                failures, "the cancelled turn returns to a live prompt",
+                _wait_until(lambda: out.getvalue().count("m1 ›") >= 2, 20.0),
+                out.getvalue()[-500:])
+            failures = _check(failures, "the client stays attached after cancel",
+                              not term.done)
+            saved = store.load(session.id)
+            failures = _check(
+                failures, "the cancelled turn is persisted as cancelled",
+                any(m.get("role") == "assistant" and m.get("cancelled")
+                    for m in saved.messages),
+                str([(m.get("role"), m.get("content"), m.get("cancelled"))
+                     for m in saved.messages]))
+            inp.push("/bye")
+            failures = _check(failures, "the session closes after a cancel",
+                              _wait_until(lambda: term.done, 20.0))
+        finally:
+            server._finish()
+    return failures
+
+
+class _BlockingApprovalUi(_ApprovalUi):
+    def __init__(self):
+        super().__init__("deny")
+        self.asked = threading.Event()
+        self.release = threading.Event()
+
+    def approval(self, suggestions, *, name="", detail="", reason=""):
+        self.asked.set()
+        self.release.wait(timeout=15.0)
+        return "deny", None
+
+
+def test_session_host_cancel_approval() -> int:
+    """Cancelling while an approval is parked unwinds the turn, not hangs."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "cancel-approval.txt"
+        client = _FakeClient(
+            models=["m1"], capabilities=["completion", "tools"],
+            chat_script=[
+                [{"message": {"content": "", "tool_calls": [
+                    {"function": {"name": "write_file",
+                                  "arguments": {"path": str(target),
+                                                "content": "x"}}}]}}],
+                [{"message": {"content": "after"}, "done": True}],
+            ])
+        host_args = orun.build_parser().parse_args(
+            ["m1", "--render", "plain", "--keep-loaded", "--no-math",
+             "--no-tps"])
+        server, spec, paths, store, session, root = _host_fixture(
+            tmp, client, args=host_args)
+        try:
+            term, inp, out, _buf = _attach_client(spec, paths)
+            ui = _BlockingApprovalUi()
+            term.ui = ui
+            assert _wait_until(lambda: "m1 ›" in out.getvalue(), 15.0)
+            inp.push("write a file")
+            failures = _check(failures, "the approval prompt is waiting",
+                              _wait_until(lambda: ui.asked.is_set(), 15.0))
+            failures = _check(failures, "Ctrl+Q cancels the parked approval",
+                              term.cancel_turn())
+            ui.release.set()
+            failures = _check(
+                failures, "the prompt returns after cancelling the approval",
+                _wait_until(lambda: out.getvalue().count("m1 ›") >= 2, 20.0),
+                out.getvalue()[-500:])
+            failures = _check(failures, "the turn did not write its tool result",
+                              not target.exists())
+            inp.push("/bye")
+            failures = _check(failures, "the session closes after the cancel",
+                              _wait_until(lambda: term.done, 20.0))
+        finally:
+            ui.release.set()
+            server._finish()
+    return failures
+
+
 def test_session_host_stop() -> int:
     """--close-session (stop_host) closes a live host and waits for its exit."""
     failures = 0
@@ -7225,6 +7335,8 @@ def run_all(*, live: bool = False) -> int:
         + test_session_host_protocol()
         + test_session_host_detach_reattach()
         + test_session_host_approval()
+        + test_session_host_cancel()
+        + test_session_host_cancel_approval()
         + test_session_host_stop()
         + test_session_host_takeover()
         + test_session_host_rekey()

@@ -61,11 +61,23 @@ until the turn ends. Two keys work mid-stream:
   background. The host is not cancelled — use `/bye`, `Ctrl+D` or
   `--close-session` to stop it. At an idle prompt `Ctrl+C` still clears the
   input line.
+- **Ctrl+Q** stops the current generation and stays attached: the whole turn
+  is cancelled (a running tool or parked approval included), the turn is
+  recorded as cancelled, and the prompt returns. At an idle prompt it does
+  nothing. In the TUI, Ctrl+Q remains *quit*; use Esc Esc to stop a turn.
+
+The detach warning names the explicit alternatives:
 
 ```text
 still running — press Ctrl+C again within 10s to detach; the session keeps
 going in the background
-detached · the session keeps running · reattach with `ollamarun -c 20261021-074254-e164`
+Ctrl+D terminates the session · Ctrl+Q stops the current generation
+```
+
+The Ctrl+Q part is only shown while a response is actually streaming; a
+command such as `/pull` has no generation to stop. Ctrl+D closes the session
+from the prompt, and in the background client it also closes immediately
+while a response streams.
 ```
 
 See [Background sessions](sessions/background.md) for reattaching, replay and
@@ -85,6 +97,7 @@ message land at the next sub-task boundary — belongs to the deprecated
 ├─────────┼────────────────────────────────────────────────────────────────┤
 │ Ctrl+D  │ close the session (and its background host)                    │
 │ Ctrl+C  │ clear input; twice within 10s while busy detaches the terminal │
+│ Ctrl+Q  │ stop the current generation (inline; stays attached)           │
 │ Ctrl+T  │ expand or collapse the thinking panel while a response streams │
 │ Ctrl+G  │ $OLLAMA_EDITOR for the current prompt                          │
 │ Ctrl+J  │ insert newline                                                 │

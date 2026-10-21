@@ -28,7 +28,7 @@ from rich.rule import Rule
 from rich.spinner import Spinner
 from rich.text import Text
 
-from .constants import CTRL_T, THINKING_MODES, err_console, tool_color
+from .constants import CTRL_D, CTRL_Q, CTRL_T, THINKING_MODES, err_console, tool_color
 from .events import MESSAGE_DELTA, RuntimeEvent
 from .helpers import (CancelToken, diff_preview, format_context, human_chars,
                       human_duration, short_stamp)
@@ -335,7 +335,12 @@ class Renderer:
         self.sink_render = False
         self.interactive = False
         try:
-            self.interactive = (self.live_render and sys.stdin.isatty())
+            # Key polling is not tied to the Live view: plain mode streams
+            # too, and Ctrl+Q/Ctrl+D must work there as well. Raw/pager runs
+            # are scripted/paged and keep the terminal in normal mode.
+            self.interactive = (self.mode != "raw" and self.console.is_terminal
+                                and not self.use_pager
+                                and sys.stdin.isatty())
         except (ValueError, OSError):
             self.interactive = False
         #: Streaming state shared by `stream()` (local NDJSON) and
@@ -349,6 +354,10 @@ class Renderer:
         self._printed_thinking_header = False
         self._fd: Optional[int] = None
         self._saved_term = None
+        #: Set by Ctrl+Q / Ctrl+D while a response streams (the background
+        #: client consumes them to cancel the turn or close the session).
+        self.stop_requested = False
+        self.close_requested = False
 
     def with_sink(self, sink: Optional[StreamSink]) -> "Renderer":
         """Render through `sink` (a widget) instead of a `rich.Live` view."""
@@ -371,23 +380,32 @@ class Renderer:
     def _toggle_thinking(self) -> None:
         self.thinking_mode = "collapsed" if self.thinking_mode == "expanded" else "expanded"
 
-    def _poll_keys(self, fd: int) -> bool:
-        """Reads pending stdin keys; True when Ctrl+T changed the view.
+    def _handle_key_bytes(self, data: bytes) -> bool:
+        """Apply the streaming hot keys; True when the view changed."""
+        changed = False
+        if CTRL_T in data:
+            if self.thinking_mode == "expanded":
+                self.thinking_mode = "collapsed"
+            else:
+                self.thinking_mode = "expanded"
+            changed = True
+        if CTRL_Q in data:
+            self.stop_requested = True
+            changed = True
+        if CTRL_D in data:
+            self.close_requested = True
+            changed = True
+        return changed
 
-        Ctrl+T expands the thinking panel inline (the boxed view the pager
-        used to show) or collapses it again -- no external pager.
-        """
+    def _poll_keys(self, fd: int) -> bool:
+        """Reads pending stdin keys: Ctrl+T (view), Ctrl+Q (stop), Ctrl+D (close)."""
         changed = False
         try:
             while select.select([fd], [], [], 0)[0]:
                 data = os.read(fd, 64)
                 if not data:
                     break
-                if CTRL_T in data:
-                    if self.thinking_mode == "expanded":
-                        self.thinking_mode = "collapsed"
-                    else:
-                        self.thinking_mode = "expanded"
+                if self._handle_key_bytes(data):
                     changed = True
         except (OSError, ValueError):
             pass
@@ -475,10 +493,19 @@ class Renderer:
         self._printed_thinking_header = False
         self._fd = None
         self._saved_term = None
+        self.stop_requested = False
+        self.close_requested = False
         if self.interactive:
             try:
                 self._fd = sys.stdin.fileno()
                 self._saved_term = termios.tcgetattr(self._fd)
+                # Ctrl+Q is XON: leave IXON/IXOFF on and the terminal driver
+                # eats it before the app can see it. Restored with the saved
+                # attributes in end()/abort().
+                mode = termios.tcgetattr(self._fd)
+                mode[0] &= ~(getattr(termios, "IXON", 0)
+                             | getattr(termios, "IXOFF", 0))
+                termios.tcsetattr(self._fd, termios.TCSADRAIN, mode)
                 tty.setcbreak(self._fd)
             except (OSError, ValueError, termios.error):
                 self._fd = None
@@ -504,7 +531,7 @@ class Renderer:
         self._last_refresh = now
 
     def _handle_keys(self) -> None:
-        if self._live is None or self._fd is None:
+        if not self.interactive or self._fd is None:
             return
         if self._poll_keys(self._fd):
             self._refresh(0.0, force=True)
@@ -665,6 +692,11 @@ class Renderer:
                     self.result.error = str(event["error"])
                     break
                 self.feed_chunk(event)
+                if self.stop_requested:
+                    self.result.cancelled = True
+                    if cancel is not None:
+                        cancel.cancel("user")
+                    break
         except KeyboardInterrupt:
             self.result.cancelled = True
         except BaseException:

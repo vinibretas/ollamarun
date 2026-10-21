@@ -326,8 +326,10 @@ is deleted without going through `trash-put`.
   turn runs detaches without stopping it; `ollamarun -c` reattaches, replays
   the running turn and shows anything that finished while you were away.
   A second `-c` takes the session over, `/bye`/`Ctrl+D` close it, and
-  `--close-session ID` closes it without attaching. Commands (`/pull`,
-  `/summarize`, compaction, …) run in the host too. `--no-background` (or
+  `--close-session ID` closes it without attaching. `Ctrl+Q` stops just the
+  current generation (the whole turn) and stays attached; Ctrl+D also closes
+  immediately while a response streams. Commands (`/pull`, `/summarize`,
+  compaction, …) run in the host too. `--no-background` (or
   `background_sessions: false`) restores the foreground REPL; one-shots and
   the TUI are unchanged. See [Background sessions](docs/cli/sessions/background.md).
 

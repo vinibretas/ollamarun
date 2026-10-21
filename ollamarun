@@ -2,6 +2,21 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 2.10
+
+Summary of changes in this version:
+  - Ctrl+Q stops the current generation without leaving the session: the
+    whole turn is cancelled (model stream, a running tool, or a parked
+    approval), the turn is recorded as cancelled and the prompt returns.
+    It works in the inline foreground REPL and in the background client,
+    including `--render plain` (the renderer now listens for keys outside
+    the Live view and clears the terminal's IXON/XOFF so Ctrl+Q is not
+    swallowed as XON). Ctrl+D still closes the session and, in the
+    background client, now also closes immediately while a response is
+    streaming. The Ctrl+C detach warning names both: Ctrl+D terminates the
+    session and, only while output is streaming, Ctrl+Q stops the current
+    generation. Ctrl+Q at an idle prompt is a no-op.
+
 Version: 2.9
 
 Summary of changes in this version:

@@ -153,10 +153,13 @@ background session (inline REPL):
   the interactive REPL runs in a detached process; closing the terminal or
   pressing Ctrl+C twice within 10s while busy detaches without stopping the
   work, and `-c` reattaches (replaying a running turn or showing a turn that
-  finished while away). /bye or Ctrl+D closes it; --close-session ID closes
-  one without attaching; --no-background runs the old in-process REPL.
+  finished while away). Ctrl+Q stops the current generation and stays
+  attached; /bye or Ctrl+D closes the session (Ctrl+D also while streaming);
+  --close-session ID closes one without attaching; --no-background runs the
+  old in-process REPL.
 
 while a response streams:
+  Ctrl+Q                stop the current generation (inline; stays attached)
   Ctrl+T                expand the thinking panel (press again to collapse)
   --ui tui: Enter queues a message, Ctrl+B sends what you typed right now,
             Esc Esc stops the turn, /queue shows what is waiting

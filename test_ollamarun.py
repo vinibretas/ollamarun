@@ -909,6 +909,46 @@ def test_renderer_feed_parity() -> int:
     return failures
 
 
+def test_renderer_stop_keys() -> int:
+    """Ctrl+Q stops a stream, Ctrl+D requests a close, Ctrl+T still toggles."""
+    failures = 0
+    buffer = io.StringIO()
+    renderer = orun.Renderer(
+        Console(file=buffer, width=100, force_terminal=False, theme=orun.THEME),
+        mode="plain", math=False, tps_footer=False, show_stats=False)
+    failures = _check(failures, "Ctrl+Q sets the stop request",
+                      renderer._handle_key_bytes(b"\x11")
+                      and renderer.stop_requested
+                      and not renderer.close_requested)
+    renderer.begin()
+    failures = _check(failures, "begin() resets the key requests",
+                      not renderer.stop_requested
+                      and not renderer.close_requested)
+    failures = _check(failures, "Ctrl+D sets the close request",
+                      renderer._handle_key_bytes(b"\x04")
+                      and renderer.close_requested)
+    renderer.begin()
+    before = renderer.thinking_mode
+    renderer._handle_key_bytes(b"\x14")
+    failures = _check(failures, "Ctrl+T still toggles thinking",
+                      renderer.thinking_mode != before)
+
+    # A stream whose producer sets the flag mid-iteration stops there and
+    # reports cancelled (the foreground Ctrl+Q path).
+    def events():
+        yield {"message": {"content": "first"}}
+        renderer.stop_requested = True
+        yield {"message": {"content": "second"}}
+        yield {"message": {"content": "third"}}
+
+    result = renderer.stream(events())
+    failures = _check(
+        failures, "a stop request cancels the stream and stops consuming",
+        result.cancelled and result.content == "firstsecond"
+        and "third" not in result.content, repr(result.content))
+    return failures
+
+
 def test_stream_error_reporting() -> int:
     """A mid-stream backend error is reported, not a TypeError crash (#38)."""
     failures = 0
@@ -8055,6 +8095,7 @@ if __name__ == "__main__":
              + test_tool_definitions() + test_prompts() + test_system_prompt()
              + test_normalize_argv() + test_renderer_plain()
              + test_renderer_feed_parity()
+             + test_renderer_stop_keys()
              + test_stream_error_reporting()
              + test_thinking_display() + test_math_layout()
              + test_render_content() + test_tps_estimator()

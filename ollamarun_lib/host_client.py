@@ -86,6 +86,22 @@ class InterruptGuard:
         self.armed_until = None
 
 
+def interrupt_lines(generating: bool) -> list[str]:
+    """The Ctrl+C detach warning plus the explicit-close/stop hints.
+
+    The Ctrl+Q hint only appears while a response is actually streaming: a
+    command such as /pull has no renderer polling the keyboard, so offering
+    to stop "generation" there would be misleading.
+    """
+    lines = ["[warn]still running — press Ctrl+C again within 10s to detach; "
+             "the session keeps going in the background[/warn]"]
+    extra = "Ctrl+D terminates the session"
+    if generating:
+        extra += " · Ctrl+Q stops the current generation"
+    lines.append(f"[dim]{extra}[/dim]")
+    return lines
+
+
 class RemoteCompleter(Completer):  # type: ignore[misc]
     """Completion lives in the host (commands, ids, models, @files)."""
 
@@ -148,6 +164,10 @@ class SessionClient:
         self._prompt_session_tried = False
         self._completion: dict[str, Future] = {}
         self._guard = InterruptGuard()
+        self._cancel_sent = False
+        self._cancel_warned = False
+        self._cancelled_questions: set[str] = set()
+        self.features: set[str] = set()
         self._shutdown_event = threading.Event()
         self._proc_sigint = False
         self._loop_thread: Optional[threading.Thread] = None
@@ -191,6 +211,7 @@ class SessionClient:
                 f"the running session host speaks protocol {protocol!r}, "
                 f"this client speaks {HOST_PROTOCOL}")
         self.fresh = bool(hello.get("fresh"))
+        self.features = set(hello.get("features") or ())
         self.host_pid = hello.get("pid")
         self.session = dict(hello.get("session") or {})
         self.settings = dict(hello.get("settings") or {})
@@ -204,6 +225,8 @@ class SessionClient:
         self.busy = str(hello.get("state") or "") in {"busy", "question"}
         self.replaying = self.active_turn is not None
         self._guard.reset()
+        self._cancel_sent = False
+        self._cancelled_questions.clear()
         self.attached = True
         if not self.fresh:
             self._banner()
@@ -335,6 +358,12 @@ class SessionClient:
                     pass
                 if self.prompt_active.is_set() or self.question_active.is_set():
                     self._wake()
+            elif op == "question_cancelled":
+                question_id = str(message.get("id") or "")
+                if question_id:
+                    self._cancelled_questions.add(question_id)
+                if self.question_active.is_set():
+                    self._wake()
             elif op in {"prompt", "question", "turn.event", "replay_done",
                         "settings", "warning", "error"}:
                 try:
@@ -377,6 +406,7 @@ class SessionClient:
             except queue.Empty:
                 if self.renderer is not None:
                     self.renderer.poll()
+                self._check_renderer_keys()
                 self._flush_output()
                 continue
             except KeyboardInterrupt:
@@ -384,6 +414,7 @@ class SessionClient:
                 continue
             try:
                 self._dispatch(kind, message or {})
+                self._check_renderer_keys()
             except KeyboardInterrupt:
                 self._on_interrupt()
             except (BrokenPipeError, ConnectionError, OSError) as exc:
@@ -472,9 +503,9 @@ class SessionClient:
         if result == "detach":
             self._detach()
         else:
-            self.console.print(
-                "[warn]still running — press Ctrl+C again within 10s to "
-                "detach; the session keeps going in the background[/warn]")
+            for line in interrupt_lines(self.renderer is not None
+                                        and "cancel" in self.features):
+                self.console.print(line)
 
     def _detach(self) -> None:
         if self.renderer is not None:
@@ -486,6 +517,50 @@ class SessionClient:
             f"`ollamarun -c {escape(self.session_id)}`")
         self.exit_code = 0
         self.done = True
+
+    def cancel_turn(self) -> bool:
+        """Ctrl+Q: ask the host to cancel the active turn, stay attached."""
+        if self._cancel_sent:
+            return False
+        if not (self.turn_active or self.renderer is not None):
+            return False
+        if "cancel" not in self.features:
+            if not self._cancel_warned:
+                self._cancel_warned = True
+                self.console.print(
+                    "[warn]this session host predates Ctrl+Q; close and resume "
+                    "the session to upgrade[/warn]")
+            return False
+        self._cancel_sent = True
+        return self.conn.send({"op": "cancel"})
+
+    def _close_session(self) -> None:
+        """Ctrl+D while streaming: explicit close, not a detach."""
+        if self.closing:
+            return
+        self.closing = True
+        if self.renderer is not None:
+            self.renderer.abort()
+            self.renderer = None
+        self.conn.send({"op": "close"})
+        self._shutdown_event.wait(timeout=20.0)
+        self.exit_code = 0
+        self.done = True
+
+    def _check_renderer_keys(self) -> bool:
+        """Consume Ctrl+Q/Ctrl+D seen by the live renderer."""
+        renderer = self.renderer
+        if renderer is None:
+            return False
+        if renderer.close_requested:
+            renderer.close_requested = False
+            self._close_session()
+            return True
+        if renderer.stop_requested:
+            renderer.stop_requested = False
+            self.cancel_turn()
+            return True
+        return False
 
     def _sync_identity(self) -> None:
         self.session_id = str(self.settings.get("session_id")
@@ -526,6 +601,12 @@ class SessionClient:
         @bindings.add("c-j")
         def _newline(event) -> None:  # pragma: no cover - interactive
             event.current_buffer.insert_text("\n")
+
+        @bindings.add("c-q")
+        def _ignore_stop(event) -> None:  # pragma: no cover - interactive
+            # Ctrl+Q only stops a generation, not the idle prompt; consume it
+            # so prompt_toolkit does not treat it as quoted-insert.
+            return
 
         try:
             self._prompt_session = PromptSession(
@@ -572,6 +653,7 @@ class SessionClient:
             self.settings.update(settings)
             self._sync_identity()
         self._current_prompt = request_id
+        self._cancel_sent = False
         self.busy = False
         self.turn_active = False
         self._guard.reset()
@@ -624,6 +706,10 @@ class SessionClient:
                 except KeyboardInterrupt:
                     if self.taken_over or self.shutdown_requested:
                         self.done = True
+                        return
+                    if request_id in self._cancelled_questions:
+                        self._cancelled_questions.discard(request_id)
+                        self.busy = True
                         return
                     if message.get("interrupt") == "detach":
                         if self._guard.press() == "detach":
@@ -715,6 +801,7 @@ class SessionClient:
         elif etype == "turn.started":
             self.turn_active = True
             self.busy = True
+            self._cancel_sent = False
             self._guard.reset()
         elif etype == "round.started":
             self._start_round(data)
@@ -815,6 +902,7 @@ class SessionClient:
         renderer.begin()
 
     def _end_round(self, data: dict[str, Any]) -> None:
+        self._check_renderer_keys()
         renderer = self.renderer
         if renderer is None:
             return

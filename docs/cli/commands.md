@@ -333,6 +333,7 @@ The command table; `/help shortcuts` the key bindings.
 ╭─────────┬────────────────────────────────────────────────────────────────╮
 │ Ctrl+D  │ close the session (and its background host)                    │
 │ Ctrl+C  │ clear input; twice within 10s while busy detaches the terminal │
+│ Ctrl+Q  │ stop the current generation (inline; stays attached)           │
 │ Ctrl+T  │ expand or collapse the thinking panel while a response streams │
 │ Ctrl+G  │ $OLLAMA_EDITOR for the current prompt                          │
 │ Ctrl+J  │ insert newline                                                 │
