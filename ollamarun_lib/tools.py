@@ -201,8 +201,8 @@ class ToolContext:
     #: path arguments and default working directories — it is never a
     #: claim that a subprocess can only reach the root.
     workspace: Optional[str] = None
-    timeout: float = 120.0
-    max_output: int = 4000
+    timeout: float = 245.0
+    max_output: int = 40000
     tts_remote: Optional[str] = None
     #: Live handles injected by the REPL: the Ollama client (`list_models`,
     #: `system_status`) and the session store (`search_sessions`). Typed Any,
