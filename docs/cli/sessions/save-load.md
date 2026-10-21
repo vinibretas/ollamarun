@@ -13,6 +13,11 @@ from inside the REPL.
 | `--session NAME` | Continue the session named `NAME`, or create it. |
 | `--new` | Force a fresh session even with `-c`/`--session`. |
 
+If the session is still running in a [background host](background.md) — the
+terminal was closed or detached — `-c` attaches to it instead of starting a
+new process: a running turn is replayed and continues, and a turn that
+finished while away is shown. A second terminal takes the session over.
+
 A named session keeps its name as its title, and later runs can omit the
 model — it comes from the session:
 

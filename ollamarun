@@ -2,6 +2,24 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 2.9
+
+Summary of changes in this version:
+  - Interactive inline sessions now run in a detached per-session host. The
+    host owns the Repl (session, slash commands, turns, tool loop, approvals,
+    pulls, summarization and auto-compaction); the terminal is a thin client
+    over a Unix socket. Closing the window or pressing Ctrl+C twice within
+    10s while work runs detaches without cancelling anything, and
+    `ollamarun -c` reattaches: a running turn is replayed from the start and
+    continues live, a turn that finished while away is shown under "while
+    you were away", and pending approvals/questions are asked again. A
+    second terminal takes over cleanly. `/bye`, Ctrl+D, `--close-session` and
+    `--delete` are the explicit closes; `--no-background` (or config
+    `background_sessions: false`) restores the foreground REPL. One-shots
+    and the TUI are unchanged. Under the hood: `session_host.py`/`host_client.py`,
+    routed rich output, a `Renderer.begin/feed/end` event path and the
+    `background_*` config keys.
+
 Version: 2.8
 
 Summary of changes in this version:

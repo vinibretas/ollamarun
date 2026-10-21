@@ -18,7 +18,9 @@ The banner names what is in effect:
 │ session 20261018-105614-b08e · new session                           │
 │ host    http://127.0.0.1:11434                                       │
 │ render  markdown · thinking collapsed · 95 local models              │
-│ /help for commands · Ctrl+D to exit · Ctrl+T thinking                │
+│ background pid 1234 · survives detach                                │
+│ /help for commands · Ctrl+D closes the session · Ctrl+C twice        │
+│ detaches · Ctrl+T thinking                                           │
 ╰──────────────────────────────────────────────────────────────────────╯
 llama3.2:3b › 
 ```
@@ -45,7 +47,7 @@ for how long.
 - **Ctrl+R** searches the prompt history.
 - **Ctrl+G** opens `$OLLAMA_EDITOR` on the current input — see
   [Editor](editor.md).
-- **Ctrl+D** leaves (equivalent to `/bye`).
+- **Ctrl+D** closes the session (equivalent to `/bye`).
 
 ## While an answer streams
 
@@ -54,14 +56,20 @@ until the turn ends. Two keys work mid-stream:
 
 - **Ctrl+T** expands the thinking panel in place; press it again to collapse.
   The stream never pauses either way.
-- **Ctrl+C** cancels: generation stops, providers that support abort are
-  told to stop, and the prompt returns with a `cancelled` note.
+- **Ctrl+C** arms a detach: the first press prints a warning, and a second
+  press within 10 s closes the terminal while the turn keeps running in the
+  background. The host is not cancelled — use `/bye`, `Ctrl+D` or
+  `--close-session` to stop it. At an idle prompt `Ctrl+C` still clears the
+  input line.
 
 ```text
-llama3.2:3b › ────────────────────────────────────────────────────────
-cancelled
-llama3.2:3b › 
+still running — press Ctrl+C again within 10s to detach; the session keeps
+going in the background
+detached · the session keeps running · reattach with `ollamarun -c 20261021-074254-e164`
 ```
+
+See [Background sessions](sessions/background.md) for reattaching, replay and
+take-over.
 
 (The queueing behavior — typing ahead while the model works and having the
 message land at the next sub-task boundary — belongs to the deprecated
@@ -75,8 +83,8 @@ message land at the next sub-task boundary — belongs to the deprecated
 ╭─────────┬────────────────────────────────────────────────────────────────╮
 │ key     │ action                                                         │
 ├─────────┼────────────────────────────────────────────────────────────────┤
-│ Ctrl+D  │ exit                                                           │
-│ Ctrl+C  │ cancel input / generation                                      │
+│ Ctrl+D  │ close the session (and its background host)                    │
+│ Ctrl+C  │ clear input; twice within 10s while busy detaches the terminal │
 │ Ctrl+T  │ expand or collapse the thinking panel while a response streams │
 │ Ctrl+G  │ $OLLAMA_EDITOR for the current prompt                          │
 │ Ctrl+J  │ insert newline                                                 │
@@ -89,9 +97,9 @@ message land at the next sub-task boundary — belongs to the deprecated
 
 ## Leaving
 
-`/bye` (or `/exit`, or Ctrl+D) ends the session. The session is saved on the
-way out, and — unless `--keep-loaded` / config `unload_on_exit: false` — the
-model is unloaded:
+`/bye` (or `/exit`, or Ctrl+D) explicitly closes the session and its
+background host. The session is saved on the way out, and — unless
+`--keep-loaded` / config `unload_on_exit: false` — the model is unloaded:
 
 ```text
 llama3.2:3b › /bye

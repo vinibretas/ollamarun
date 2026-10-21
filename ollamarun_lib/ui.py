@@ -20,7 +20,7 @@ from typing import Any, Optional, Sequence
 from rich.markup import escape
 from rich.prompt import Confirm, Prompt
 
-from .constants import console
+from .constants import (HAS_PYPERCLIP, console, pyperclip)
 from .helpers import format_context, human_duration
 from .tools import ToolRule, rule_label
 
@@ -221,6 +221,21 @@ class Ui:
         from .interactive import open_in_editor
 
         return open_in_editor(initial)
+
+    def copy(self, text: str) -> tuple[bool, str]:
+        """Put `text` on the clipboard; (ok, human message).
+
+        The inline front end copies here; a background session host forwards
+        the request to the attached terminal, because the host has no
+        clipboard of its own.
+        """
+        if not HAS_PYPERCLIP:
+            return False, "pyperclip is not installed"
+        try:
+            pyperclip.copy(text)
+        except Exception as exc:  # pyperclip raises platform-specific errors
+            return False, f"clipboard failed: {exc}"
+        return True, f"copied {len(text)} characters"
 
     def approval(self, suggestions: list[ToolRule], *,
                  name: str = "", detail: str = "", reason: str = ""

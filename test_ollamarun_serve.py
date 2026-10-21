@@ -13,6 +13,7 @@ import http.client
 import io
 import json
 import os
+import queue
 import re
 import shutil
 import socket
@@ -6801,6 +6802,362 @@ def test_turn_start_fit() -> int:
         orun.agent_api.machine_state_for = old_refresh
     return failures
 
+class _ScriptedInput:
+    """A blocking line source for the session client (no terminal needed)."""
+
+    def __init__(self) -> None:
+        self.lines: "queue.Queue[str]" = queue.Queue()
+
+    def readline(self) -> str:
+        return self.lines.get()
+
+    def push(self, text: str) -> None:
+        self.lines.put(text + "\n")
+
+
+def _wait_until(predicate, timeout: float = 15.0) -> bool:
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            if predicate():
+                return True
+        except Exception:
+            pass
+        time.sleep(0.02)
+    return False
+
+
+def _host_fixture(tmp: str, client, *, args=None):
+    root = Path(tmp) / "hosts"
+    store = orun.SessionStore(sessions_dir=Path(tmp) / "sessions",
+                              index_path=Path(tmp) / "index.json")
+    if args is None:
+        args = orun.build_parser().parse_args(
+            ["m1", "--render", "plain", "--no-tools", "--keep-loaded",
+             "--no-math", "--no-tps"])
+    session = orun.Session.create("m1", client.base)
+    spec = orun.HostSpec(
+        protocol=orun.HOST_PROTOCOL, version=orun.VERSION,
+        session=session.to_dict(), args=vars(args), base=client.base,
+        insecure=False, cwd=os.getcwd(), session_id=session.id,
+        config_path=None, host_root=str(root))
+    paths = orun.host_paths(session.id, root)
+    server = orun.SessionHostServer(
+        spec, paths, client_factory=lambda *a, **k: client, store=store)
+    thread = threading.Thread(target=server.serve, daemon=True)
+    thread.start()
+    assert _wait_until(lambda: orun.ping_host(session.id, root), 10.0)
+    return server, spec, paths, store, session, root
+
+
+def _attach_client(spec, paths, *, buf=None):
+    conn = orun.LineConnection.connect(paths.socket)
+    out = io.StringIO()
+    console_buf = buf if buf is not None else io.StringIO()
+    inp = _ScriptedInput()
+    client = orun.SessionClient(
+        spec, conn, input_stream=inp, output_stream=out,
+        console_obj=orun.Console(file=console_buf, width=100,
+                                 force_terminal=False, theme=orun.THEME))
+    thread = threading.Thread(target=client.run, daemon=True)
+    thread.start()
+    return client, inp, out, console_buf
+
+
+def test_interrupt_guard() -> int:
+    failures = 0
+    now = [100.0]
+    guard = orun.InterruptGuard(window=10.0, clock=lambda: now[0])
+    failures = _check(failures, "the first press only arms the detach window",
+                      guard.press() == "arm")
+    now[0] = 105.0
+    failures = _check(failures, "a second press inside 10s detaches",
+                      guard.press() == "detach")
+    now[0] = 200.0
+    failures = _check(failures, "the guard starts a fresh window afterwards",
+                      guard.press() == "arm")
+    now[0] = 211.0
+    failures = _check(failures, "an expired window must be armed again",
+                      guard.press() == "arm")
+    now[0] = 212.0
+    failures = _check(failures, "the new window's second press detaches",
+                      guard.press() == "detach")
+    return failures
+
+
+def test_session_host_protocol() -> int:
+    """The real Repl runs in the host: prompt, command output, turn, close."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _FakeClient(models=["m1"], capabilities=["completion"],
+                             chat_script=[[
+                                 {"message": {"content": "Hello from the host."}},
+                                 {"done": True, "prompt_eval_count": 3,
+                                  "eval_count": 4,
+                                  "prompt_eval_duration": 1_000_000_000,
+                                  "eval_duration": 1_000_000_000}]])
+        server, spec, paths, store, session, _root = _host_fixture(tmp, client)
+        try:
+            term, inp, out, buf = _attach_client(spec, paths)
+            failures = _check(
+                failures, "the host prints its banner and prompt",
+                _wait_until(lambda: "m1 ›" in out.getvalue(), 15.0),
+                out.getvalue()[-300:])
+            inp.push("/help shortcuts")
+            failures = _check(
+                failures, "slash commands run in the host and stream output",
+                _wait_until(lambda: "Ctrl+D" in out.getvalue(), 10.0),
+                out.getvalue()[-500:])
+            inp.push("hi")
+            failures = _check(
+                failures, "a turn streams and renders in the attached client",
+                _wait_until(lambda: "Hello from the host." in buf.getvalue(),
+                            20.0),
+                buf.getvalue()[-500:])
+            inp.push("/bye")
+            failures = _check(failures, "/bye closes the host",
+                              _wait_until(lambda: term.done, 20.0))
+            saved = store.load(session.id)
+            failures = _check(
+                failures, "the turn is persisted before the host exits",
+                [m.get("role") for m in saved.messages] == ["user", "assistant"]
+                and saved.messages[1].get("content") == "Hello from the host.",
+                str([(m.get("role"), m.get("content")) for m in saved.messages]))
+        finally:
+            server._finish()
+    return failures
+
+
+class _SlowFakeClient(_FakeClient):
+    def __init__(self):
+        super().__init__(models=["m1"], capabilities=["completion"])
+
+    def chat(self, payload, timeout=None, cancel=None):
+        def events():
+            for text in ("Hello", " from", " the background."):
+                if cancel is not None and cancel.cancelled:
+                    return
+                time.sleep(0.25)
+                yield {"message": {"content": text}}
+            yield {"done": True, "prompt_eval_count": 3, "eval_count": 4,
+                   "prompt_eval_duration": 1_000_000_000,
+                   "eval_duration": 1_000_000_000}
+        return events()
+
+
+def test_session_host_detach_reattach() -> int:
+    """Closing the terminal does not stop the turn; -c shows what was missed."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _SlowFakeClient()
+        server, spec, paths, store, session, root = _host_fixture(tmp, client)
+        try:
+            term, inp, out, buf = _attach_client(spec, paths)
+            assert _wait_until(lambda: "m1 ›" in out.getvalue(), 15.0)
+            inp.push("hi")
+            assert _wait_until(lambda: "Hello" in buf.getvalue(), 15.0), \
+                buf.getvalue()
+            # Window closed: the socket goes away without a close op.
+            term.conn.close()
+            term.done = True
+            def saved_messages():
+                try:
+                    return store.load(session.id).messages
+                except Exception:
+                    return []
+
+            failures = _check(
+                failures, "the host keeps the turn alive after a detach",
+                _wait_until(lambda: bool(saved_messages()), 15.0))
+            failures = _check(
+                failures, "the detached turn finishes and is persisted",
+                _wait_until(lambda: any(
+                    m.get("content") == "Hello from the background."
+                    for m in saved_messages()), 20.0),
+                str([(m.get("role"), m.get("content"))
+                     for m in saved_messages()]))
+            term2, inp2, out2, buf2 = _attach_client(spec, paths)
+            failures = _check(
+                failures, "reattaching shows the turn completed while away",
+                _wait_until(lambda: "Hello from the background." in buf2.getvalue(),
+                            20.0),
+                buf2.getvalue()[-600:])
+            inp2.push("/bye")
+            failures = _check(failures, "the reattached client closes cleanly",
+                              _wait_until(lambda: term2.done, 20.0))
+        finally:
+            server._finish()
+    return failures
+
+
+class _ApprovalUi:
+    interactive = True
+
+    def __init__(self, action="deny"):
+        self.action = action
+        self.asked = []
+
+    def approval(self, suggestions, *, name="", detail="", reason=""):
+        self.asked.append((name, reason))
+        return self.action, None
+
+    def confirm(self, question, *, default=False):
+        return default
+
+    def ask(self, question, *, choices=None, default=None):
+        return default
+
+    def editor(self, initial=""):
+        return None
+
+    def copy(self, text):
+        return True, "copied"
+
+    def notify(self, event, **data):
+        return
+
+
+def test_session_host_approval() -> int:
+    """An approval question round-trips through the attached terminal."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "denied.txt"
+        client = _FakeClient(
+            models=["m1"], capabilities=["completion", "tools"],
+            chat_script=[
+                [{"message": {"content": "", "tool_calls": [
+                    {"function": {"name": "write_file",
+                                  "arguments": {"path": str(target),
+                                                "content": "x"}}}]}}],
+                [{"message": {"content": "done"}, "done": True,
+                 "prompt_eval_count": 1, "eval_count": 1,
+                 "prompt_eval_duration": 1_000_000_000,
+                 "eval_duration": 1_000_000_000}],
+            ])
+        host_args = orun.build_parser().parse_args(
+            ["m1", "--render", "plain", "--keep-loaded", "--no-math",
+             "--no-tps"])
+        server, spec, paths, store, session, root = _host_fixture(
+            tmp, client, args=host_args)
+        try:
+            term, inp, out, buf = _attach_client(spec, paths)
+            ui = _ApprovalUi("deny")
+            term.ui = ui
+            assert _wait_until(lambda: "m1 ›" in out.getvalue(), 15.0)
+            inp.push("write a file")
+            failures = _check(
+                failures, "the tool call parks for approval and the turn resumes",
+                _wait_until(lambda: "done" in buf.getvalue(), 20.0),
+                buf.getvalue()[-600:])
+            failures = _check(
+                failures, "the attached terminal was asked about the call",
+                bool(ui.asked) and ui.asked[0][0] == "write_file",
+                str(ui.asked))
+            failures = _check(
+                failures, "a denied call did not write its target",
+                not target.exists())
+            saved = store.load(session.id)
+            failures = _check(
+                failures, "the denial is recorded as a tool result",
+                any(m.get("role") == "tool"
+                    and "denied by the user" in (m.get("content") or "")
+                    for m in saved.messages),
+                str([(m.get("role"), m.get("content"))
+                     for m in saved.messages]))
+            inp.push("/bye")
+            failures = _check(failures, "the approval session closes cleanly",
+                              _wait_until(lambda: term.done, 20.0))
+        finally:
+            server._finish()
+    return failures
+
+
+def test_session_host_stop() -> int:
+    """--close-session (stop_host) closes a live host and waits for its exit."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _FakeClient(models=["m1"], capabilities=["completion"])
+        server, spec, paths, store, session, root = _host_fixture(tmp, client)
+        try:
+            term, inp, out, _buf = _attach_client(spec, paths)
+            assert _wait_until(lambda: "m1 ›" in out.getvalue(), 15.0)
+            failures = _check(
+                failures, "stop_host closes a live session host",
+                orun.stop_host(session.id, root))
+            failures = _check(
+                failures, "the host socket is gone after stop_host",
+                not paths.socket.exists()
+                and not orun.host_is_running(session.id, root))
+            # An embedded client (injected input) has no SIGINT wake-up;
+            # one line lets its prompt observe the queued shutdown.
+            inp.push("")
+            failures = _check(
+                failures, "the attached terminal is disconnected on close",
+                _wait_until(lambda: term.done, 15.0))
+        finally:
+            server._finish()
+    return failures
+
+
+def test_session_host_takeover() -> int:
+    """A second -c takes over; the old terminal is told and exits."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _FakeClient(models=["m1"], capabilities=["completion"])
+        server, spec, paths, store, session, root = _host_fixture(tmp, client)
+        try:
+            old, old_inp, old_out, _old_buf = _attach_client(spec, paths)
+            assert _wait_until(lambda: "m1 ›" in old_out.getvalue(), 15.0)
+            new, new_inp, new_out, _new_buf = _attach_client(spec, paths)
+            failures = _check(
+                failures, "the new terminal receives the same prompt",
+                _wait_until(lambda: "m1 ›" in new_out.getvalue(), 15.0),
+                new_out.getvalue()[-300:])
+            failures = _check(
+                failures, "the old terminal is told it was taken over",
+                _wait_until(lambda: old.taken_over, 10.0))
+            old_inp.push("")
+            failures = _check(failures, "the old terminal exits cleanly",
+                              _wait_until(lambda: old.done, 10.0)
+                              and old.exit_code == 0)
+            new_inp.push("/bye")
+            failures = _check(failures, "the taking-over terminal closes",
+                              _wait_until(lambda: new.done, 20.0))
+        finally:
+            server._finish()
+    return failures
+
+
+def test_session_host_rekey() -> int:
+    """ /clear changes the session id; the host rekeys its socket with it."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _FakeClient(models=["m1"], capabilities=["completion"])
+        server, spec, paths, store, session, root = _host_fixture(tmp, client)
+        try:
+            term, inp, out, _buf = _attach_client(spec, paths)
+            assert _wait_until(lambda: "m1 ›" in out.getvalue(), 15.0)
+            old_id = server.session_id
+            inp.push("/clear")
+            failures = _check(
+                failures, "/clear rekeys the background host",
+                _wait_until(lambda: server.session_id != old_id, 15.0),
+                f"{old_id} -> {server.session_id}")
+            failures = _check(
+                failures, "the new session id answers on its own socket",
+                orun.ping_host(server.session_id, root))
+            failures = _check(
+                failures, "the client learned the new session id",
+                _wait_until(lambda: term.session_id == server.session_id, 10.0),
+                f"{term.session_id} != {server.session_id}")
+            inp.push("/bye")
+            failures = _check(failures, "the rekeyed host closes cleanly",
+                              _wait_until(lambda: term.done, 20.0))
+        finally:
+            server._finish()
+    return failures
+
+
 def run_all(*, live: bool = False) -> int:
     """Run every API-layer test in file order; returns the failure count."""
     return (
@@ -6864,6 +7221,13 @@ def run_all(*, live: bool = False) -> int:
         + test_session_context_fields()
         + test_fit_estimate_api() + test_fit_job_api()
         + test_turn_start_fit()
+        + test_interrupt_guard()
+        + test_session_host_protocol()
+        + test_session_host_detach_reattach()
+        + test_session_host_approval()
+        + test_session_host_stop()
+        + test_session_host_takeover()
+        + test_session_host_rekey()
         + (test_serve_live() if live else 0))
 
 

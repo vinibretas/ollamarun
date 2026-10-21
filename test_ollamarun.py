@@ -852,6 +852,63 @@ def test_renderer_plain() -> int:
     return failures
 
 
+def test_renderer_feed_parity() -> int:
+    """A remote `begin/feed/end` round renders exactly like `stream()`."""
+    failures = 0
+    stats = {"eval_count": 4, "eval_duration": 1.0,
+             "prompt_eval_count": 2, "prompt_eval_duration": 1.0,
+             "total_duration": 2.0}
+
+    def build(buffer):
+        return orun.Renderer(
+            Console(file=buffer, width=100, force_terminal=False,
+                    theme=orun.THEME),
+            mode="plain", math=False, thinking_mode="collapsed",
+            tps_footer=False, show_stats=False)
+
+    def streamed():
+        buffer = io.StringIO()
+        result = build(buffer).stream(iter([
+            {"message": {"thinking": "hmm "}},
+            {"message": {"content": "The value is "}},
+            {"message": {"content": "42."}},
+            {"done": True, **stats},
+        ]))
+        return buffer.getvalue(), result
+
+    def fed(stats_arg):
+        buffer = io.StringIO()
+        renderer = build(buffer)
+        renderer.begin()
+        renderer.feed("thinking", "hmm ")
+        renderer.feed("content", "The value is ")
+        renderer.feed("content", "42.")
+        result = renderer.end(content="The value is 42.",
+                              thinking="hmm ", stats=stats_arg)
+        return buffer.getvalue(), result
+
+    local_text, local_result = streamed()
+    # The host forwards the already-normalized `message.completed.stats`.
+    remote_text, remote_result = fed(local_result.stats)
+    failures = _check(
+        failures, "feed/end renders the same plain text as stream()",
+        local_text == remote_text, f"{local_text!r} != {remote_text!r}")
+    failures = _check(
+        failures, "feed/end returns the same accumulated content",
+        (local_result.content, local_result.thinking, local_result.stats)
+        == (remote_result.content, remote_result.thinking, remote_result.stats),
+        f"{local_result!r} != {remote_result!r}")
+    # An explicit final hint wins over the after_tools heuristic.
+    probe = orun.GenerationResult(content="x", final=True)
+    renderer = build(io.StringIO())
+    failures = _check(failures, "an explicit final flag controls the divider",
+                      renderer.final_rule_wanted(probe) is True)
+    probe.final = False
+    failures = _check(failures, "a false final flag suppresses the divider",
+                      renderer.final_rule_wanted(probe) is False)
+    return failures
+
+
 def test_stream_error_reporting() -> int:
     """A mid-stream backend error is reported, not a TypeError crash (#38)."""
     failures = 0
@@ -3768,6 +3825,50 @@ def test_cmd_num_ctx_max_cpu() -> int:
             orun.ctxfit.probe_machine_ram = original_ram
             orun.ctxfit.CTXFIT_CALIBRATION_PATH = old_calibration_path
             calibration_tmp.cleanup()
+    return failures
+
+
+def test_background_cli() -> int:
+    """Background flags, gating and launch overrides."""
+    failures = 0
+    parser = orun.build_parser()
+    args = parser.parse_args(["m1", "--no-background", "--close-session", "abc"])
+    failures = _check(failures, "--no-background and --close-session parse",
+                      args.no_background is True
+                      and args.close_session == "abc")
+    config = dict(orun.DEFAULT_CONFIG)
+    failures = _check(
+        failures, "--no-background disables the session host",
+        orun.background_enabled(args, config) is False)
+    plain = parser.parse_args(["m1"])
+    failures = _check(
+        failures, "a non-terminal run never starts a session host",
+        orun.background_enabled(plain, config) is False)
+    failures = _check(
+        failures, "config background_sessions:false is honoured",
+        orun.background_enabled(plain, {**config,
+                                        "background_sessions": False}) is False)
+    failures = _check(
+        failures, "--no-save cannot start a resumable host",
+        orun.background_enabled(parser.parse_args(["m1", "--no-save"]),
+                                config) is False)
+    session = orun.Session.create("m1", "http://fake")
+    session.system = "custom"
+    session.parameters = {"temperature": 0.2}
+    session.gpu_layers = "10"
+    session.title = "t"
+    overrides = orun.host_overrides(
+        parser.parse_args(["m1", "--system", "custom", "--option",
+                           "temperature=0.2", "--gpu-layers", "10",
+                           "--title", "t"]), session)
+    failures = _check(
+        failures, "explicit launch settings become host overrides",
+        overrides.get("model") == "m1"
+        and overrides.get("system") == "custom"
+        and overrides.get("gpu_layers") == "10"
+        and overrides.get("parameters") == {"temperature": 0.2}
+        and overrides.get("title") == "t",
+        str(overrides))
     return failures
 
 
@@ -7953,6 +8054,7 @@ if __name__ == "__main__":
              + test_session_payloads() + test_chat_payload()
              + test_tool_definitions() + test_prompts() + test_system_prompt()
              + test_normalize_argv() + test_renderer_plain()
+             + test_renderer_feed_parity()
              + test_stream_error_reporting()
              + test_thinking_display() + test_math_layout()
              + test_render_content() + test_tps_estimator()
@@ -7975,6 +8077,7 @@ if __name__ == "__main__":
              + test_emit_and_cli_functions()
              + test_machine_output_verbatim()
              + test_build_parser_flags() + test_parser_intermixed()
+             + test_background_cli()
              + test_remote_hosts()
              + test_pull_and_disk_helpers() + test_ensure_model()
              + test_model_sort() + test_model_picker_sort()

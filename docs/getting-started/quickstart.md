@@ -46,7 +46,8 @@ inline prompt:
 │ session 20261018-105614-b08e · new session                           │
 │ host    http://127.0.0.1:11434                                       │
 │ render  markdown · thinking collapsed · 95 local models              │
-│ /help for commands · Ctrl+D to exit · Ctrl+T thinking                │
+│ /help for commands · Ctrl+D closes the session · Ctrl+C twice        │
+│ detaches · Ctrl+T thinking                                           │
 ╰──────────────────────────────────────────────────────────────────────╯
 llama3.2:3b › 
 ```

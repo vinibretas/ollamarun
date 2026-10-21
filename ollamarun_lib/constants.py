@@ -124,7 +124,7 @@ except ImportError:  # pragma: no cover - fallback path
     TEXTUAL_VERSION = ""
     TextualApp = None
 
-VERSION = "2.8"
+VERSION = "2.9"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -135,6 +135,12 @@ INDEX_PATH = DATA_DIR / "index.json"
 HISTORY_PATH = DATA_DIR / "history"
 ARTIFACTS_DIR = DATA_DIR / "artifacts"
 LOG_PATH = HOME / "etc/logs/ollamarun.log"
+#: Background session hosts (`session_host.py`): one Unix socket + metadata
+#: file per session, under a per-user cache directory. The directory is
+#: created 0700 and the socket 0600; nothing here is durable (removing it
+#: only loses a live host, never a saved session).
+HOST_DIR = HOME / ".cache/ollamarun/session-hosts"
+HOST_LOG_PATH = HOME / "etc/logs/ollamarun-session-host.log"
 
 # Model-facing definitions live outside the code: one JSON per tool and one
 # file per prompt, shipped in `ollamarun_lib/defs/`. A same-named file in the
@@ -197,11 +203,17 @@ THEME = Theme({
     "dim": "dim",
 })
 
-console = Console(theme=THEME)
+#: A background session host has no terminal of its own, but the client
+#: attached to it does. The host is spawned with this variable set so the
+#: shared consoles are built as if they were on a terminal; their output is
+#: then routed to the attached client (see `session_host.OutputRouter`).
+_FORCE_TERMINAL = os.environ.get("OLLAMARUN_FORCE_TERMINAL") == "1"
+console = Console(theme=THEME, force_terminal=True if _FORCE_TERMINAL else None)
 #: The shared stderr sink for messages that must not pollute stdout (the
 #: `--raw` error line, the quiet unload warning); `rich` has no `stderr=`
 #: print keyword -- a second Console bound to stderr is the supported way.
-err_console = Console(stderr=True, theme=THEME)
+err_console = Console(stderr=True, theme=THEME,
+                      force_terminal=True if _FORCE_TERMINAL else None)
 rich.traceback.install()
 
 #: One colour per built-in tool: the arguments panel of a call, the
@@ -295,6 +307,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "remote_hosts": {},
     "remote_ssh_user": None,
     "model": None,
+    # Background session host (`session_host.py`). `background_sessions`
+    # switches the inline REPL to its own detached process; closing the
+    # terminal or double-Ctrl+C detaches without stopping it, and only
+    # /bye, Ctrl+D, --close-session or --delete end it. `approval_timeout`
+    # is how long a tool approval may wait for a client to reattach
+    # (0 = wait forever); the event buffer/TTL size the replay window.
+    "background_sessions": True,
+    "background_approval_timeout": 0,
+    "background_event_buffer": 20000,
+    "background_event_ttl": 300,
     "system": None,
     "options": {},
     "render": "markdown",

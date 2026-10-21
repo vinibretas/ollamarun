@@ -62,6 +62,17 @@ Defaults are `DEFAULT_CONFIG` in `ollamarun_lib/constants.py`. `null` means
 | `timeout` | `600` | Request timeout, seconds. |
 | `unload_on_exit` | `true` | Unload the session model when the REPL exits. |
 
+### Background sessions
+
+See [Background sessions](../cli/sessions/background.md) for the lifecycle.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `background_sessions` | `true` | Run the inline REPL in a detached session host. |
+| `background_approval_timeout` | `0` | Seconds a detached approval waits before denial; `0` waits forever. |
+| `background_event_buffer` | `20000` | Replay buffer size for a running turn. |
+| `background_event_ttl` | `300` | Completed-turn retention in the host, seconds. |
+
 ### Tools and speech
 
 | Key | Default | Meaning |

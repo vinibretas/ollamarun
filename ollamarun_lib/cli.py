@@ -77,6 +77,15 @@ from .interactive import (
 from .repl import Repl, resolve_num_ctx
 from .run import run_embed, run_once
 from .session import Session, SessionStore
+from .session_host import (
+    HOST_PROTOCOL,
+    HostSpec,
+    SessionHostError,
+    SessionHostUnavailable,
+    host_is_running,
+    stop_host,
+)
+from .host_client import run_client as run_session_client
 
 
 def ui_mode(args: argparse.Namespace, config: dict[str, Any]) -> str:
@@ -139,6 +148,13 @@ interactive commands:
   /image PATH           attach an image to the next message
   /export [FILE]        export mid-session as md/json/html
   /queue [list|clear|rm N]  what is waiting while a turn is running (--ui tui)
+
+background session (inline REPL):
+  the interactive REPL runs in a detached process; closing the terminal or
+  pressing Ctrl+C twice within 10s while busy detaches without stopping the
+  work, and `-c` reattaches (replaying a running turn or showing a turn that
+  finished while away). /bye or Ctrl+D closes it; --close-session ID closes
+  one without attaching; --no-background runs the old in-process REPL.
 
 while a response streams:
   Ctrl+T                expand the thinking panel (press again to collapse)
@@ -328,6 +344,11 @@ sessions live in ~/etc/data/ollamarun; config in ~/etc/config_files/ollamarun.js
                           help="tag for the session, repeatable")
     sessions.add_argument("--auto-title", action="store_true",
                           help="ask the model for a title after the first turn")
+    sessions.add_argument("--no-background", action="store_true",
+                          help="run the inline REPL in the foreground instead "
+                               "of a detached session host")
+    sessions.add_argument("--close-session", metavar="SESSION_ID",
+                          help="close a background session host explicitly")
 
     inspect = parser.add_argument_group("session inspection")
     inspect.add_argument("--list", action="store_true", help="list saved sessions")
@@ -802,35 +823,114 @@ def parse_cli_args(parser: argparse.ArgumentParser, argv: list[str],
         normalize_argv(argv, store or SessionStore(), parser))
 
 
-def attach_images(repl: Repl, paths: Optional[list[str]]) -> Optional[int]:
-    """Encode `--image` paths into `repl.pending_images`; an exit code on failure.
+def encode_image_paths(paths: Optional[list[str]],
+                       storage: str) -> tuple[list[dict[str, Any]], Optional[str]]:
+    """Encode `--image` paths; return (images, error message).
 
     A missing file is its own message (`image not found: PATH`); anything else
     (an empty or unreadable file) reports the path and the reason, so with
-    several `--image` flags it is clear which argument failed.
+    several `--image` flags it is clear which argument failed. Shared by the
+    foreground REPL and the background-session launch spec.
     """
+    images: list[dict[str, Any]] = []
     for image in paths or []:
         expanded = Path(os.path.expanduser(image))
         try:
-            repl.pending_images.append(encode_image(expanded, repl.image_storage))
+            images.append(encode_image(expanded, storage))
         except FileNotFoundError:
-            console.print(f"[err]image not found: {escape(image)}[/err]")
-            return 2
+            return [], f"image not found: {image}"
         except (OSError, ValueError) as exc:
             detail = str(exc)
             prefix = f"{expanded}: "
             if detail.startswith(prefix):
                 detail = detail[len(prefix):]
-            console.print(f"[err]cannot attach image {escape(image)}: "
-                          f"{escape(detail)}[/err]")
-            return 2
+            return [], f"cannot attach image {image}: {detail}"
+    return images, None
+
+
+def attach_images(repl: Repl, paths: Optional[list[str]]) -> Optional[int]:
+    """Encode `--image` paths into `repl.pending_images`; an exit code on failure."""
+    images, error = encode_image_paths(paths, repl.image_storage)
+    if error is not None:
+        console.print(f"[err]{escape(error)}[/err]")
+        return 2
+    repl.pending_images.extend(images)
     return None
+
+
+def background_enabled(args: argparse.Namespace, config: dict[str, Any]) -> bool:
+    """Whether this invocation should start/attach a background session host."""
+    if getattr(args, "no_background", False):
+        return False
+    if os.environ.get("OLLAMARUN_NO_BACKGROUND"):
+        return False
+    if config.get("background_sessions") is False:
+        return False
+    if getattr(args, "no_save", False) or getattr(args, "json", False):
+        return False
+    return bool(console.is_terminal and sys.stdin.isatty())
+
+
+def host_overrides(args: argparse.Namespace,
+                   session: Session) -> dict[str, Any]:
+    """Only the settings this invocation explicitly asked to change.
+
+    A resumed session applies these to an existing host; unspecified fields
+    keep whatever the host (and any commands run there) already has.
+    """
+    overrides: dict[str, Any] = {}
+    if getattr(args, "model_flag", None) or getattr(args, "model", None):
+        overrides["model"] = session.model
+    if getattr(args, "no_system", False) \
+            or getattr(args, "system", None) is not None:
+        overrides["system"] = session.system
+    if getattr(args, "think", None) is not None:
+        overrides["think"] = session.think
+    if getattr(args, "format", None):
+        overrides["format"] = session.format
+    if getattr(args, "keepalive", None):
+        overrides["keepalive"] = session.keepalive
+    if getattr(args, "gpu_layers", None) is not None:
+        overrides["gpu_layers"] = session.gpu_layers
+    if any((getattr(args, "option", None), getattr(args, "options_json", None),
+            getattr(args, "num_ctx", None) is not None)):
+        overrides["parameters"] = dict(session.parameters or {})
+    if getattr(args, "tag", None):
+        overrides["tags"] = list(session.tags)
+    if getattr(args, "title", None):
+        overrides["title"] = session.title
+    return overrides
+
+
+def cli_close_session(args: argparse.Namespace, store: SessionStore) -> int:
+    ref = getattr(args, "close_session", None)
+    target = store.resolve(ref) if ref else None
+    session_id = target.id if target is not None else str(ref or "")
+    if target is None and not host_is_running(session_id):
+        console.print(f"[err]no such session: {escape(str(ref))}[/err]")
+        return 1
+    if stop_host(session_id):
+        console.print(f"[ok]closed[/ok] {session_id}")
+    else:
+        console.print(f"[dim]no background host for {session_id}[/dim]")
+    return 0
+
+
+def _hosted_error(session: Session) -> None:
+    console.print(
+        f"[err]session {escape(session.id)} is running in the background[/err]"
+        f" — reattach with `ollamarun -c {escape(session.id)}` or close it "
+        f"with `ollamarun --close-session {escape(session.id)}`")
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "serve":
         return serve_main(argv[1:])
+    if argv and argv[0] == "__session-host":
+        from .session_host import daemon_main
+
+        return daemon_main(argv[1:])
     parser = build_parser()
     store = SessionStore()
     args = parse_cli_args(parser, argv, store)
@@ -841,6 +941,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     set_tool_colors(config.get("tool_colors"))
     setup_logging(args.debug)
 
+    if getattr(args, "close_session", None):
+        return cli_close_session(args, store)
     if args.reindex:
         rows = store.rebuild_index()
         console.print(f"[ok]indexed[/ok] {len(rows)} sessions")
@@ -854,6 +956,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.export:
         return cli_export(args, store)
     if args.delete:
+        target = store.resolve(args.delete)
+        if target is not None:
+            stop_host(target.id)
         return cli_delete(args, store)
 
     if args.json and args.raw:
@@ -1072,6 +1177,40 @@ def main(argv: Optional[list[str]] = None) -> int:
             console.print("[warn]--dimensions/--truncate only apply to embedding models; "
                           "ignored[/warn]")
 
+        if prompt_text and host_is_running(session.id):
+            _hosted_error(session)
+            return 1
+        interactive = not prompt_text and console.is_terminal
+        use_tui = interactive and wants_tui(args, config)
+        if use_tui and host_is_running(session.id):
+            _hosted_error(session)
+            return 1
+        if interactive and not use_tui and background_enabled(args, config):
+            images, image_error = encode_image_paths(
+                args.image, config.get("image_storage", "embed"))
+            if image_error is not None:
+                console.print(f"[err]{escape(image_error)}[/err]")
+                return 2
+            overrides = host_overrides(args, session)
+            spec = HostSpec(
+                protocol=HOST_PROTOCOL, version=VERSION,
+                session=session.to_dict(), args=vars(args),
+                base=client.base, insecure=bool(args.insecure),
+                cwd=os.getcwd(), session_id=session.id,
+                pending_images=images, overrides=overrides,
+                config_path=args.config, debug=bool(args.debug))
+            try:
+                return run_session_client(spec, overrides=overrides)
+            except SessionHostUnavailable as exc:
+                console.print(f"[warn]background session unavailable: "
+                              f"{escape(str(exc))} — using the foreground[/warn]")
+            except SessionHostError as exc:
+                console.print(f"[err]{escape(str(exc))}[/err]")
+                return 1
+
+        if host_is_running(session.id):
+            _hosted_error(session)
+            return 1
         repl = Repl(args, config, client, store, session)
         if args.json and not args.tools:
             repl.tools_enabled = False
@@ -1090,7 +1229,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not console.is_terminal:
             console.print("[err]no prompt given on a non-interactive stdin[/err]")
             return 2
-        if wants_tui(args, config):
+        if use_tui:
             from .tui import run_tui
 
             return run_tui(repl)

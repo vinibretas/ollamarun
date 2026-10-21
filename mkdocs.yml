@@ -102,6 +102,7 @@ nav:
           - Transcript replay: cli/rendering/transcript.md
       - Sessions:
           - Storage: cli/sessions/storage.md
+          - Background sessions: cli/sessions/background.md
           - Save and load: cli/sessions/save-load.md
           - Undo, retry and edit: cli/sessions/undo-retry-edit.md
           - Branching: cli/sessions/branching.md

@@ -29,7 +29,6 @@ from .client import OllamaClient, OllamaError, build_chat_payload
 from .constants import (
     DEFAULT_TIMEOUT,
     HAS_PROMPT_TOOLKIT,
-    HAS_PYPERCLIP,
     HISTORY_PATH,
     THINKING_MODES,
     Completer,
@@ -40,7 +39,6 @@ from .constants import (
     console,
     err_console,
     patch_stdout,
-    pyperclip,
     tool_color,
 )
 from .files import expand_file_mentions
@@ -92,7 +90,7 @@ from .interactive import (
     resolve_gpu_layers,
     sort_models,
 )
-from .events import TOOL_CALL, TOOL_RESULT, TURN_ERROR, RuntimeEvent
+from .events import ROUND_STARTED, TOOL_CALL, TOOL_RESULT, TURN_ERROR, RuntimeEvent
 from .renderer import (GenerationResult, HeadlessRenderer, Renderer, StreamSink,
                        thinking_panel, tool_call_panel, tool_result_panel,
                        user_message_box)
@@ -522,6 +520,17 @@ class Repl:
         # run with no terminal at all.
         self.headless = False
         self.event_sink: Optional[Callable[[RuntimeEvent], None]] = None
+        # The background session host (`session_host.py`) runs this Repl with
+        # no terminal: `host_mode` keeps @file expansion, titles and the user
+        # bubble (as events), `prompt_provider` reads the next line from the
+        # attached client, `turn_runner` routes turns through its TurnManager,
+        # and `switch_guard` refuses /load into a session another host owns.
+        self.host_mode = False
+        self.prompt_provider: Optional[Callable[[str], str]] = None
+        self.turn_runner: Optional[Callable[["Repl"], Any]] = None
+        self.switch_guard: Optional[Callable[[Session], bool]] = None
+        self.settings_changed: Optional[Callable[[], None]] = None
+        self._pending_user_event: Optional[dict[str, Any]] = None
 
     # ── prompt plumbing ─────────────────────────────────────────────────────
 
@@ -581,6 +590,8 @@ class Repl:
         return f"{frame} waiting for {self.session.model}… "
 
     def _read_line(self, message: str) -> str:
+        if self.prompt_provider is not None:
+            return self.prompt_provider(message)
         if self._pt_session is not None:
             if patch_stdout is not None:
                 with patch_stdout(raw=True):
@@ -667,11 +678,18 @@ class Repl:
 
         def _load() -> None:
             try:
-                self.client.load(model, keepalive=keepalive)
-            except OllamaError:
-                return
-            if console.is_terminal:
-                self._maybe_show_ps()
+                try:
+                    self.client.load(model, keepalive=keepalive)
+                except OllamaError:
+                    return
+                if console.is_terminal:
+                    self._maybe_show_ps()
+            finally:
+                if self.settings_changed is not None:
+                    try:
+                        self.settings_changed()
+                    except Exception:
+                        pass
 
         thread = threading.Thread(target=_load, daemon=True)
         self._preload_thread = thread
@@ -1000,6 +1018,16 @@ class Repl:
     # ── generation ──────────────────────────────────────────────────────────
 
     def _generate(self) -> GenerationResult:
+        """Run one turn; a session host supplies its own turn runner.
+
+        The host wrapper keeps the whole agent loop (and its replay buffer)
+        in the detached process; the foreground path is unchanged.
+        """
+        if self.turn_runner is not None:
+            return self.turn_runner(self)
+        return self._generate_local()
+
+    def _generate_local(self) -> GenerationResult:
         """Run one turn through `AgentRuntime` (the loop lives in runtime.py)."""
         if self._preload_thread is not None and self._preload_thread.is_alive():
             # The user sent a message before the background preload finished;
@@ -1030,6 +1058,17 @@ class Repl:
     def _present_round(self, payload: dict[str, Any], after_tools: bool,
                        cancel: Optional[CancelToken]) -> GenerationResult:
         """Stream one round: build a renderer, print the marker, consume chunks."""
+        if self.host_mode and self.event_sink is not None:
+            # A remote front end needs the per-round render settings before
+            # the first delta: which model, whether tools ran, and the ctx
+            # counters for the footer. Local rendering does not need this.
+            self._emit_event(RuntimeEvent(ROUND_STARTED, {
+                "round": self._tool_round,
+                "after_tools": bool(after_tools),
+                "model": self.session.model,
+                "context_used": self.context_used(),
+                "context_total": self.context_length(),
+            }))
         renderer = self._renderer(after_tools=after_tools)
         self.current_renderer = renderer
         marker = f"[ai]{escape(self.session.model)} ›[/ai]"
@@ -1167,21 +1206,37 @@ class Repl:
         return "run"
 
     def _add_user_message(self, text: str) -> None:
-        """Record a user turn: bubble, `@file` expansion, session save, title."""
-        if console.is_terminal and not self.headless:
+        """Record a user turn: bubble, `@file` expansion, session save, title.
+
+        A background host is "headless" for rendering but still local: it
+        expands `@file` mentions, titles the session and hands the bubble to
+        the attached client as a `message.user` event instead of printing it.
+        A serve/API turn is the one that must not touch local files.
+        """
+        host = self.host_mode
+        if console.is_terminal and not self.headless and not host:
             console.print(user_message_box(text, console))
-        if self.headless:
-            # A remote turn must not probe/inline local files through `@path`
-            # mentions or spend an extra model call on an auto title.
+        if self.headless and not host:
+            # A remote API turn must not probe/inline local files through
+            # `@path` mentions or spend an extra model call on a title.
             expanded = text
             included: list[str] = []
             warnings: list[str] = []
         else:
             expanded, included, warnings = expand_file_mentions(
                 text, max_kb=self.max_file_kb)
-        for warning in warnings:
-            if not self.headless:
-                console.print(f"[warn]{escape(warning)}[/warn]")
+        if host:
+            self._pending_user_event = {
+                "text": text,
+                "warnings": list(warnings),
+                "files": list(included),
+                "images": [image.get("name") or image.get("path")
+                           for image in self.pending_images],
+            }
+        else:
+            for warning in warnings:
+                if not self.headless:
+                    console.print(f"[warn]{escape(warning)}[/warn]")
         images = self.pending_images
         self.pending_images = []
         # The bubble shows what the user typed; the stored (and sent) message
@@ -1190,7 +1245,7 @@ class Repl:
                                  files=included or None)
         if not self.no_save:
             self.store.save(self.session)
-        if not self.session.title and not self.headless:
+        if not self.session.title and (host or not self.headless):
             self._maybe_title(text)
 
     def send(self, text: str) -> GenerationResult:
@@ -1221,7 +1276,15 @@ class Repl:
     def run(self) -> int:
         self._preload_model()
         self.refresh_models()
-        self._pt_session = self._build_prompt_session()
+        self._pt_session = None if self.host_mode else self._build_prompt_session()
+        if self.host_mode:
+            if self.session.system:
+                console.print(f"[dim]system prompt: "
+                              f"{escape(shortcut(self.session.system, 80))}[/dim]")
+            elif self.session.system == "":
+                console.print("[dim]system prompt disabled[/dim]")
+            elif console.is_terminal:
+                console.print("[dim]system prompt: built-in default[/dim]")
         self._banner()
         self._context_warning()
         try:
@@ -1278,7 +1341,14 @@ class Repl:
         ]
         if self.session.messages:
             lines.append(f"[key]context[/key] {len(self.session.messages)} messages")
-        lines.append("[dim]/help for commands · Ctrl+D to exit · Ctrl+T thinking[/dim]")
+        if self.host_mode:
+            lines.append(f"[key]background[/key] pid {os.getpid()} · survives "
+                         "detach")
+            lines.append("[dim]/help for commands · Ctrl+D closes the session · "
+                         "Ctrl+C twice detaches · Ctrl+T thinking[/dim]")
+        else:
+            lines.append("[dim]/help for commands · Ctrl+D to exit · "
+                         "Ctrl+T thinking[/dim]")
         console.print(Panel("\n".join(lines), title="ollamarun", border_style="cyan",
                             title_align="left"))
 
@@ -1412,8 +1482,10 @@ def cmd_help(repl: Repl, argument: str) -> None:
         table.add_column("key")
         table.add_column("action")
         entries = [
-            ("Ctrl+D", "exit"),
-            ("Ctrl+C", "cancel input / generation"),
+            ("Ctrl+D", "close the session (and its background host)"),
+            ("Ctrl+C", ("cancel input · twice within 10s while busy detaches "
+                        "and leaves the session running")
+             if repl.host_mode else "cancel input / generation"),
             ("Ctrl+T", "expand or collapse the thinking panel while a "
                        "response streams"),
             ("Ctrl+G", "$OLLAMA_EDITOR for the current prompt"),
@@ -2280,6 +2352,8 @@ def cmd_gpu_layers(repl: Repl, argument: str) -> None:
 
 
 def _switch_session(repl: Repl, session: Session) -> None:
+    if repl.switch_guard is not None and not repl.switch_guard(session):
+        return
     current_model = repl.session.model
     target_model = session.model
     if target_model and current_model and target_model != current_model:
@@ -2827,15 +2901,11 @@ def cmd_copy(repl: Repl, argument: str) -> None:
         except (ValueError, IndexError):
             console.print(f"[err]pick a code block 1..{len(blocks)}[/err]")
             return
-    if not HAS_PYPERCLIP:
-        console.print("[err]pyperclip is not installed[/err]")
-        return
-    try:
-        pyperclip.copy(content)
-    except Exception as exc:  # pyperclip raises platform-specific errors
-        console.print(f"[err]clipboard failed: {escape(str(exc))}[/err]")
-        return
-    console.print(f"[ok]copied[/ok] {len(content)} characters")
+    ok, message = repl.ui.copy(content)
+    if ok:
+        console.print(f"[ok]{escape(message)}[/ok]")
+    else:
+        console.print(f"[err]{escape(message)}[/err]")
 
 
 def cmd_export(repl: Repl, argument: str) -> None:

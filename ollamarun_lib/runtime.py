@@ -259,7 +259,8 @@ class AgentRuntime:
                        content=result.content, thinking=result.thinking or None,
                        tool_calls=len(result.tool_calls),
                        cancelled=True if result.cancelled else None,
-                       error=result.error or None)
+                       error=result.error or None,
+                       stats=result.stats or None)
             if result.content or result.tool_calls:
                 session.add_message("assistant", result.content,
                                     thinking=result.thinking or None,

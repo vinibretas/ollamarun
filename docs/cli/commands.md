@@ -58,8 +58,9 @@ The session browser: a numbered table, then `session number, ID, filter or
 See [Search and export](sessions/search-export.md).
 
 ### `/bye`, `/exit`
-Save and leave (Ctrl+D does the same). Unloads the session model unless
-`--keep-loaded`/[housekeeping](models/housekeeping.md).
+Explicitly close the session and its background host (Ctrl+D does the same).
+Unloads the session model unless `--keep-loaded`/[housekeeping](models/housekeeping.md).
+Closing the window or detaching with Ctrl+C does **not** run this.
 
 ```text
 llama3.2:3b › /bye
@@ -330,8 +331,8 @@ The command table; `/help shortcuts` the key bindings.
 
 ```text
 ╭─────────┬────────────────────────────────────────────────────────────────╮
-│ Ctrl+D  │ exit                                                           │
-│ Ctrl+C  │ cancel input / generation                                      │
+│ Ctrl+D  │ close the session (and its background host)                    │
+│ Ctrl+C  │ clear input; twice within 10s while busy detaches the terminal │
 │ Ctrl+T  │ expand or collapse the thinking panel while a response streams │
 │ Ctrl+G  │ $OLLAMA_EDITOR for the current prompt                          │
 │ Ctrl+J  │ insert newline                                                 │

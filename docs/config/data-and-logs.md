@@ -11,7 +11,9 @@ Everything the harness persists lives under three roots:
 | `~/etc/data/ollamarun/history` | Prompt input history (off with `OLLAMA_NOHISTORY`). |
 | `~/etc/data/ollamarun/artifacts/` | The serve [artifact store](../api/agent/artifacts.md). |
 | `~/etc/data/ollamarun/ctxfit-calibration.json` | Measured [context-fit samples](../cli/context/probes.md#calibration). |
+| `~/.cache/ollamarun/session-hosts/` | [Background session](../cli/sessions/background.md) sockets, metadata and start locks (`0700`, same user). |
 | `~/etc/logs/ollamarun.log` | The debug log (`--debug`). |
+| `~/etc/logs/ollamarun-session-host.log` | Background host stdout/stderr. |
 
 ## The session store
 

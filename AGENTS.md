@@ -20,7 +20,9 @@ the scheduler this user runs in front of Ollama on `:11434`.
 The harness layers, roughly top to bottom:
 
 - **Front ends** — `cli.py` starts either the inline REPL or the Textual TUI
-  (`tui.py`), both talking to the REPL through the `Ui` seam (`ui.py`).
+  (`tui.py`). The inline REPL is normally attached to a background session
+  host (`session_host.py`/`host_client.py`) over a Unix socket; the TUI and
+  one-shots keep the in-process path.
 - **Agent loop** — `repl.py`'s `Repl` drives multi-round tool calls
   (`_generate` → `_execute_tool_calls` → approval → follow-up round), plus the
   message queue, cancellation and every slash command.
@@ -44,6 +46,14 @@ and reconnects a resumed session to the host it last ran on. Load/unload,
 streaming and all `/api/*` calls then happen on that machine while sessions,
 files, images and the tool harness stay local — there is no separate remote
 code path.
+
+Interactive inline sessions normally run inside a **background session
+host** (`session_host.py`): the detaching, replay, approvals and command
+lifecycle live there, the terminal is `host_client.py`, and closing the
+window or double-Ctrl+C detaches without cancelling a turn. The host is per
+session and per login; `/bye`, Ctrl+D, `--close-session` and `--delete` end
+it, and `--no-background` / `background_sessions: false` restores the old
+in-process REPL. One-shots and the TUI are unchanged.
 
 A model missing from the target machine is handled by `interactive.py`'s
 `ensure_model()`: it prints the machine's free disk space (`shutil.disk_usage`
@@ -469,7 +479,42 @@ a module's own docstring for what lives there before editing:
    `cmd_num_ctx` are their only callers (`resolve_num_ctx` is reused by
    `main()` in `cli.py` for `--num-ctx`). `ApprovalPicker` and its runners are
    re-exported from `ui.py` for compatibility.
-19. **`tui.py`** — the optional Textual front end (`--ui tui`), deprecated:
+19. **`session_host.py`** — the background session host behind the inline
+   REPL. `HostSpec` is the launch contract (the resolved `Session`, the
+   parent's argparse namespace, the Ollama base, cwd, pending `--image`
+   payloads and the explicit launch overrides); `HostPaths` derives the
+   per-session Unix socket/metadata/start-lock under
+   `~/.cache/ollamarun/session-hosts/`. `SessionHostServer` builds the real
+   `Repl` with `host_mode`/`headless`, replaces its `Ui` with `HostUi`
+   (prompts, confirmations, approvals, editor and clipboard travel to the
+   attached terminal), routes the shared `console`/`err_console` through an
+   `OutputRouter` (raw ANSI `output` messages plus a bounded replay buffer)
+   and runs turns through `TurnManager` with a `_Coalescer` so a reattaching
+   client can replay a running turn. It parks approvals/questions in
+   `pending_prompt`/`pending_question`, keeps an `unseen_turn` for a turn
+   that finished with no terminal attached, rekeys the socket when
+   `/clear`/`/new`/`/branch`/`/load` changes the session id, and applies
+   launch overrides only while idle. `LineConnection` is the JSONL framing;
+   `spawn_host`/`ensure_host`/`ping_host`/`stop_host`/`host_is_running` are
+   the lifecycle helpers `cli.py` uses; `daemon_main` is the hidden
+   `__session-host` entry point. The host is per session, local and
+   same-user only; it ends on `/bye`, Ctrl+D (a `close` op),
+   `--close-session`, `--delete` or SIGTERM — never on a terminal close.
+20. **`host_client.py`** — the terminal side of a background session.
+   `SessionClient.attach()` sends the terminal size/overrides and consumes
+   `hello`, then a reader thread frames output/questions/turn events while
+   the main loop runs the prompt, `RemoteCompleter` (completion is answered
+   by the host, so ids/models/files are never stale), the event-driven
+   `Renderer.begin/feed/end` rendering, the question/approval prompts and
+   the `InterruptGuard` (double Ctrl+C in 10s detaches; Ctrl+D sends
+   `close`). It buffers questions/prompts while replaying an active turn,
+   renders an `unseen_turn` before the prompt, takes over from an older
+   client (the host sends `taken_over` and wakes the old prompt with
+   SIGINT), and writes command output raw so the host's ANSI is not
+   re-interpreted. `run_client()` ensures the host, attaches and returns the
+   terminal exit code; `cli.py` falls back to the foreground REPL only when
+   no host can be started.
+21. **`tui.py`** — the optional Textual front end (`--ui tui`), deprecated:
    it will be rewritten as a pure `ollamarun serve` API client instead of
    reaching into the runtime in-process. Current code: the app
    (transcript pane / rule / status bar / always-on `PromptInput`),
@@ -481,11 +526,11 @@ a module's own docstring for what lives there before editing:
    workers that marshal widget updates back with `call_from_thread`;
    `run_tui()` is the entry point. Textual is optional — `cli.py`'s
    `wants_tui()` checks it and falls back to the inline REPL with a note.
-20. **`run.py`** — `run_once()` (non-REPL path, built on an
+22. **`run.py`** — `run_once()` (non-REPL path, built on an
    already-constructed `Repl`; its `--json` branch runs the tool loop
    through `AgentRuntime` directly) and `run_embed()` (routes
    embedding-capable models to `/api/embed` instead of chat).
-21. **`server.py`** — the generic HTTP plumbing behind `ollamarun serve`:
+23. **`server.py`** — the generic HTTP plumbing behind `ollamarun serve`:
    `Router` (method + `{param}` path patterns, with distinct 404/405),
    the `Request`/`Response`/`StreamResponse` model, `HttpServer` (a
    `ThreadingHTTPServer` wrapper with a body cap checked before the body
@@ -501,7 +546,7 @@ a module's own docstring for what lives there before editing:
    500 and its traceback goes only to the `--debug` log.
    `run_forever()` serves on a worker thread with SIGINT/SIGTERM mapped
    to a clean `shutdown()`. It knows nothing about OpenAI or Ollama.
-22. **`artifacts.py`** — the artifact subsystem behind the serve API's
+24. **`artifacts.py`** — the artifact subsystem behind the serve API's
    files/artifacts endpoints and the `file` content parts: `ArtifactStore`
    (immutable snapshots behind opaque `art_…` ids; `register()` reserves
    quota in the index under the `SessionStore` lock pattern — RLock +
@@ -525,7 +570,7 @@ a module's own docstring for what lives there before editing:
    `require_vision()` the one image capability check. It raises
    `server.ApiError` directly — it exists for the HTTP layer. Imports
    `constants`, `helpers`, `server`.
-23. **`fits.py`** — the context-fit jobs behind the native API's fit
+25. **`fits.py`** — the context-fit jobs behind the native API's fit
    surface: `FitService` (a worker thread per job; queued → running →
    completed/failed/cancelled; per-session exclusivity, a global
    `max_active_fits` cap, cancel via the job's token, TTL sweeping of
@@ -534,7 +579,7 @@ a module's own docstring for what lives there before editing:
    `FitsClosed`. Jobs run one `ctxfit.fit_context()` and report progress
    through the request's `on_progress`; the optional session write is the
    API's `on_success` hook, so this module never touches the store.
-24. **`openai_api.py`** — the OpenAI-compatible `/v1` surface
+26. **`openai_api.py`** — the OpenAI-compatible `/v1` surface
    (`build_router()` registers `GET /v1/models`, `GET /v1/models/{id}`,
    `POST /v1/embeddings`, `POST /v1/chat/completions`). Model turns only:
    `parse_chat_request()` validates the OpenAI schema (explicit 400s for
@@ -562,7 +607,7 @@ a module's own docstring for what lives there before editing:
    off unless asked. `translate_error()`/`stream_backend_error()` map
    upstream failures onto sanitized 404/502 envelopes with stable messages
    (raw backend detail goes to the `--debug` log).
-25. **`agent_api.py`** — the native agent endpoints
+27. **`agent_api.py`** — the native agent endpoints
    (`build_agent_api()` constructs the one `AgentApi`;
    `add_artifact_routes()` registers the shared `POST /v1/files` and
    `GET /v1/artifacts/*` routes — kept even when `serve_agent` disables
@@ -603,7 +648,7 @@ a module's own docstring for what lives there before editing:
    `fits.py`. `serve_fit` gates off/estimate/probe; a fitting session is
    held by `_fit_guard` (409 `session_busy` with `active_fit_id`, checked
    alongside active turns by every session route and turn submit).
-26. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
+28. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
    every `ollama run` flag), `resolve_model`/`resolve_session` (figuring out
    what model/session a given invocation means, including the `-c`/`-r`/
    `--session` disambiguation in `normalize_argv`), `ui_mode()`/`wants_tui()`
@@ -656,9 +701,19 @@ hint only, the way `renderer.py` does for `Session` (defined later, in
   pyflakes gate, so keep them clean, runnable and mirrored in the README's
   Example clients section.
 - **New interactive prompt/hook**: extend the `Ui` protocol and `ConsoleUi`
-  in `ui.py`, then implement it in `TuiUi` (`tui.py`) — nothing below the
-  `repl.py` layer may know which front end is running. Set `interactive`
-  on an implementation that can actually ask; the approval gate reads it.
+  in `ui.py`, then implement it in `HostUi` (`session_host.py`) and
+  `SessionClient._ask_question` (`host_client.py`) — and `TuiUi` (`tui.py`)
+  if the TUI should offer it — because nothing below the `repl.py` layer may
+  know which front end is running. Set `interactive` on an implementation
+  that can actually ask; the approval gate reads it.
+- **Background session behavior**: the host is `session_host.py` (protocol,
+  console router, `HostUi`, turn relay, replay, rekey, shutdown) and the
+  terminal is `host_client.py` (attach/takeover, prompt/completion, event
+  rendering, `InterruptGuard`). Add a wire operation to both sides and to
+  `handle_connection`/`_handle_client_message` or `_read_loop`/`_dispatch`;
+  the socket is JSONL, same-user only. A turn that must survive a detach
+  belongs in the TurnManager relay, not in the client. Buffer/replay and
+  approval behavior are pinned by `test_session_host_*`.
 - **New runtime event**: add the type to `events.py`, emit it from
   `runtime.py`, and teach the consumers (`Repl`'s event printer,
   `HeadlessRenderer`, the future HTTP layer) — the event stream is the
@@ -728,7 +783,16 @@ contract and the 3.10 syntax guard. The audit guards
 pin the event vocabulary/serialization and terminal-event contract, the
 approval order with its interrupt/stopped paths, the cancel token actually
 reaching a production turn's tool, the store flock gating another process,
-and the destructive-tool refusal after a stop. The Phase 2 tests
+and the destructive-tool refusal after a stop. The background-session
+tests (`test_interrupt_guard`, `test_session_host_protocol`,
+`test_session_host_detach_reattach`, `test_session_host_takeover`,
+`test_session_host_rekey`, plus the renderer's `test_renderer_feed_parity`)
+pin the double-Ctrl+C window, the real Repl running in a host (banner,
+commands, turn, `/bye`), a detached turn finishing and being shown on
+reattach, second-terminal takeover, and the `/clear` socket rekey. They
+drive a real `SessionClient` with a scripted input stream and a separate
+`rich` console, so no terminal is needed; the pty-level detach/`-c` flow is
+verified manually and against a real backend. The Phase 2 tests
 (`test_turn_event_envelope`, `test_turn_manager_lifecycle`,
 `test_turn_manager_synthesized_terminal`, `test_turn_buffer_truncation`,
 `test_turn_expired`, `test_turn_manager_session_busy`,

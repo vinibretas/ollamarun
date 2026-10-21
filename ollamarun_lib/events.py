@@ -18,6 +18,15 @@ from typing import Any
 TURN_STARTED = "turn.started"
 MESSAGE_DELTA = "message.delta"
 MESSAGE_COMPLETED = "message.completed"
+#: A host-mode user turn, emitted before `turn.started`: what the user
+#: typed, the `@file` warnings and the attached image names. The transcript
+#: message (expanded files, encoded images) is already in the session.
+MESSAGE_USER = "message.user"
+#: One model round starts (the host's `present_round` seam), with the
+#: renderer settings a front end needs: round number, whether tools ran
+#: before it, the model and the context counters. Only event-driven hosts
+#: that also render (the background session client) consume it.
+ROUND_STARTED = "round.started"
 TOOL_CALL = "tool.call"
 TOOL_RESULT = "tool.result"
 APPROVAL_REQUIRED = "approval.required"
@@ -39,7 +48,8 @@ TERMINAL_EVENTS = frozenset({TURN_COMPLETED, TURN_ERROR, TURN_CANCELLED})
 
 #: The runtime vocabulary plus the manager's `stream.gap`.
 EVENT_TYPES = (
-    TURN_STARTED, MESSAGE_DELTA, MESSAGE_COMPLETED, TOOL_CALL, TOOL_RESULT,
+    TURN_STARTED, MESSAGE_DELTA, MESSAGE_COMPLETED, MESSAGE_USER,
+    ROUND_STARTED, TOOL_CALL, TOOL_RESULT,
     APPROVAL_REQUIRED, APPROVAL_RESOLVED, ARTIFACT_CREATED, SESSION_FIT,
     TURN_WARNING, TURN_ERROR, TURN_COMPLETED, TURN_CANCELLED, STREAM_GAP,
 )

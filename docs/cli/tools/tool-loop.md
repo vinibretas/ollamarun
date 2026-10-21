@@ -117,10 +117,16 @@ and the answer says done).
 
 ## Cancelling a turn
 
-Ctrl+C stops the current turn. Subprocess-backed tools are killed by process
-group (through `run_cancellable()`), network tools are abandoned rather than
-waited on, and a destructive call that arrives after the stop is refused
-instead of run. Whatever completed before the cancel stays in the session.
+Explicitly closing the session (`/bye`, Ctrl+D, `--close-session`, Ctrl+C in
+a one-shot, Esc Esc in the TUI) stops the current turn. Subprocess-backed
+tools are killed by process group (through `run_cancellable()`), network tools
+are abandoned rather than waited on, and a destructive call that arrives after
+the stop is refused instead of run. Whatever completed before the cancel stays
+in the session.
+
+In the inline REPL, Ctrl+C twice within 10 s only **detaches** the terminal:
+the background host keeps the turn running (see
+[Background sessions](../sessions/background.md)).
 
 ## Where next
 

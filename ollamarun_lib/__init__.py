@@ -27,6 +27,8 @@ from .ctxfit import *  # noqa: F401,F403
 from .runtime import *  # noqa: F401,F403
 from .turns import *  # noqa: F401,F403
 from .repl import *  # noqa: F401,F403
+from .session_host import *  # noqa: F401,F403
+from .host_client import *  # noqa: F401,F403
 if HAS_TEXTUAL:
     # `tui.py` imports the Textual classes at module level; without the
     # package this module must stay importable, or every command dies even

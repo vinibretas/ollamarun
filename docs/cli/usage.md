@@ -92,6 +92,8 @@ All of this (and how the fits are computed) lives in
 | `--tag TAG` | — | Tag for the session; repeatable. |
 | `--auto-title` | config `auto_title` | Ask the model for a title after the first turn. |
 | `--no-save` | off | Keep this run out of the session store entirely. |
+| `--no-background` | off | Run the inline REPL in the foreground instead of a background session host. |
+| `--close-session SESSION_ID` | — | Close a background session host explicitly (no attach). |
 
 Sessions and their files are covered in
 [Sessions](../cli/sessions/storage.md).

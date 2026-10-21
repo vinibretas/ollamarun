@@ -321,6 +321,15 @@ is deleted without going through `trash-put`.
   `--markdown` plus `--out FILE` to redirect.
 - `--no-save` keeps a run out of the store entirely; `--json`/`--raw` cover
   scripting.
+- **Background sessions:** the inline REPL runs in a detached per-session
+  host. Closing the window or pressing `Ctrl+C` twice within 10 s while a
+  turn runs detaches without stopping it; `ollamarun -c` reattaches, replays
+  the running turn and shows anything that finished while you were away.
+  A second `-c` takes the session over, `/bye`/`Ctrl+D` close it, and
+  `--close-session ID` closes it without attaching. Commands (`/pull`,
+  `/summarize`, compaction, …) run in the host too. `--no-background` (or
+  `background_sessions: false`) restores the foreground REPL; one-shots and
+  the TUI are unchanged. See [Background sessions](docs/cli/sessions/background.md).
 
 `/set`, `/show`, `/load`, `/save` (`/api/create`), `/clear`, `/new`, `/bye`
 mirror ollama's REPL; `/undo`, `/retry`, `/edit`, `/branch`, `/context`,
@@ -1017,13 +1026,15 @@ line ends with the same `X → Y` as the tool's result box).
 | `~/etc/config_files/ollamarun.json` | Config (created from defaults on first run); `--config FILE` overrides |
 | `~/etc/config_files/ollamarun-defs/{tools,prompts}/` | Per-user tool/prompt overrides |
 | `~/etc/data/ollamarun/sessions/`, `index.json`, `history` | Session store, index and prompt history |
+| `~/.cache/ollamarun/session-hosts/` | Background host sockets, metadata and start locks (`0700`, same user) |
 | `~/etc/logs/ollamarun.log` | Debug log (`--debug`) |
+| `~/etc/logs/ollamarun-session-host.log` | Background host stdout/stderr (startup errors land here) |
 
 Selected config keys: `render`, `math`, `thinking`, `ui`, `show_stats`,
 `tps_footer`, `max_render_chars`, `pager`, `auto_title`, `auto_compact`,
 `image_storage`, `max_file_kb`, `options`, `unload_on_exit`, `gpu_layers`,
-`tools*`, `tool_colors`, `tts*`, `chem_*`, `remote*`, `max_gpu_*`,
-`max_cpu_*`, `timeout`, plus the `serve_*` matrix below. See
+`background_*`, `tools*`, `tool_colors`, `tts*`, `chem_*`, `remote*`,
+`max_gpu_*`, `max_cpu_*`, `timeout`, plus the `serve_*` matrix below. See
 `DEFAULT_CONFIG` in `ollamarun_lib/constants.py` for the full set.
 
 `ollamarun serve` validates every `serve_*` key at startup: an invalid

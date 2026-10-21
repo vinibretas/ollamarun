@@ -46,6 +46,9 @@ class GenerationResult:
     stats: dict[str, Any] = field(default_factory=dict)
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     error: Optional[str] = None
+    #: An explicit final-answer decision for front ends that render remote
+    #: rounds: `None` keeps the `after_tools`/tool-call heuristic.
+    final: Optional[bool] = None
 
 
 class TpsEstimator:
@@ -335,6 +338,17 @@ class Renderer:
             self.interactive = (self.live_render and sys.stdin.isatty())
         except (ValueError, OSError):
             self.interactive = False
+        #: Streaming state shared by `stream()` (local NDJSON) and
+        #: `begin()`/`feed()`/`end()` (a background host's event stream).
+        self.result = GenerationResult()
+        self._started = False
+        self._use_live = False
+        self._sink: Optional[StreamSink] = None
+        self._live: Optional[Live] = None
+        self._last_refresh = 0.0
+        self._printed_thinking_header = False
+        self._fd: Optional[int] = None
+        self._saved_term = None
 
     def with_sink(self, sink: Optional[StreamSink]) -> "Renderer":
         """Render through `sink` (a widget) instead of a `rich.Live` view."""
@@ -414,7 +428,11 @@ class Renderer:
         tool calls is interim (the model is still working), so a round that
         runs after tools and finishes without them is the answer the model
         committed to. Cancelled or errored rounds never get the divider.
+        A remote front end that knows the round's fate (the host's
+        `message.completed`) passes it explicitly through `result.final`.
         """
+        if result.final is not None:
+            return bool(result.final)
         return bool(self.after_tools and not result.tool_calls
                     and not result.cancelled and not result.error)
 
@@ -438,127 +456,164 @@ class Renderer:
         by the TUI, which updates a widget instead of a `rich.Live`."""
         return self._live_view(result)
 
-    def stream(self, events: Iterator[dict[str, Any]],
-               cancel: Optional[CancelToken] = None,
-               sink: Optional[StreamSink] = None) -> GenerationResult:
-        result = GenerationResult()
-        use_live = self.live_render
-        if sink is not None and self.mode != "raw":
-            sink.start(self)
-        else:
-            sink = None
-        live: Optional[Live] = None
-        last_refresh = 0.0
-        printed_thinking_header = False
-        fd: Optional[int] = None
-        saved_term = None
+    def begin(self, sink: Optional[StreamSink] = None) -> "Renderer":
+        """Start one streamed round (local NDJSON or remote deltas).
+
+        `stream()` calls this itself; a front end that receives deltas from
+        a background host calls it when the round starts, then `feed()` for
+        each delta and `end()` when the round completes.
+        """
+        if self._started:
+            return self
+        self.result = GenerationResult()
+        self._use_live = self.live_render
+        self._sink = sink if (sink is not None and self.mode != "raw") else None
+        if self._sink is not None:
+            self._sink.start(self)
+        self._live = None
+        self._last_refresh = 0.0
+        self._printed_thinking_header = False
+        self._fd = None
+        self._saved_term = None
         if self.interactive:
             try:
-                fd = sys.stdin.fileno()
-                saved_term = termios.tcgetattr(fd)
-                tty.setcbreak(fd)
+                self._fd = sys.stdin.fileno()
+                self._saved_term = termios.tcgetattr(self._fd)
+                tty.setcbreak(self._fd)
             except (OSError, ValueError, termios.error):
-                fd = None
-                saved_term = None
+                self._fd = None
+                self._saved_term = None
+        if self._use_live:
+            self._live = Live(self._live_view(self.result), console=self.console,
+                              refresh_per_second=10, vertical_overflow="visible")
+            self._live.start()
+        self._started = True
+        return self
 
-        def refresh(interval: float, force: bool = False) -> None:
-            nonlocal last_refresh
-            if live is None and sink is None:
-                return
-            now = time.monotonic()
-            if force or now - last_refresh >= interval:
-                frame = self._live_view(result)
-                if sink is not None:
-                    sink.update(frame)
-                else:
-                    live.update(frame, refresh=True)
-                last_refresh = now
+    def _refresh(self, interval: float, force: bool = False) -> None:
+        if self._live is None and self._sink is None:
+            return
+        now = time.monotonic()
+        if not force and now - self._last_refresh < interval:
+            return
+        frame = self._live_view(self.result)
+        if self._sink is not None:
+            self._sink.update(frame)
+        elif self._live is not None:
+            self._live.update(frame, refresh=True)
+        self._last_refresh = now
 
-        def handle_keys() -> None:
-            if live is None or fd is None:
-                return
-            if self._poll_keys(fd):
-                refresh(0.0, force=True)
+    def _handle_keys(self) -> None:
+        if self._live is None or self._fd is None:
+            return
+        if self._poll_keys(self._fd):
+            self._refresh(0.0, force=True)
 
-        try:
-            if use_live:
-                live = Live(self._live_view(result), console=self.console,
-                            refresh_per_second=10, vertical_overflow="visible")
-                live.start()
-            try:
-                for event in events:
-                    if cancel is not None and cancel.cancelled:
-                        result.cancelled = True
-                        break
-                    if event.get("error"):
-                        result.error = str(event["error"])
-                        break
-                    thinking, content = consume_chunk(result, event, self.estimator)
-                    if thinking:
-                        if use_live or sink is not None:
-                            refresh(0.10)
-                        elif self.thinking_visible() and self.mode != "raw" \
-                                and not self.use_pager:
-                            if not printed_thinking_header:
-                                self.console.print("[dim italic]thinking…[/dim italic]")
-                                printed_thinking_header = True
-                            self.console.print(f"[dim italic]{escape(thinking)}[/dim italic]", end="")
-                    if content:
-                        if use_live or sink is not None:
-                            heavy = len(result.content) > self.max_render_chars
-                            refresh(1.0 if heavy else 0.10)
-                        elif self.mode != "raw" and not self.use_pager:
-                            self.console.print(escape(content), end="",
-                                               soft_wrap=self.nowordwrap, markup=False,
-                                               highlight=False)
-                    handle_keys()
-            except KeyboardInterrupt:
-                result.cancelled = True
-        finally:
-            if live is not None:
-                # Force a final refresh so the frame frozen when the live
-                # view stops reflects the complete content -- throttled
-                # refreshes during streaming can leave the last live frame
-                # stale otherwise, which used to be papered over by printing
-                # the whole response a second time below. This is also the
-                # moment a round's fate is known: `_committed_final` lets the
-                # frozen frame (and only it) carry the response divider when
-                # this was the answer that ended a tool loop.
-                self._committed_final = self.final_rule_wanted(result)
-                refresh(0.0, force=True)
-                live.stop()
-            if fd is not None and saved_term is not None:
-                try:
-                    termios.tcsetattr(fd, termios.TCSADRAIN, saved_term)
-                except (OSError, ValueError, termios.error):
-                    pass
-        if cancel is not None and cancel.cancelled:
-            # The reader may have ended because the response was closed under
-            # it (see OllamaClient.abort_stream) rather than by a chunk.
+    def _feed_text(self, thinking: str, content: str) -> None:
+        if thinking:
+            if self._use_live or self._sink is not None:
+                self._refresh(0.10)
+            elif self.thinking_visible() and self.mode != "raw" \
+                    and not self.use_pager:
+                if not self._printed_thinking_header:
+                    self.console.print("[dim italic]thinking…[/dim italic]")
+                    self._printed_thinking_header = True
+                self.console.print(
+                    f"[dim italic]{escape(thinking)}[/dim italic]", end="")
+        if content:
+            if self._use_live or self._sink is not None:
+                heavy = len(self.result.content) > self.max_render_chars
+                self._refresh(1.0 if heavy else 0.10)
+            elif self.mode != "raw" and not self.use_pager:
+                self.console.print(escape(content), end="",
+                                   soft_wrap=self.nowordwrap, markup=False,
+                                   highlight=False)
+        self._handle_keys()
+
+    def feed(self, channel: str, text: str, count: int = 1) -> None:
+        """Apply one remote delta (`content` or `thinking`) and refresh."""
+        if not text:
+            return
+        if not self._started:
+            self.begin()
+        if channel == "thinking":
+            self.result.thinking += text
+            self._feed_text(text, "")
+        else:
+            self.result.content += text
+            self._feed_text("", text)
+        if self.estimator is not None:
+            self.estimator.add(max(1, int(count or 1)))
+
+    def feed_chunk(self, event: dict[str, Any]) -> None:
+        """Apply one raw Ollama NDJSON chunk (used by `stream()`)."""
+        thinking, content = consume_chunk(self.result, event, self.estimator)
+        self._feed_text(thinking, content)
+
+    def poll(self) -> None:
+        """A heartbeat while no delta arrives: Ctrl+T and the spinner."""
+        if not self._started:
+            return
+        self._handle_keys()
+        self._refresh(0.25)
+
+    def end(self, *, final: Optional[bool] = None,
+            stats: Optional[dict[str, Any]] = None,
+            error: Optional[str] = None,
+            cancelled: bool = False,
+            content: Optional[str] = None,
+            thinking: Optional[str] = None) -> GenerationResult:
+        """Finish a round and print the final representation (once)."""
+        if not self._started:
+            self.begin()
+        result = self.result
+        if stats is not None:
+            result.stats = dict(stats)
+        if error:
+            result.error = error
+        if cancelled:
             result.cancelled = True
-        if sink is not None:
-            # Freeze the final frame (as the live view does) and hand the
-            # response back to the front end -- nothing is re-printed. The
-            # committed-final divider is decided now, so the frozen frame
-            # carries it exactly like the live one.
-            self._committed_final = self.final_rule_wanted(result)
-            refresh(0.0, force=True)
-            sink.finish(result)
+        if content is not None:
+            result.content = content
+        if thinking is not None:
+            result.thinking = thinking
+        self._committed_final = (bool(final) if final is not None
+                                 else self.final_rule_wanted(result))
+        if self._live is not None:
+            # Freeze the complete frame; throttled refreshes can leave the
+            # last live frame stale, and this is where the response divider
+            # is decided.
+            self._refresh(0.0, force=True)
+            self._live.stop()
+            self._live = None
+        if self._fd is not None and self._saved_term is not None:
+            try:
+                termios.tcsetattr(self._fd, termios.TCSADRAIN, self._saved_term)
+            except (OSError, ValueError, termios.error):
+                pass
+        self._fd = None
+        self._saved_term = None
+        had_sink = self._sink is not None
+        if self._sink is not None:
+            # Freeze the final frame and hand it back to the front end --
+            # nothing is re-printed here.
+            self._refresh(0.0, force=True)
+            self._sink.finish(result)
+            self._sink = None
         if self.mode == "raw":
             sys.stdout.write(result.content)
             if result.content and not result.content.endswith("\n"):
                 sys.stdout.write("\n")
             sys.stdout.flush()
-        elif use_live:
-            # The frozen live frame (see the forced refresh above) already
-            # shows the complete rule + rendered content -- printing it
-            # again here would duplicate the whole response.
+        elif self._use_live:
+            # The frozen live frame already shows the complete rule and
+            # rendered content.
             if result.thinking and self.thinking_visible() \
                     and self.thinking_mode == "expanded":
                 self.console.print(thinking_panel(result.thinking))
         elif self.use_pager:
             self._pager_render(result)
-        elif sink is None:
+        elif not had_sink:
             if result.content and not result.cancelled:
                 self.console.print()
         if result.cancelled and self.mode != "raw":
@@ -568,13 +623,60 @@ class Renderer:
         if self.show_stats and result.stats and self.mode != "raw" \
                 and not self.use_pager:
             self.console.print(f"[dim]⏱  {format_stats(result.stats)}[/dim]")
-        if result.error and self.mode == "raw" and sink is None:
+        if result.error and self.mode == "raw":
             # Raw mode suppresses the runtime's `turn.error` console line
             # (`quiet`) and writes the payload to stdout, so the error is
             # reported here, on stderr. Every other mode is reported exactly
             # once by that event line -- the way an immediate failure is.
             err_console.print(f"[err]ollama error:[/err] {escape(result.error)}")
+        self._started = False
+        self._use_live = False
         return result
+
+    def abort(self) -> None:
+        """Stop rendering without printing a final frame (detach/takeover)."""
+        if self._live is not None:
+            try:
+                self._live.stop()
+            except Exception:
+                pass
+            self._live = None
+        if self._fd is not None and self._saved_term is not None:
+            try:
+                termios.tcsetattr(self._fd, termios.TCSADRAIN, self._saved_term)
+            except (OSError, ValueError, termios.error):
+                pass
+        self._fd = None
+        self._saved_term = None
+        self._sink = None
+        self._started = False
+        self._use_live = False
+
+    def stream(self, events: Iterator[dict[str, Any]],
+               cancel: Optional[CancelToken] = None,
+               sink: Optional[StreamSink] = None) -> GenerationResult:
+        self.begin(sink)
+        try:
+            for event in events:
+                if cancel is not None and cancel.cancelled:
+                    self.result.cancelled = True
+                    break
+                if event.get("error"):
+                    self.result.error = str(event["error"])
+                    break
+                self.feed_chunk(event)
+        except KeyboardInterrupt:
+            self.result.cancelled = True
+        except BaseException:
+            # Never leave `rich.Live` running or the terminal in cbreak on an
+            # unexpected error; the caller still sees the exception.
+            self.abort()
+            raise
+        if cancel is not None and cancel.cancelled:
+            # The reader may have ended because the response was closed under
+            # it (see OllamaClient.abort_stream) rather than by a chunk.
+            self.result.cancelled = True
+        return self.end()
 
     def _pager_render(self, result: GenerationResult) -> None:
         with self.console.pager(styles=True):
