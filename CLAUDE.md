@@ -23,7 +23,7 @@ The harness layers, roughly top to bottom:
   (`tui.py`). The inline REPL is normally attached to a background session
   host (`session_host.py`/`host_client.py`) over a Unix socket; the TUI and
   one-shots keep the in-process path.
-- **Agent loop** — `repl.py`'s `Repl` drives multi-round tool calls
+- **Agent loop** — `repl/core.py`'s `Repl` drives multi-round tool calls
   (`_generate` → `_execute_tool_calls` → approval → follow-up round), plus the
   message queue, cancellation and every slash command.
 - **Tool registry** — `tools/` builds the tool set from `defs/tools/*.json`,
@@ -353,7 +353,7 @@ a module's own docstring for what lives there before editing:
 12. **`emit.py`** — `emit()` plus the `cli_list`/`cli_search`/`cli_show`/
    `cli_export`/`cli_delete` functions that implement the non-interactive
    inspection flags.
-13. **`ui.py`** — the front-end seam: `Ui` (the interactive hooks `repl.py`
+13. **`ui.py`** — the front-end seam: `Ui` (the interactive hooks `repl/core.py`
    and `interactive.py` call: `ask`, `confirm`, `editor`, `approval`,
    `notify`, and `interactive` — whether the front end can actually ask),
    `ConsoleUi` (the inline implementation — the same rich prompts as
@@ -444,9 +444,9 @@ a module's own docstring for what lives there before editing:
    returns a `TurnResult`; `wait()` joins a worker for tests and
    shutdown, and a subscriber that falls behind is closed, never
    stalling the turn.
-18. **`repl.py`** — `SlashCompleter`/`completion_candidates` (completion for
-   `/commands`, session ids, models, `@files`, shared with the TUI input),
-   the `Repl` class (the CLI adapter over `runtime.AgentRuntime`:
+18. **`repl/`** — the interactive front end, one module per concern.
+   `core.py` is the `Repl` class (the CLI adapter over
+   `runtime.AgentRuntime`:
    `_generate` and `_execute_tool_calls` are thin wrappers that build the
    per-turn `TurnHooks` and render its events, `_approve_tool_call` is the
    policy + prompt approver, and the `MessageQueue`/`CancelToken`
@@ -473,22 +473,32 @@ a module's own docstring for what lives there before editing:
    identity + settings + tool round).
    `/system` semantics live in `_apply_system` (`clear`/`default` → built-in,
    `off` → disabled, text → custom) plus `_show_system`, shared with
-   `/set system`. Then the `cmd_*` functions.
-   The numbered tool-approval prompt itself and the entry list it is built
-   from (`approval_entries`/`_prompt_approval`, storing generalized
-   `ToolRule`s in the session) now live in `ui.py`, re-exported here so
-   `_prompt_approval` keeps resolving from this module. Each slash command
-   (`/model`/`/models`, `/set`, `/show`, `/load`, `/save`, `/pull`,
-   `/num-ctx`, `/gpu-layers`, `/params`, `/tools`, `/tts`, `/think`,
-   `/thinking`, `/system`, `/undo`, `/retry`, `/edit`, `/branch`,
-   `/context`, `/summarize`, `/image`, `/render`, `/math`, `/pager`,
-   `/tps`, `/copy`, `/export`, `/stats`, `/queue`, ...) is a standalone
-   `cmd_NAME(repl, argument)` function dispatched by name through
+   `/set system`.
+   The other modules: `completion.py` (`SlashCompleter`/`completion_candidates`
+   for `/commands`, session ids, models and `@files`, shared with the TUI
+   input), `queue.py` (`MessageQueue`, what was typed while a turn ran),
+   `session.py` (`_switch_session`), `view.py` (the `ollama ps` table and the
+   last-response lookup) and `commands/` — one module per topic (`config`,
+   `model`, `sessions`, `context`, `media`, `tools`, `help`, `stats`) with
+   `tables.py` holding `COMMAND_INFO`/`TOOLS_*` and `registry.py` the
+   dispatch map. Each slash command (`/model`/`/models`, `/set`, `/show`,
+   `/load`, `/save`, `/pull`, `/num-ctx`, `/gpu-layers`, `/params`, `/tools`,
+   `/tts`, `/think`, `/thinking`, `/system`, `/undo`, `/retry`, `/edit`,
+   `/branch`, `/context`, `/summarize`, `/image`, `/render`, `/math`,
+   `/pager`, `/tps`, `/copy`, `/export`, `/stats`, `/queue`, ...) is a
+   standalone `cmd_NAME(repl, argument)` function dispatched by name through
    `COMMAND_HANDLERS`; `COMMAND_INFO` is the authoritative description table
    (the REPL `/help`, the README's command table and the `cli.py` epilog all
-   mirror it). Add a new slash command by adding one function here and
-   wiring it into `COMMAND_INFO`/`COMMAND_HANDLERS` (and the hand-maintained
-   `build_parser()` epilog in `cli.py`).
+   mirror it). Add a new slash command by adding one function to the right
+   `commands/` module and wiring it into `tables.py`/`registry.py` (and the
+   hand-maintained `build_parser()` epilog in `cli.py`).
+   The numbered tool-approval prompt itself and the entry list it is built
+   from (`approval_entries`/`_prompt_approval`, storing generalized
+   `ToolRule`s in the session) live in `ui.py`; `repl/__init__.py` re-exports
+   `_prompt_approval` so it keeps resolving from this package. The package
+   hub re-exports the whole public surface (`Repl`, the completion helpers,
+   the queue, every `cmd_*`, the tables), so `from .repl import Repl` keeps
+   working unchanged.
    `/tools` takes a tool name (or alias) as its first token for per-tool
    control — `NAME on|off|help|call ARGS`: `_find_tool` resolves aliases and
    falls back to `tool_definitions()` so an uninstalled tool still gets a
@@ -554,7 +564,7 @@ a module's own docstring for what lives there before editing:
    `TranscriptWriter` (a file-like sink capturing everything printed through
    the shared `console` into the transcript), the modal screens (confirm,
    ask, and tool approval offering the same numbered choices as the console
-   prompt) and `TuiUi` (the `Ui` implementation `repl.py` talks to). Turns and commands run in thread
+   prompt) and `TuiUi` (the `Ui` implementation `repl/core.py` talks to). Turns and commands run in thread
    workers that marshal widget updates back with `call_from_thread`;
    `run_tui()` is the entry point. Textual is optional — `cli.py`'s
    `wants_tui()` checks it and falls back to the inline REPL with a note.
@@ -695,7 +705,8 @@ a module's own docstring for what lives there before editing:
 
 Model housekeeping (unload-before-switch, unload-on-exit, embedding models
 always resident) is cross-cutting logic that lives in the REPL commands
-(`cmd_model`, `cmd_load`, both in `repl.py`) and `main()`'s exit path
+(`cmd_model` in `repl/commands/model.py`, `cmd_load` in
+`repl/commands/sessions.py`) and `main()`'s exit path
 (`cli.py`), coordinated through `/api/ps` lookups in `OllamaClient` — not a
 separate module. The model picker those commands (and a model-less
 `ollamarun` run) open is ordered by the session's `model_sort`, seeded from
@@ -705,7 +716,7 @@ chosen at the prompt.
 Cross-module imports follow the numbering above (a module only imports from
 one earlier in the list, plus `constants.py`/`helpers.py`/`events.py` from
 anywhere) — keep new code on that side of the dependency graph rather than
-reaching "backwards" (e.g. don't import from `repl.py` inside
+reaching "backwards" (e.g. don't import from `repl/core.py` inside
 `renderer.py`); use `typing.TYPE_CHECKING` for a backwards-pointing type
 hint only, the way `renderer.py` does for `Session` (defined later, in
 `session.py`).
@@ -722,8 +733,9 @@ hint only, the way `renderer.py` does for `Session` (defined later, in
   `HANDLERS`, and a row in the README tool table.
   Registration is data-driven — `default_registry()` picks the file up
   automatically, and `read_only`/`always_safe` feed `approval_decision()`.
-- **New slash command**: one `cmd_NAME(repl, argument)` function in
-  `repl.py`, wired into `COMMAND_INFO`/`COMMAND_HANDLERS`; complete the
+- **New slash command**: one `cmd_NAME(repl, argument)` function in the
+  matching `repl/commands/` module, wired into `tables.py`'s
+  `COMMAND_INFO` and `registry.py`'s `COMMAND_HANDLERS`; complete the
   `build_parser()` epilog and the README command table when it is notable.
 - **New config key**: add it to `DEFAULT_CONFIG` in `constants.py` and to the
   README's selected-keys list; user config merges over the defaults.
@@ -737,7 +749,7 @@ hint only, the way `renderer.py` does for `Session` (defined later, in
 - **New interactive prompt/hook**: extend the `Ui` protocol and `ConsoleUi`
   in `ui.py`, then implement it in `HostUi` (`session_host.py`) and
   `SessionClient._ask_question` (`host_client.py`) — and `TuiUi` (`tui.py`)
-  if the TUI should offer it — because nothing below the `repl.py` layer may
+  if the TUI should offer it — because nothing below the `repl/core.py` layer may
   know which front end is running. Set `interactive` on an implementation
   that can actually ask; the approval gate reads it.
 - **Background session behavior**: the host is `session_host.py` (protocol,

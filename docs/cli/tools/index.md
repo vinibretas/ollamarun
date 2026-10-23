@@ -132,5 +132,5 @@ rule.
   overridable per user — [Definitions](definitions.md).
 - **Approval policy**: the allowlist, rules engine and `dangerous_command`
   floor — [Approvals and policy](approvals.md).
-- **The loop**: `runtime.py` drives rounds; `repl.py` renders them —
+- **The loop**: `runtime.py` drives rounds; `repl/core.py` renders them —
   [Architecture](../../development/architecture.md).
