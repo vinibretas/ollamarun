@@ -26,7 +26,7 @@ The harness layers, roughly top to bottom:
 - **Agent loop** — `repl.py`'s `Repl` drives multi-round tool calls
   (`_generate` → `_execute_tool_calls` → approval → follow-up round), plus the
   message queue, cancellation and every slash command.
-- **Tool registry** — `tools.py` builds the tool set from `defs/tools/*.json`,
+- **Tool registry** — `tools/` builds the tool set from `defs/tools/*.json`,
   classifies each call (`approval_decision`), executes it and truncates what
   goes back to the model; prompts live in `defs/prompts/`.
 - **Rendering** — `renderer.py` streams markdown/2D math through `rich.Live`,
@@ -259,26 +259,36 @@ a module's own docstring for what lives there before editing:
    `requests`, streaming response bodies line-by-line (including pull
    progress events). `build_chat_payload()` assembles
    the request body from CLI args + session history.
-8. **`tools.py`** — the tool harness: `ToolSpec`/`default_registry()` (shell,
-   python, files — read/write/list plus `edit_file` and the
-   `make_dir`/`move_file`/`copy_file`/`delete_file` chores, plus `read_pdf`
-   for the text layer or page images through a vision model — `web_search`
-   when `ddgs` is installed, `fetch_url`, `search_sessions`, `list_models`,
-   `system_status`, `context_status`/`session_info`, tts-remote
-   speak/list_voices, and the chemInventoryAPI
-   lookup tools when that CLI is present), the allowlist policy
-   (`shell_safety`, `python_safety`, `approval_decision`), the approval-rule
-   engine (`ToolRule`, `suggest_rules`, `rule_matches`, `dangerous_command`),
-   argument normalization, output truncation and `execute_tool()`. The tool
-   *declarations* load from the definition files — one JSON per tool under
-   `defs/tools/` (`ToolDefinition`, `load_tool_definitions()`; `HANDLERS`
-   maps the JSON's `handler` name onto the function, `requires` gates a tool
-   on a capability, `tool_aliases()` is built from the `aliases` lists so
-   invented names like `search`/`curl` resolve onto the real tools, and
-   `resolve_tool_alias()` strips a call-id prefix (`call_fetch_url`) and
-   retries on a miss; bad files
-   warn and are skipped). `ToolSpec` keeps each definition's `requires` and
-   `aliases` (`REQUIREMENT_HINTS` words them for the help pages).
+8. **`tools/`** — the tool harness, one module per concern. `spec.py` holds
+   `ToolSpec`/`ToolContext`/`ToolOutcome`/`ToolHandlerResult` and output
+   truncation; `policy.py` the allowlists and `shell_safety`,
+   `python_safety`, `approval_decision`; `rules.py` the approval-rule engine
+   (`ToolRule`, `suggest_rules`, `rule_matches`, `dangerous_command`);
+   `args.py` call fingerprints, panel summaries and argument normalization;
+   `workspace.py` the serve path jail. Every tool has its own module with the
+   same `run(args, ctx)` entry point (`run_shell`, `run_python`, `read_file`,
+   `read_pdf`, `write_file`, `edit_file`, `make_dir`, `move_file`,
+   `copy_file`, `delete_file`, `list_dir`, `publish_artifact`,
+   `search_sessions`, `list_models`, `system_status`, `context_status`,
+   `session_info`, `chem_search`, `chem_container`, `chem_locations`,
+   `web_search`, `fetch_url`, `speak`, `list_voices`), over shared support
+   modules: `html.py` (`extract_html_text`), `pdf.py` (`extract_pdf_text`
+   through pypdf/pdftotext, `parse_page_spec`, `render_pdf_page`,
+   `pick_vision_model`/`vision_transcribe` for scans), `net.py`
+   (`format_fetch_response`, the failure notes and search-engine reroute),
+   `chem_cli.py`/`tts.py` (the two CLI wrappers), `fs.py` and `process.py`.
+   `registry.py` loads the declarations — one JSON per tool under
+   `defs/tools/` (`ToolDefinition`, `load_tool_definitions()`, `HANDLERS`
+   mapping the JSON's `handler` name onto the module's `run`, `requires`
+   gating a tool on a capability, `tool_aliases()` from the `aliases` lists
+   so invented names like `search`/`curl` resolve onto the real tools, and
+   `resolve_tool_alias()` stripping a call-id prefix like `call_fetch_url`);
+   bad files warn and are skipped. `default_registry()` builds the set,
+   `REQUIREMENT_HINTS` words a missing capability for the help pages and
+   `tool_schemas()` shapes it for the request. `executor.py` is the guarded
+   call path: `execute_tool()`, artifact publication and `ToolRunner`.
+   `__init__.py` is the package's public surface, re-exporting every name the
+   rest of the codebase imports.
    `ToolHandlerResult(text, artifact_paths)` is the optional structured
    handler return: `execute_tool()` registers regular files through
    `ToolContext.artifacts` (the turn-bound `TurnArtifacts` publisher the
@@ -707,8 +717,9 @@ hint only, the way `renderer.py` does for `Session` (defined later, in
 <!-- --8<-- [start:where-to-change] -->
 
 - **New tool**: add `defs/tools/NAME.json` (description, JSON schema, safety
-  flags, optional `requires`/`aliases`, `handler` name), the handler function
-  and its `HANDLERS` entry in `tools.py`, and a row in the README tool table.
+  flags, optional `requires`/`aliases`, `handler` name), a `tools/NAME.py`
+  module exposing `run(args, ctx)`, its line in `tools/registry.py`'s
+  `HANDLERS`, and a row in the README tool table.
   Registration is data-driven — `default_registry()` picks the file up
   automatically, and `read_only`/`always_safe` feed `approval_decision()`.
 - **New slash command**: one `cmd_NAME(repl, argument)` function in

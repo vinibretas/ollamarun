@@ -49,7 +49,7 @@ A rule is a session-scoped grant, stored in the session under `tool_rules`
 
 `/tools rules` lists them; `/tools rules add KIND PATTERN` stores one by
 hand and `/tools rules rm N` removes it. Suggestions are built from the call
-being approved (`suggest_rules` in `tools.py`), so the number of choices
+being approved (`suggest_rules` in `tools/rules.py`), so the number of choices
 varies — a compound shell command, for example, only ever offers the
 exact-call grant.
 

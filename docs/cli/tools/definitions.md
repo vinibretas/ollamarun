@@ -32,7 +32,7 @@ parameters — is data, not code. One JSON file per tool under
 | `name` | yes | The tool's name; must match `[A-Za-z_][A-Za-z0-9_]*`. |
 | `description` | yes | Model-facing text — say *what it does* and *when to use it*; this is the model's only documentation. |
 | `parameters` | yes | JSON schema with `type: "object"`, `properties`, optional `required`. |
-| `handler` | yes | The Python handler name, looked up in `tools.py`'s `HANDLERS`. |
+| `handler` | yes | The handler name, looked up in `tools/registry.py`'s `HANDLERS`. |
 | `read_only` | no | `true` = never asks; the calls are read-only by construction. |
 | `always_safe` | no | `true` = never asks even though it does something (used by `speak`). |
 | `requires` | no | A capability gate; the tool only appears when it resolves. |
@@ -115,10 +115,11 @@ names inside one load are also skipped with a warning.
 
 ## A truly new tool
 
-Overriding only changes what exists: the `handler` must still be a function
-`tools.py` knows. Adding a *new* capability is therefore two steps — a JSON
-file plus the handler function and its `HANDLERS` entry in
-`ollamarun_lib/tools.py` — and the loader picks the file up automatically.
+Overriding only changes what exists: the `handler` must still name a module
+`ollamarun_lib/tools/` knows. Adding a *new* capability is therefore two
+steps — a JSON file plus a `tools/NAME.py` module exposing `run(args, ctx)`
+and its line in `tools/registry.py`'s `HANDLERS` — and the loader picks the
+file up automatically.
 The handlers page in
 [Contributing](../../development/contributing.md#where-to-change-what) is the short
 version.
