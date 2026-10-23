@@ -160,7 +160,8 @@ background session (inline REPL):
 
 while a response streams:
   Ctrl+Q                stop the current generation (inline; stays attached)
-  Ctrl+T                expand the thinking panel (press again to collapse)
+  Ctrl+T                expand or collapse the thinking panel (sticks for
+                        the session)
   --ui tui: Enter queues a message, Ctrl+B sends what you typed right now,
             Esc Esc stops the turn, /queue shows what is waiting
 

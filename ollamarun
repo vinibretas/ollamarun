@@ -2,6 +2,18 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 2.13
+
+Summary of changes in this version:
+  - Ctrl+T is now a session display setting, not a one-off for the thinking
+    block on screen: the renderer reports the new mode to the REPL, so the
+    rest of that response, later tool rounds and every later turn start
+    expanded (or collapsed) the same way. In a background session the
+    terminal client also tells the host over a new `thinking` wire op, so the
+    choice survives turns and detach/reattach instead of resetting to
+    collapsed on the next response. `/thinking` remains the command form and
+    still changes the mode immediately.
+
 Version: 2.12
 
 Summary of changes in this version:

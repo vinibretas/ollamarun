@@ -166,6 +166,7 @@ class SessionClient:
         self._guard = InterruptGuard()
         self._cancel_sent = False
         self._cancel_warned = False
+        self._thinking_warned = False
         self._cancelled_questions: set[str] = set()
         self.features: set[str] = set()
         self._shutdown_event = threading.Event()
@@ -534,6 +535,23 @@ class SessionClient:
         self._cancel_sent = True
         return self.conn.send({"op": "cancel"})
 
+    def _thinking_changed(self, mode: str) -> None:
+        """Ctrl+T in the client: keep the mode here and tell the host.
+
+        The host owns the Repl, so without this its `thinking_mode` stays at
+        the launch value and every later round/turn would come back
+        collapsed. The local settings copy is updated too, so the next
+        `round.started` in this client uses it before the host's echo lands.
+        """
+        self.settings["thinking"] = mode
+        if "thinking" in self.features:
+            self.conn.send({"op": "thinking", "mode": mode})
+        elif not self._thinking_warned:
+            self._thinking_warned = True
+            self.console.print(
+                "[warn]this session host predates the persistent thinking "
+                "toggle; close and resume the session to upgrade[/warn]")
+
     def _close_session(self) -> None:
         """Ctrl+D while streaming: explicit close, not a detach."""
         if self.closing:
@@ -894,7 +912,8 @@ class SessionClient:
             show_stats=bool(s.get("show_stats", True)),
             max_render_chars=int(s.get("max_render_chars") or 12000),
             pager=bool(s.get("pager", False)), model=model,
-            after_tools=bool(data.get("after_tools")))
+            after_tools=bool(data.get("after_tools")),
+            on_thinking_toggle=self._thinking_changed)
         self.renderer = renderer
         self.render_after_tools = bool(data.get("after_tools"))
         if renderer.mode != "raw" and not renderer.render_frames:

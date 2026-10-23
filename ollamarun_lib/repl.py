@@ -642,7 +642,8 @@ class Repl:
                             show_stats=self.show_stats,
                             max_render_chars=self.max_render_chars,
                             pager=self.pager and not self.tui_mode,
-                            model=self.session.model, after_tools=after_tools)
+                            model=self.session.model, after_tools=after_tools,
+                            on_thinking_toggle=self._renderer_thinking_toggled)
         renderer = renderer.with_sink(self.stream_sink)
         if renderer.tps_footer and (renderer.live_render or renderer.sink_render):
             # The footer's ctx share needs the window size: one cached
@@ -658,6 +659,16 @@ class Repl:
             return
         renderer.thinking_mode = self.thinking_mode
         renderer.tps_footer = self.tps_footer
+
+    def _renderer_thinking_toggled(self, mode: str) -> None:
+        """A Ctrl+T toggle: make it the mode later rounds/turns start with.
+
+        The renderer's own field only covers the round that is streaming;
+        `_renderer()` seeds every new one from `self.thinking_mode`, which is
+        what `/thinking` changes too.
+        """
+        if mode in THINKING_MODES:
+            self.thinking_mode = mode
 
     def toggle_thinking(self) -> str:
         self.thinking_mode = "collapsed" if self.thinking_mode == "expanded" else "expanded"
@@ -1507,8 +1518,8 @@ def cmd_help(repl: Repl, argument: str) -> None:
             ("Ctrl+C", ("cancel input · twice within 10s while busy detaches "
                         "and leaves the session running")
              if repl.host_mode else "cancel input / generation"),
-            ("Ctrl+T", "expand or collapse the thinking panel while a "
-                       "response streams"),
+            ("Ctrl+T", "expand or collapse the thinking panel; sticks for "
+                       "the session"),
             ("Ctrl+Q", "stop the current generation (inline)"),
             ("Ctrl+G", "$OLLAMA_EDITOR for the current prompt"),
             ("Ctrl+J", "insert newline"),

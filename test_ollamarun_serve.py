@@ -6965,6 +6965,53 @@ class _SlowFakeClient(_FakeClient):
         return events()
 
 
+def test_session_host_thinking_toggle() -> int:
+    """Ctrl+T in the client sticks in the host and the next turn starts that way."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _SlowFakeClient()
+        server, spec, paths, store, session, _root = _host_fixture(tmp, client)
+        try:
+            term, inp, out, buf = _attach_client(spec, paths)
+            assert _wait_until(lambda: "m1 ›" in out.getvalue(), 15.0)
+            failures = _check(
+                failures, "the host advertises the thinking op",
+                "thinking" in term.features, str(term.features))
+            inp.push("first")
+            assert _wait_until(
+                lambda: term.renderer is not None
+                and "Hello" in buf.getvalue(), 15.0), buf.getvalue()
+            first_renderer = term.renderer
+            assert first_renderer is not None
+            first_renderer._handle_key_bytes(bytes([orun.CTRL_T]))
+            failures = _check(
+                failures, "Ctrl+T reaches the host's Repl",
+                _wait_until(lambda: server.repl is not None
+                            and server.repl.thinking_mode == "expanded", 10.0),
+                str(getattr(server.repl, "thinking_mode", None)))
+            failures = _check(
+                failures, "the host echoes the new mode to the client",
+                _wait_until(lambda: term.settings.get("thinking") == "expanded",
+                            10.0),
+                str(term.settings.get("thinking")))
+            assert _wait_until(
+                lambda: term.renderer is None
+                and "the background." in buf.getvalue(), 20.0), buf.getvalue()
+            inp.push("second")
+            failures = _check(
+                failures, "the next turn's renderer starts expanded",
+                _wait_until(lambda: term.renderer is not None
+                            and term.renderer is not first_renderer
+                            and term.renderer.thinking_mode == "expanded", 20.0),
+                str(getattr(term.renderer, "thinking_mode", None)))
+            inp.push("/bye")
+            failures = _check(failures, "/bye closes the host",
+                              _wait_until(lambda: term.done, 20.0))
+        finally:
+            server._finish()
+    return failures
+
+
 def test_session_host_detach_reattach() -> int:
     """Closing the terminal does not stop the turn; -c shows what was missed."""
     failures = 0
@@ -7353,6 +7400,7 @@ def run_all(*, live: bool = False) -> int:
         + test_turn_start_fit()
         + test_interrupt_guard()
         + test_session_host_protocol()
+        + test_session_host_thinking_toggle()
         + test_session_host_detach_reattach()
         + test_session_host_approval()
         + test_session_host_cancel()

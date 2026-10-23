@@ -55,7 +55,8 @@ The input line becomes a rule above the live view; keystrokes are not read
 until the turn ends. Two keys work mid-stream:
 
 - **Ctrl+T** expands the thinking panel in place; press it again to collapse.
-  The stream never pauses either way.
+  The stream never pauses either way, and the choice sticks for the rest of
+  the running REPL (later rounds, turns and a reattached host included).
 - **Ctrl+C** arms a detach: the first press prints a warning, and a second
   press within 10 s closes the terminal while the turn keeps running in the
   background. The host is not cancelled — use `/bye`, `Ctrl+D` or
@@ -98,7 +99,7 @@ message land at the next sub-task boundary — belongs to the deprecated
 │ Ctrl+D  │ close the session (and its background host)                    │
 │ Ctrl+C  │ clear input; twice within 10s while busy detaches the terminal │
 │ Ctrl+Q  │ stop the current generation (inline; stays attached)           │
-│ Ctrl+T  │ expand or collapse the thinking panel while a response streams │
+│ Ctrl+T  │ expand or collapse the thinking panel (sticks for the session) │
 │ Ctrl+G  │ $OLLAMA_EDITOR for the current prompt                          │
 │ Ctrl+J  │ insert newline                                                 │
 │ Ctrl+R  │ search prompt history                                          │

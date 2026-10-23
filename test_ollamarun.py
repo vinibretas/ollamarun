@@ -1134,6 +1134,32 @@ def test_thinking_display() -> int:
     visible_renderer.stream(iter([{"message": {"thinking": "VISIBLE"}},
                                   {"message": {"content": "hi"}}, {"done": True}]))
     check("plain mode keeps visible thinking", "VISIBLE" in visible_buffer.getvalue())
+
+    toggles = []
+    callback_renderer = orun.Renderer(console, mode="plain",
+                                      thinking_mode="collapsed",
+                                      on_thinking_toggle=toggles.append)
+    callback_renderer._handle_key_bytes(bytes([orun.CTRL_T]))
+    callback_renderer._handle_key_bytes(bytes([orun.CTRL_T]))
+    check("Ctrl+T reports each new mode to the front end",
+          toggles == ["expanded", "collapsed"], str(toggles))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        client = _FakeClient(models=["m1"])
+        args = orun.build_parser().parse_args(
+            ["m1", "--render", "plain", "--no-tools", "--no-tps",
+             "--keep-loaded"])
+        repl = orun.Repl(args, dict(orun.DEFAULT_CONFIG), client, store,
+                         orun.Session.create("m1", client.base))
+        repl.thinking_mode = "collapsed"
+        live = repl._renderer()
+        live._handle_key_bytes(bytes([orun.CTRL_T]))
+        check("Ctrl+T updates the session's thinking mode",
+              repl.thinking_mode == "expanded", repl.thinking_mode)
+        check("the next round starts with the toggled mode",
+              repl._renderer().thinking_mode == "expanded")
     return failures
 
 

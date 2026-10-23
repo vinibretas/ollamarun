@@ -58,6 +58,7 @@ from .constants import (
     DEFAULT_TIMEOUT,
     HOST_DIR,
     HOST_LOG_PATH,
+    THINKING_MODES,
     VERSION,
     console,
     err_console,
@@ -81,7 +82,7 @@ logger = logging.getLogger("ollamarun.host")
 HOST_PROTOCOL = 1
 #: Additive capabilities advertised in `hello`; a client checks these before
 #: using an op so a newer terminal can attach to an older live host.
-HOST_FEATURES = ("cancel",)
+HOST_FEATURES = ("cancel", "thinking")
 #: One JSON message may be this large (a full session snapshot with images
 #: travels in the launch spec, not over the live socket; this is slack).
 MAX_LINE = 64 * 1024 * 1024
@@ -1340,6 +1341,12 @@ class SessionHostServer:
             return
         if op == "cancel":
             self.cancel_active_turn()
+            return
+        if op == "thinking":
+            mode = str(message.get("mode") or "")
+            if mode in THINKING_MODES and self.repl is not None:
+                self.repl.thinking_mode = mode
+                self.send_settings()
             return
         if op == "close":
             self.request_shutdown("close")

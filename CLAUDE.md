@@ -132,7 +132,7 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"2.12"` — keep this
+  constant in `ollamarun_lib/constants.py`, currently `"2.13"` — keep this
   line current when you bump it) and prepend a new bullet list under
   `Summary of changes in this version:` in the top-level `ollamarun` entry
   script's module docstring — read the existing entries there before adding
@@ -228,7 +228,8 @@ a module's own docstring for what lives there before editing:
    `max_file_kb` truncation.
 6. **`renderer.py`** — `Renderer` class drives a `rich.Live` view:
    incremental markdown re-render while tokens stream, the collapsible
-   thinking panel (`render_thinking`, Ctrl+T expand/collapse in place;
+   thinking panel (`render_thinking`, Ctrl+T expand/collapse in place, the
+   choice kept in the Repl so later rounds/turns start that way;
    `/thinking full` prints the stored panel directly), and
    `TpsEstimator` (`windowed()`/`average()`/`rate()`) for the live footer:
    windowed rate, cumulative average, streamed tokens and a ctx counter

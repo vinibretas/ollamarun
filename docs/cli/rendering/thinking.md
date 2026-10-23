@@ -18,7 +18,10 @@ The count grows as tokens arrive. When the answer starts, the line stays put
 
 **Ctrl+T** expands the panel in place — a boxed, dim, markdown-rendered
 preview capped to the terminal's height — and pressing it again collapses
-it. The stream never pauses for either.
+it. The stream never pauses for either, and the choice sticks for the rest
+of the running REPL: later tool rounds and turns (and a reattached
+background host) start in that mode. `/thinking` prints the current mode
+and changes it too.
 
 | Start mode | Where | Effect |
 | --- | --- | --- |

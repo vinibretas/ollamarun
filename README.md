@@ -277,7 +277,9 @@ the pager, `--render markdown|plain|raw` picks the mode.
 - **Thinking, collapsible.** Thinking streams live and is collapsed by default
   as an animated `thinking · N chars · Ctrl+T to expand` line. Ctrl+T expands
   a tail-capped boxed preview in place (press again to collapse; the stream
-  never pauses), and `/thinking full` prints the stored panel later.
+  never pauses), and the choice sticks for the rest of the running REPL —
+  later rounds, turns and a reattached background host included.
+  `/thinking full` prints the stored panel later.
   `--show-thinking`/`--hidethinking` and config `thinking` set the start mode.
 - **Live footer.** `~24.0 tok/s (avg 21.4) · 45 tok · ctx 12.345k/32.768k
   (38.123%)` — the 5s windowed rate, its cumulative average, the streamed
@@ -1003,7 +1005,7 @@ $ ollamarun MODEL [PROMPT] [--host HOST | --remote NAME] [--ui MODE]
                   [--unload | --keep-loaded] [--pager] [--timeout SECONDS] [--debug]
                   # ollama-compatible: --dimensions --format --hidethinking --insecure
                   #   --keepalive --nowordwrap --think --truncate --verbose
-                  # Ctrl+T expands/collapses the thinking panel while streaming
+                  # Ctrl+T toggles the thinking panel; the choice sticks for the session
 ```
 
 ## Slash commands

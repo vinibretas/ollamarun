@@ -311,7 +311,8 @@ class Renderer:
                  context_total: Optional[int] = None,
                  show_stats: bool = False,
                  max_render_chars: int = 12000, pager: bool = False, model: str = "",
-                 after_tools: bool = False):
+                 after_tools: bool = False,
+                 on_thinking_toggle: Optional[Callable[[str], None]] = None):
         self.console = console
         self.mode = mode
         self.model = model
@@ -320,6 +321,10 @@ class Renderer:
         self.math = math
         self.nowordwrap = nowordwrap
         self.thinking_mode = thinking_mode if thinking_mode in THINKING_MODES else "collapsed"
+        #: Told the new mode whenever Ctrl+T flips the panel, so the front end
+        #: can keep its own display setting in sync (the next round/turn is
+        #: built from that, not from this renderer's transient field).
+        self.on_thinking_toggle = on_thinking_toggle
         self.tps_footer = tps_footer
         # Tokens the conversation already carried when this round started
         # (prompt + completion of the last turn) and the model's window; the
@@ -379,15 +384,19 @@ class Renderer:
 
     def _toggle_thinking(self) -> None:
         self.thinking_mode = "collapsed" if self.thinking_mode == "expanded" else "expanded"
+        callback = self.on_thinking_toggle
+        if callback is not None:
+            try:
+                callback(self.thinking_mode)
+            except Exception:
+                # A front-end notification must never break the stream.
+                pass
 
     def _handle_key_bytes(self, data: bytes) -> bool:
         """Apply the streaming hot keys; True when the view changed."""
         changed = False
         if CTRL_T in data:
-            if self.thinking_mode == "expanded":
-                self.thinking_mode = "collapsed"
-            else:
-                self.thinking_mode = "expanded"
+            self._toggle_thinking()
             changed = True
         if CTRL_Q in data:
             self.stop_requested = True
