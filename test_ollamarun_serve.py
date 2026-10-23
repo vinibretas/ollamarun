@@ -424,7 +424,7 @@ def test_pyflakes_clean() -> int:
 #: allowlist can only shrink.
 MODULE_SIZE_BUDGET = 800
 SIZE_BUDGET_ALLOWLIST = {
-    "ollamarun_lib/tools.py",
+    "ollamarun_lib/tools/__init__.py",
     "ollamarun_lib/repl.py",
     "ollamarun_lib/ctxfit.py",
     "ollamarun_lib/agent_api.py",

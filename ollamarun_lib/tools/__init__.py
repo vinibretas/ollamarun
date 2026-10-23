@@ -37,6 +37,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -47,14 +48,14 @@ from typing import Any, Callable, Optional, Union
 
 import requests
 
-from .constants import DEFS_DIR, DEFS_OVERRIDE_DIR, console
-from .client import OllamaError
-from .helpers import (CommandCancelled, canonical_model_name, diff_preview,
-                      host_is_self, human_bytes, is_local_host, local_free_disk,
-                      local_gpu_probe, local_ram_probe, now_iso,
-                      run_cancellable, short_stamp, ssh_free_disk,
-                      ssh_gpu_probe, ssh_ram_probe)
-from .images import encode_image
+from ..constants import DEFS_DIR, DEFS_OVERRIDE_DIR, console
+from ..client import OllamaError
+from ..helpers import (CommandCancelled, canonical_model_name, diff_preview,
+                       host_is_self, human_bytes, is_local_host, local_free_disk,
+                       local_gpu_probe, local_ram_probe, now_iso,
+                       run_cancellable, short_stamp, ssh_free_disk,
+                       ssh_gpu_probe, ssh_ram_probe)
+from ..images import encode_image
 
 FETCH_TIMEOUT = 30.0
 MAX_LIST_ENTRIES = 200
@@ -3253,3 +3254,10 @@ class ToolRunner:
             except queue.Empty:
                 if ctx.cancel is not None and ctx.cancel.cancelled:
                     return _cancelled_outcome(spec.name)
+
+
+#: Public surface re-exported by `ollamarun_lib/__init__.py`.  Built from the
+#: namespace so a name that moves into a submodule keeps exporting exactly as
+#: before; the submodules themselves are not part of the surface.
+__all__ = [name for name, value in globals().items()
+           if not name.startswith("_") and not isinstance(value, types.ModuleType)]
