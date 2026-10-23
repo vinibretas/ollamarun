@@ -60,7 +60,8 @@ from .helpers import (
     shortcut,
 )
 from .images import encode_image
-from .prompts import default_system_prompt, summarize_prompt, title_prompt
+from .prompts import (default_system_prompt, load_prompt, summarize_prompt,
+                      title_prompt)
 from .ctxfit import (
     FitRequest,
     NUM_CTX_HELP,
@@ -105,6 +106,7 @@ from .runtime import (AgentRuntime, ApprovalDecision, ApprovalRequest, TurnHooks
 from .session import Session, SessionStore, export_html, export_json, export_markdown
 from .tools import (
     DEFAULT_SHELL_ALLOW,
+    MAX_PDF_VISION_PAGES,
     REQUIREMENT_HINTS,
     ToolContext,
     ToolDefinition,
@@ -450,6 +452,11 @@ class Repl:
             tool_max_output = int(config.get("tools_max_output") or 4000)
         except (TypeError, ValueError):
             tool_max_output = 4000
+        try:
+            pdf_vision_pages = int(config.get("pdf_vision_pages")
+                                   or MAX_PDF_VISION_PAGES)
+        except (TypeError, ValueError):
+            pdf_vision_pages = MAX_PDF_VISION_PAGES
         self.tool_ctx = ToolContext(
             cwd=os.getcwd(), timeout=tool_timeout, max_output=tool_max_output,
             tts_remote=config.get("tts_remote") or None,
@@ -459,7 +466,14 @@ class Repl:
             chem_inventory=config.get("chem_inventory") or None,
             context_report=self.context_report,
             session_report=self.session_report,
-            artifacts=artifacts)
+            artifacts=artifacts,
+            current_model=lambda: self.session.model,
+            model_show=self.model_show,
+            pdf_vision=bool(config.get("pdf_vision", True)),
+            pdf_vision_switch=bool(config.get("pdf_vision_switch", True)),
+            pdf_vision_model=config.get("pdf_vision_model") or None,
+            pdf_vision_pages=pdf_vision_pages,
+            vision_prompt=load_prompt("pdf_vision.md") or "")
         tts_option: Optional[bool]
         if not config.get("tts_tools", True):
             tts_option = False

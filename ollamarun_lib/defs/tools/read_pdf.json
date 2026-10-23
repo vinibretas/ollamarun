@@ -1,0 +1,18 @@
+{
+  "name": "read_pdf",
+  "description": "Read a PDF (a local path or an http(s) URL) and return its text. A PDF with a text layer is extracted directly. A scanned or image-only PDF has its pages rendered to images and read with a vision model — the session model when it can see images, otherwise a local vision model is picked automatically (the session model is unloaded to make room and reloads on the next round). Use this instead of read_file or a shell command for .pdf files, and never tell the user PDFs cannot be read. 'pages' limits which pages are read.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {"type": "string", "description": "local PDF path"},
+      "url": {"type": "string", "description": "absolute http(s) PDF URL (give this instead of path)"},
+      "pages": {"type": "string", "description": "which pages, e.g. \"1-3,7\" or \"all\" (optional; defaults to the first pages)"},
+      "mode": {"type": "string", "enum": ["auto", "text", "vision"], "description": "auto (default) uses the text layer when the PDF has one and vision for scans; text never calls a model; vision always reads page images (use it for figures or tables in a text PDF)"},
+      "max_chars": {"type": "integer", "description": "maximum characters to return (optional)"}
+    },
+    "required": []
+  },
+  "handler": "read_pdf",
+  "read_only": true,
+  "aliases": ["pdf", "extract_pdf", "pdf_text", "read_pdf_pages"]
+}

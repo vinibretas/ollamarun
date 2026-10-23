@@ -27,8 +27,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import ollamarun_lib as orun
-from test_ollamarun import (CTX_SHOW, _FakeClient, _check, _fit_check,  # harness
-                            _plain)
+from test_ollamarun import (CTX_SHOW, _BLANK_PDF, _MINIMAL_PDF,  # harness
+                            _FakeClient, _check, _fit_check, _plain)
 
 
 def test_runtime_events() -> int:
@@ -2044,8 +2044,12 @@ def test_artifact_content_parts() -> int:
                                   media_type="text/markdown", source="user")
         json_ref = store.register(b'{"a": 1}', filename="data.json",
                                   media_type="application/json", source="user")
-        bin_ref = store.register(b"%PDF-\x00\x01", filename="report.pdf",
+        bin_ref = store.register(b"PK\x03\x04not-a-pdf", filename="report.zip",
+                                 media_type="application/zip", source="user")
+        pdf_ref = store.register(_MINIMAL_PDF, filename="report.pdf",
                                  media_type="application/pdf", source="user")
+        scan_ref = store.register(_BLANK_PDF, filename="scan.pdf",
+                                  media_type="application/pdf", source="user")
         img_bytes = b"\x89PNG\r\n\x1a\nimage-bytes"
         img_ref = store.register(img_bytes, filename="pic.png",
                                  media_type="image/png", source="user")
@@ -2076,8 +2080,24 @@ def test_artifact_content_parts() -> int:
             where="messages[0].content", store=store)
         failures = _check(failures, "a binary part is noted, never faked",
                           "contents were not extracted" in resolved_bin.text
-                          and "report.pdf" in resolved_bin.text,
+                          and "report.zip" in resolved_bin.text,
                           resolved_bin.text[:200])
+        resolved_pdf = orun.resolve_content_parts(
+            [{"type": "file", "file_id": pdf_ref.id}],
+            where="messages[0].content", store=store)
+        failures = _check(failures, "a PDF file part inlines its text layer",
+                          '<file name="report.pdf">' in resolved_pdf.text
+                          and "Hello PDF world" in resolved_pdf.text
+                          and resolved_pdf.images == [],
+                          resolved_pdf.text[:200])
+        resolved_scan = orun.resolve_content_parts(
+            [{"type": "file", "file_id": scan_ref.id}],
+            where="messages[0].content", store=store)
+        failures = _check(failures, "a scanned PDF part is noted, never faked",
+                          "no text layer could be extracted" in resolved_scan.text
+                          and "scan.pdf" in resolved_scan.text
+                          and resolved_scan.images == [],
+                          resolved_scan.text[:200])
         resolved_img = orun.resolve_content_parts(
             [{"type": "file", "file_id": img_ref.id}],
             where="messages[0].content", store=store)

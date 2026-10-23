@@ -89,6 +89,10 @@ See [Background sessions](../cli/sessions/background.md) for the lifecycle.
 | `tts_tools` | `true` | Offer `speak`/`list_voices`. |
 | `chem_inventory` | `"chemInventoryAPI"` | The inventory CLI path. |
 | `chem_tools` | `true` | Offer the `chem_*` tools. |
+| `pdf_vision` | `true` | Let `read_pdf` read scanned pages with a vision model. |
+| `pdf_vision_model` | `null` | Pin the vision model; `null` picks the best installed one. |
+| `pdf_vision_switch` | `true` | Allow unloading the session model to load the vision one. |
+| `pdf_vision_pages` | `10` | Most pages one `read_pdf` call rasterizes. |
 
 ### Context fits
 

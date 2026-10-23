@@ -152,7 +152,7 @@ $ python3 examples/agent_client.py --prompt "List the files in /tmp"
 
 ## The tool harness
 
-With `--tools` (the default), the request carries the 23 built-in tool
+With `--tools` (the default), the request carries the 24 built-in tool
 definitions (some capability-gated) and the model can call them through Ollama
 function calling. Calls and results are kept in the session (so
 `/show`/`--show` replay them), a finished loop is separated from the committed
@@ -181,6 +181,7 @@ is one JSON file under `ollamarun_lib/defs/tools/` plus a handler.
 | `run_shell` | Run a shell command (`bash -lc`), return output and exit code | — |
 | `run_python` | Execute a short Python 3 program; the model is told to compute with it, never mentally | — |
 | `read_file` | Read a text file, optionally a line range | — |
+| `read_pdf` | Read a PDF (path or URL): the text layer directly, or the page images through a vision model for a scan — the session model when it can see, otherwise the best installed vision model (unload/reload around it); `pages`, `mode` and a character cap | — |
 | `write_file` | Write or append text, creating the file | — |
 | `edit_file` | Replace one exact fragment (unique match unless `replace_all`), atomic write keeping the mode; the call panel shows a coloured diff before approval | — |
 | `list_dir` | Directory listing with sizes and modification times | — |
@@ -188,7 +189,7 @@ is one JSON file under `ollamarun_lib/defs/tools/` plus a handler.
 | `move_file` / `copy_file` | Move/copy; refuse an existing destination unless `overwrite=true` | — |
 | `delete_file` | Move to the trash (`trash-put`) — never a permanent unlink | — |
 | `publish_artifact` | Publish a generated file (from `run_shell`/`run_python`) as a downloadable artifact; the file tools publish their own results automatically | `ollamarun serve` artifact store |
-| `fetch_url` | Fetch one exact URL as readable content — HTML to text plus the page's links, JSON pretty-printed, PDFs text-extracted; a URL already fetched in the session is answered from cache, and failures come back as one actionable line | — |
+| `fetch_url` | Fetch one exact URL as readable content — HTML to text plus the page's links, JSON pretty-printed, PDFs text-extracted (a scan points at `read_pdf`); a URL already fetched in the session is answered from cache, and failures come back as one actionable line | — |
 | `web_search` | Search the web for titles/URLs/snippets (cached; search-engine `q=` URLs are rerouted here) | `ddgs` package |
 | `search_sessions` | Search your saved ollamarun conversations (titles, models, messages, thinking) | — |
 | `list_models` | Installed models; loaded ones marked with VRAM and unload time (`loaded_only` for just the residents) | — |
@@ -204,6 +205,33 @@ is one JSON file under `ollamarun_lib/defs/tools/` plus a handler.
 them), and `publish_artifact` when `ollamarun serve` runs an artifact store
 (the CLI has none). A tool's `requires` capability gates it the same way for
 user-added definitions.
+
+### PDFs
+
+`read_pdf` takes a local path or an http(s) URL. A PDF with a text layer is
+extracted directly (pypdf, then `pdftotext`); a scan or an image-only PDF is
+rasterized with `pdftoppm` and read by a vision model, one page at a time,
+with page markers in the result. The session model does that work when its
+`/api/show` capabilities include `vision` — no model switch. Otherwise the
+best installed vision model is picked automatically (the `qwen3-vl` family
+first, then `qwen2.5vl`, `minicpm-v`, `llama3.2-vision`, `gemma4`/`gemma3`,
+`moondream`, `llava`, ...; the smallest tag of the first family present), the
+session model is unloaded to make room and the vision model is unloaded
+afterwards, so the next round reloads the session model. The result says
+which model read the pages. `mode: "text"` never calls a model, `mode:
+"vision"` forces page images (useful for figures or tables in a text PDF),
+and `pages` limits the selection.
+
+Config: `pdf_vision` (default `true`) turns the vision path off,
+`pdf_vision_model` pins one model, `pdf_vision_switch` (default `true`)
+refuses to unload the session model when `false` (a scan then fails with a
+clear message — useful for a shared `serve` process), and `pdf_vision_pages`
+(default 10) caps the pages one read rasterizes. The transcription prompt is
+`defs/prompts/pdf_vision.md`. Page images are sent to the configured Ollama
+host — the `--remote` machine when one is set — exactly like `--image`.
+`fetch_url` stays text-only: a scanned PDF fetched by URL comes back with a
+pointer to `read_pdf` instead of a false "no extractor" note, and `read_file`
+refuses a PDF with the same pointer.
 
 ### Approvals and policy
 
@@ -942,8 +970,9 @@ The model-facing text lives in files, not code:
   it.
 - `ollamarun_lib/defs/prompts/` — `system.md` (the built-in default system
   prompt), `system_tools.md` (the tool, web-search, math-in-code and
-  tool-result rules, appended when tools are on), `title.md` and
-  `summarize.md` (both take the text to wrap as `{{content}}`).
+  tool-result rules, appended when tools are on), `title.md`,
+  `summarize.md` (both take the text to wrap as `{{content}}`) and
+  `pdf_vision.md` (the per-page instruction `read_pdf` gives a vision model).
 
 A same-named file under `~/etc/config_files/ollamarun-defs/` overrides the
 shipped one, so prompts and tool wording can be tuned without touching
@@ -1039,9 +1068,9 @@ line ends with the same `X → Y` as the tool's result box).
 Selected config keys: `render`, `math`, `thinking`, `ui`, `show_stats`,
 `tps_footer`, `max_render_chars`, `pager`, `auto_title`, `auto_compact`,
 `image_storage`, `max_file_kb`, `options`, `unload_on_exit`, `gpu_layers`,
-`background_*`, `tools*`, `tool_colors`, `tts*`, `chem_*`, `remote*`,
-`max_gpu_*`, `max_cpu_*`, `timeout`, plus the `serve_*` matrix below. See
-`DEFAULT_CONFIG` in `ollamarun_lib/constants.py` for the full set.
+`background_*`, `tools*`, `tool_colors`, `tts*`, `chem_*`, `pdf_vision*`,
+`remote*`, `max_gpu_*`, `max_cpu_*`, `timeout`, plus the `serve_*` matrix
+below. See `DEFAULT_CONFIG` in `ollamarun_lib/constants.py` for the full set.
 
 `ollamarun serve` validates every `serve_*` key at startup: an invalid
 value names itself and exits 2, an omitted key uses the default, and a `0`

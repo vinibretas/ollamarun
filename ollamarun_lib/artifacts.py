@@ -56,6 +56,7 @@ from .constants import (ARTIFACTS_DIR, DEFAULT_ARTIFACT_MAX_BYTES,
                         DEFAULT_SERVE_MAX_TEXT_BYTES)
 from .helpers import now_iso
 from .server import ApiError
+from .tools import extract_pdf_text
 
 logger = logging.getLogger("ollamarun.artifacts")
 
@@ -714,6 +715,18 @@ def _file_chunk(ref: ArtifactRef, store: ArtifactStore, *,
                 f"{ref.size} bytes) as {ref.id}]")
         return note, ResolvedImage(b64=base64.b64encode(data).decode("ascii"),
                                    artifact_id=ref.id)
+    if (ref.media_type.lower() == "application/pdf"
+            or ref.filename.lower().endswith(".pdf")):
+        text = extract_pdf_text(data, max_chars=inline_max)
+        if text is None or not text.strip():
+            return (f"[attached: {ref.filename} (application/pdf, {ref.size} "
+                    f"bytes) as {ref.id}; no text layer could be extracted — "
+                    f"a scan or an unreadable PDF]", None)
+        note = ""
+        if len(text) >= inline_max:
+            note = (f"\n[… text extracted; showing the first {inline_max} "
+                    f"characters]")
+        return f'<file name="{ref.filename}">\n{text.rstrip()}{note}\n</file>', None
     if _is_textual(ref.media_type):
         text = data[:inline_max].decode("utf-8", errors="replace")
         note = ""

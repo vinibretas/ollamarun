@@ -520,9 +520,10 @@ def test_tool_definitions() -> int:
                                 "edit_file", "fetch_url", "list_dir",
                                 "list_models", "list_voices", "make_dir",
                                 "move_file", "publish_artifact", "read_file",
-                                "run_python", "run_shell", "search_sessions",
-                                "session_info", "speak", "system_status",
-                                "web_search", "write_file"], str(names))
+                                "read_pdf", "run_python", "run_shell",
+                                "search_sessions", "session_info", "speak",
+                                "system_status", "web_search", "write_file"],
+                      str(names))
     failures = _check(failures, "every definition's handler resolves",
                       all(definition.handler in orun.HANDLERS
                           for definition in defs))
@@ -6084,15 +6085,16 @@ def test_web_tools() -> int:
                           pdf_out.text[:120])
 
         real_extract = web_tools.extract_pdf_text
-        web_tools.extract_pdf_text = lambda data, max_chars=1: None
+        web_tools.extract_pdf_text = lambda data, max_chars=1, pages=None: None
         try:
             no_pdf = orun.execute_tool(registry["fetch_url"],
                                        {"url": "https://example.com/nopdf.pdf"},
                                        ctx)
         finally:
             web_tools.extract_pdf_text = real_extract
-        failures = _check(failures, "a missing PDF extractor is reported",
-                          "no PDF text extractor" in no_pdf.text, no_pdf.text[:120])
+        failures = _check(failures, "a failed PDF extraction points at read_pdf",
+                          "its text could not be extracted" in no_pdf.text
+                          and "read_pdf" in no_pdf.text, no_pdf.text[:200])
 
         class _FakeDDGS:
             queries: list[tuple] = []
@@ -6249,6 +6251,288 @@ def test_web_tools() -> int:
         failures = _check(failures, "aliases respect a disabled target",
                           "unknown or disabled tool: search" in message.get("content", ""),
                           str(message))
+    return failures
+
+
+class _PdfClient:
+    """A per-model-capability client double for the read_pdf tests."""
+
+    def __init__(self, capabilities=None, models=None, resident=(), replies=None):
+        self.base = "http://fake:11434"
+        self.capability_map = dict(capabilities or {})
+        self.models = [dict(entry) for entry in (models or [])]
+        self.resident = list(resident)
+        self.replies = list(replies or [])
+        self.payloads = []
+        self.unloaded = []
+        self.on_chat = None
+
+    def tags(self):
+        return [dict(entry) for entry in self.models]
+
+    def show(self, model):
+        return {"capabilities": list(self.capability_map.get(model,
+                                                             ["completion"]))}
+
+    def model_exists(self, model):
+        return any(entry.get("name") == model for entry in self.models)
+
+    def is_resident(self, model):
+        return model in self.resident
+
+    def unload(self, model):
+        self.unloaded.append(model)
+
+    def chat(self, payload, timeout=None, cancel=None):
+        self.payloads.append(payload)
+        if self.on_chat is not None:
+            self.on_chat()
+        reply = self.replies.pop(0) if self.replies else "recovered page text"
+        return iter([{"message": {"content": reply}, "done": True}])
+
+
+def test_pdf_tool() -> int:
+    failures = 0
+    from ollamarun_lib import tools as pdf_tools
+
+    registry = orun.default_registry(tts=False)
+    spec = registry.get("read_pdf")
+
+    def context(client=None, **kwargs):
+        return orun.ToolContext(cwd=os.getcwd(), timeout=10, max_output=40000,
+                                client=client, vision_prompt="", **kwargs)
+
+    def fake_render(data, page, directory, dpi=150):
+        path = Path(directory) / f"page-{page + 1}.jpg"
+        path.write_bytes(b"\xff\xd8\xff\xd9")
+        return path
+
+    real_render = pdf_tools.render_pdf_page
+    pdf_tools.render_pdf_page = fake_render
+    try:
+        failures = _check(failures, "read_pdf is a read-only tool",
+                          spec is not None and spec.read_only
+                          and orun.resolve_tool_alias("pdf") == "read_pdf"
+                          and orun.resolve_tool_alias("extract_pdf") == "read_pdf"
+                          and orun.approval_decision(spec, {"path": "x"},
+                                                     policy="ask").allowed,
+                          str(spec))
+        failures = _check(failures, "page specs parse and clamp",
+                          orun.parse_page_spec("all") is None
+                          and orun.parse_page_spec("1-3,7", total=10) == [0, 1, 2, 6]
+                          and orun.parse_page_spec("2", total=5, cap=10) == [1]
+                          and orun.select_pdf_pages(None, total=30, cap=10)
+                          == list(range(10))
+                          and orun.pdf_page_count(_MINIMAL_PDF) == 1)
+        for bad in ("zero", "0-2", "3-1", "x"):
+            try:
+                orun.parse_page_spec(bad, total=5)
+                parsed = "no error"
+            except orun.ToolError as exc:
+                parsed = str(exc)
+            failures = _check(failures, f"a bad page spec is refused ({bad})",
+                              parsed != "no error" and "pages" in parsed, parsed)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            text_pdf = Path(tmp) / "text.pdf"
+            text_pdf.write_bytes(_MINIMAL_PDF)
+            scan_pdf = Path(tmp) / "scan.pdf"
+            scan_pdf.write_bytes(_BLANK_PDF)
+
+            # ── text layer: no model call, and a second read is cached
+            client = _PdfClient()
+            ctx = context(client)
+            out = orun.execute_tool(spec, {"path": str(text_pdf)}, ctx)
+            failures = _check(failures, "read_pdf returns a text layer",
+                              out.ok and "Hello PDF world" in out.text
+                              and "text layer" in out.text
+                              and client.payloads == [], out.text[:200])
+            again = orun.execute_tool(spec, {"path": str(text_pdf)}, ctx)
+            failures = _check(failures, "a repeated read is answered from the session",
+                              "not reading" in again.text
+                              and "Hello PDF world" in again.text
+                              and client.payloads == [], again.text[:160])
+            no_source = orun.execute_tool(spec, {}, context(client))
+            failures = _check(failures, "read_pdf without path or url is refused",
+                              not no_source.ok and "path" in no_source.text
+                              and "url" in no_source.text,
+                              no_source.text[:160])
+
+            # ── a scan read by a vision-capable session model: no swap
+            client = _PdfClient(
+                capabilities={"vlm:7b": ["completion", "vision", "thinking"]},
+                models=[{"name": "vlm:7b", "size": 4}],
+                resident=["vlm:7b"])
+            ctx = context(client, current_model=lambda: "vlm:7b")
+            out = orun.execute_tool(spec, {"path": str(scan_pdf)}, ctx)
+            failures = _check(failures, "a vision session model reads a scan itself",
+                              out.ok and "--- page 1 ---" in out.text
+                              and "recovered page text" in out.text
+                              and "read with vlm:7b" in out.text
+                              and client.unloaded == []
+                              and client.payloads
+                              and client.payloads[0]["model"] == "vlm:7b"
+                              and client.payloads[0].get("think") is False,
+                              f"{out.text[:160]} calls={client.payloads}")
+            failures = _check(failures, "the panel notes the vision model",
+                              out.title_note == "vision: vlm:7b", out.title_note)
+
+            # ── a non-vision session model: pick, unload, read, unload
+            client = _PdfClient(
+                capabilities={"text:8b": ["completion"],
+                              "moondream:1.8b": ["completion", "vision"],
+                              "qwen3-vl:8b": ["completion", "vision"],
+                              "qwen3-vl:2b": ["completion", "vision"]},
+                models=[{"name": "text:8b", "size": 9},
+                        {"name": "moondream:1.8b", "size": 1},
+                        {"name": "qwen3-vl:8b", "size": 3},
+                        {"name": "qwen3-vl:2b", "size": 2}],
+                resident=["text:8b"])
+            ctx = context(client, current_model=lambda: "text:8b")
+            out = orun.execute_tool(spec, {"path": str(scan_pdf)}, ctx)
+            failures = _check(failures, "the smallest tag of the best family is picked",
+                              out.ok and "read with qwen3-vl:2b" in out.text
+                              and client.payloads
+                              and client.payloads[0]["model"] == "qwen3-vl:2b",
+                              f"{out.text[:160]} calls={client.payloads}")
+            failures = _check(failures, "the session model is unloaded and restored",
+                              client.unloaded == ["text:8b", "qwen3-vl:2b"],
+                              str(client.unloaded))
+            failures = _check(failures, "the result explains the swap",
+                              "cannot read images" in out.text
+                              and "reloads on the next round" in out.text,
+                              out.text[:240])
+            failures = _check(failures, "the panel names the swap",
+                              out.title_note == "text:8b → qwen3-vl:2b",
+                              out.title_note)
+            failures = _check(failures, "the model ranking prefers the family",
+                              orun.pick_vision_model(client, current="text:8b")[0]
+                              == "qwen3-vl:2b")
+
+            # ── pinned / unfindable / disabled models
+            pinned_missing = orun.execute_tool(
+                spec, {"path": str(scan_pdf)},
+                context(client, current_model=lambda: "text:8b",
+                        pdf_vision_model="not-installed:1b"))
+            failures = _check(failures, "a pinned model must be installed",
+                              not pinned_missing.ok
+                              and "pdf_vision_model" in pinned_missing.text,
+                              pinned_missing.text[:200])
+            pinned_client = _PdfClient(
+                capabilities={"text:8b": ["completion"],
+                              "moondream:1.8b": ["completion", "vision"]},
+                models=[{"name": "text:8b", "size": 9},
+                        {"name": "moondream:1.8b", "size": 1}],
+                resident=["text:8b"])
+            pinned = orun.execute_tool(
+                spec, {"path": str(scan_pdf)},
+                context(pinned_client, current_model=lambda: "text:8b",
+                        pdf_vision_model="moondream:1.8b"))
+            failures = _check(failures, "a pinned model wins the choice",
+                              pinned.ok
+                              and "read with moondream:1.8b" in pinned.text
+                              and pinned_client.payloads
+                              and pinned_client.payloads[0]["model"]
+                              == "moondream:1.8b",
+                              pinned.text[:200])
+
+            no_vision = _PdfClient(
+                capabilities={"text:8b": ["completion"]},
+                models=[{"name": "text:8b", "size": 9}])
+            missing = orun.execute_tool(
+                spec, {"path": str(scan_pdf)},
+                context(no_vision, current_model=lambda: "text:8b"))
+            failures = _check(failures, "no installed vision model is a clear failure",
+                              not missing.ok and "no vision model is installed" in missing.text
+                              and no_vision.unloaded == [] and not no_vision.payloads,
+                              missing.text[:200])
+
+            off = orun.execute_tool(
+                spec, {"path": str(scan_pdf)},
+                context(None, current_model=lambda: "text:8b", pdf_vision=False))
+            failures = _check(failures, "pdf_vision false stays text-only",
+                              off.ok and "pdf_vision: false" in off.text,
+                              off.text[:200])
+
+            locked = orun.execute_tool(
+                spec, {"path": str(scan_pdf)},
+                context(client, current_model=lambda: "text:8b",
+                        pdf_vision_switch=False))
+            failures = _check(failures, "pdf_vision_switch false refuses the swap",
+                              not locked.ok and "pdf_vision_switch" in locked.text,
+                              locked.text[:200])
+
+            text_mode = orun.execute_tool(
+                spec, {"path": str(scan_pdf), "mode": "text"},
+                context(client, current_model=lambda: "text:8b"))
+            failures = _check(failures, "mode=text never calls a model",
+                              text_mode.ok and "no text layer" in text_mode.text,
+                              text_mode.text[:200])
+            forced = orun.execute_tool(
+                spec, {"path": str(text_pdf), "mode": "vision"},
+                context(_PdfClient(
+                    capabilities={"vlm:7b": ["completion", "vision"]},
+                    models=[{"name": "vlm:7b", "size": 4}]),
+                    current_model=lambda: "vlm:7b"))
+            failures = _check(failures, "mode=vision forces page images",
+                              forced.ok and "--- page 1 ---" in forced.text,
+                              forced.text[:200])
+            empty_pages = orun.execute_tool(
+                spec, {"path": str(scan_pdf), "pages": "2"},
+                context(client, current_model=lambda: "text:8b"))
+            failures = _check(failures, "pages past the end are refused",
+                              not empty_pages.ok and "selects no page" in empty_pages.text,
+                              empty_pages.text[:200])
+
+            # ── cancellation stops the pass and still unloads the vision model
+            token = orun.CancelToken()
+            cancelled_client = _PdfClient(
+                capabilities={"text:8b": ["completion"],
+                              "qwen3-vl:2b": ["completion", "vision"]},
+                models=[{"name": "text:8b", "size": 9},
+                        {"name": "qwen3-vl:2b", "size": 2}],
+                resident=["text:8b"])
+            cancelled_client.on_chat = token.cancel
+            cancelled = orun.execute_tool(
+                spec, {"path": str(scan_pdf)},
+                context(cancelled_client, current_model=lambda: "text:8b",
+                        cancel=token))
+            failures = _check(failures, "a cancelled vision pass is reported",
+                              cancelled.cancelled and not cancelled.ok,
+                              cancelled.text[:160])
+            failures = _check(failures, "a cancelled pass still unloads the vision model",
+                              cancelled_client.unloaded == ["text:8b", "qwen3-vl:2b"],
+                              str(cancelled_client.unloaded))
+
+            # ── read_file points a PDF at read_pdf
+            refused = orun.execute_tool(registry["read_file"],
+                                        {"path": str(text_pdf)}, context())
+            failures = _check(failures, "read_file refuses a PDF",
+                              not refused.ok and "read_pdf" in refused.text,
+                              refused.text[:200])
+
+        # ── URL reads
+        class _FakePdfResponse:
+            status_code = 200
+
+            def iter_content(self, size):
+                yield _MINIMAL_PDF
+
+            def close(self):
+                pass
+
+        real_get = pdf_tools.requests.get
+        pdf_tools.requests.get = lambda *a, **k: _FakePdfResponse()
+        try:
+            url_out = orun.execute_tool(
+                spec, {"url": "https://example.com/doc.pdf"}, context())
+        finally:
+            pdf_tools.requests.get = real_get
+        failures = _check(failures, "read_pdf fetches a URL",
+                          url_out.ok and "Hello PDF world" in url_out.text,
+                          url_out.text[:200])
+    finally:
+        pdf_tools.render_pdf_page = real_render
     return failures
 
 
@@ -8265,6 +8549,7 @@ if __name__ == "__main__":
              + test_gpu_layers() + test_slash_completer()
              + test_prompt_toolkit_fallback() + test_textual_optional()
              + test_tools_policy() + test_tool_execution() + test_web_tools()
+             + test_pdf_tool()
              + test_file_tools() + test_session_model_tools()
              + test_system_status_tool() + test_chem_tools()
              + test_environment_tools()

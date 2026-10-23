@@ -2,6 +2,29 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 2.12
+
+Summary of changes in this version:
+  - New `read_pdf` tool: the model can read a PDF by path or URL instead of
+    being told PDFs are unreadable. A text layer is extracted as before
+    (pypdf, then pdftotext, now honoring a `pages` selection); a scanned or
+    image-only PDF has its pages rasterized with pdftoppm and read by a
+    vision model, one page at a time, with page markers and a character cap.
+    The session model is used when it reports the `vision` capability;
+    otherwise a local vision model is picked automatically (preference
+    list, smallest tag), the session model is unloaded to make room and
+    unloaded back afterwards, and the result says so — `pdf_vision_model`
+    pins a model, `pdf_vision_switch: false` refuses the swap instead,
+    `pdf_vision: false` disables the vision path and `pdf_vision_pages`
+    caps the pages per read. `mode` forces text or vision (figures/tables
+    in a text PDF). The transcription prompt lives in
+    `defs/prompts/pdf_vision.md`. `fetch_url` no longer claims no extractor
+    is installed: a failed extraction says so, and a scan points at
+    `read_pdf`; `read_file` refuses a PDF with a pointer to `read_pdf`
+    instead of returning binary soup. The serve API's `file` content parts
+    now text-extract `application/pdf` artifacts the same way (no vision,
+    no model calls). Ctrl+Q cancels a vision pass too.
+
 Version: 2.11
 
 Summary of changes in this version:

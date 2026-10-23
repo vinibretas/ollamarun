@@ -9,6 +9,7 @@ titles and summaries are files, not code:
 | `system_tools.md` | Tool, web-search, math-in-code and tool-result rules, appended when tools are on. |
 | `title.md` | `--auto-title` / `/title --auto` — wraps the conversation as `{{content}}`. |
 | `summarize.md` | `/summarize` and auto-compaction — wraps the transcript as `{{content}}`. |
+| `pdf_vision.md` | The instruction `read_pdf` sends with each page image of a scanned PDF. |
 
 A same-named file under `~/etc/config_files/ollamarun-defs/prompts/`
 overrides the shipped one, so prompts are tunable without touching Python.

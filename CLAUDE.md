@@ -8,7 +8,7 @@ together**; they must stay identical.
 
 `ollamarun` is a full terminal agent harness for Ollama: a drop-in superset of
 `ollama run` that can also give the model tools. Beyond every upstream flag it
-adds an approval-gated tool-calling loop over Ollama function calling (23
+adds an approval-gated tool-calling loop over Ollama function calling (24
 built-in tools, defined as data under `defs/`), persistent sessions, live
 markdown/2D-math rendering with a collapsible thinking panel and a tok/s +
 context footer, two front ends (the inline prompt_toolkit REPL and the
@@ -132,7 +132,7 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"2.11"` — keep this
+  constant in `ollamarun_lib/constants.py`, currently `"2.12"` — keep this
   line current when you bump it) and prepend a new bullet list under
   `Summary of changes in this version:` in the top-level `ollamarun` entry
   script's module docstring — read the existing entries there before adding
@@ -146,8 +146,8 @@ docstring convention) — it is binding, not optional, for edits in this repo.
   through `trash-put`, never a raw unlink.
 - Model-facing text lives in files under `ollamarun_lib/defs/`, not in code:
   `defs/tools/*.json` (one per tool) and `defs/prompts/*.md` (`system.md`,
-  `system_tools.md`, `title.md`, `summarize.md`). Edit those instead of
-  hardcoding strings; a same-named file in
+  `system_tools.md`, `title.md`, `summarize.md`, `pdf_vision.md`). Edit
+  those instead of hardcoding strings; a same-named file in
   `~/etc/config_files/ollamarun-defs/{tools,prompts}/` overrides the shipped
   one (the loaders warn and skip/ignore bad files rather than crash). The
   system-prompt contract: unset session `system` = built-in default, `""` =
@@ -260,7 +260,8 @@ a module's own docstring for what lives there before editing:
    the request body from CLI args + session history.
 8. **`tools.py`** — the tool harness: `ToolSpec`/`default_registry()` (shell,
    python, files — read/write/list plus `edit_file` and the
-   `make_dir`/`move_file`/`copy_file`/`delete_file` chores — `web_search`
+   `make_dir`/`move_file`/`copy_file`/`delete_file` chores, plus `read_pdf`
+   for the text layer or page images through a vision model — `web_search`
    when `ddgs` is installed, `fetch_url`, `search_sessions`, `list_models`,
    `system_status`, `context_status`/`session_info`, tts-remote
    speak/list_voices, and the chemInventoryAPI
@@ -287,14 +288,21 @@ a module's own docstring for what lives there before editing:
    `ssh_target`/`ssh_user` for remote probes, `chem_inventory` (the CLI
    path override), `artifacts` (the serve publisher),
    `context_report`/`session_report` (the plain dicts
-   Repl.context_report()/session_report() assemble for the awareness tools)
-   and `workspace` (the API path jail: when set, path arguments and the
+   Repl.context_report()/session_report() assemble for the awareness tools),
+   `current_model`/`model_show` (the live session model and the run-long
+   `/api/show` cache `read_pdf` uses to pick a vision model) plus the
+   `pdf_vision*` settings and `vision_prompt`, and `workspace` (the API path
+   jail: when set, path arguments and the
    `run_shell`/`run_python` working directories resolve under it and
    resolved escapes including symlinks are refused; the CLI leaves it
    unset).
    The web half
    is self-contained: `_HTMLTextExtractor`/`extract_html_text` turn pages into
-   readable text plus links, `extract_pdf_text` uses pypdf or pdftotext,
+   readable text plus links, `extract_pdf_text` uses pypdf or pdftotext
+   (honoring a page selection), `read_pdf`/`parse_page_spec`/
+   `render_pdf_page`/`pick_vision_model`/`vision_transcribe` add the
+   scanned-PDF path (poppler rasterization, the session model when it has
+   `vision`, else the best installed one with an unload/reload around it),
    `format_fetch_response` maps a response onto model-readable text (never the
    site's error page), `run_web_search` wraps ddgs. The speech half speaks
    through `run_tts_say()` (an older

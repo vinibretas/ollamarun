@@ -54,6 +54,7 @@ from .helpers import (CommandCancelled, canonical_model_name, diff_preview,
                       local_gpu_probe, local_ram_probe, now_iso,
                       run_cancellable, short_stamp, ssh_free_disk,
                       ssh_gpu_probe, ssh_ram_probe)
+from .images import encode_image
 
 FETCH_TIMEOUT = 30.0
 MAX_LIST_ENTRIES = 200
@@ -75,6 +76,28 @@ MAX_SEARCH_RESULTS = 10
 MAX_PAGE_LINKS = 25
 MAX_PDF_CHARS = 40_000
 MAX_PDF_PAGES = 50
+#: One `read_pdf` call rasterizes at most this many pages (config
+#: `pdf_vision_pages` can lower it, never raise it).
+MAX_PDF_VISION_PAGES = 10
+#: Rasterization resolution: small print stays legible, and a page still
+#: fits one image part comfortably.
+PDF_VISION_DPI = 150
+#: A PDF this large is refused before it is parsed.
+MAX_PDF_BYTES = 32 * 1024 * 1024
+#: Per-page vision request timeout: a cold model load can be slow, and the
+#: tool should not give up on the first page because of it.
+PDF_VISION_TIMEOUT = 300.0
+#: Vision-model families tried in this order when the session model cannot
+#: see: a family earlier in the list wins, its smallest tag first.
+PDF_VISION_PREFERENCE = (
+    "qwen3-vl", "qwen2.5vl", "qwen2.5-vl", "qwen3.5-vl", "minicpm-v",
+    "llama3.2-vision", "gemma4", "gemma3", "moondream", "llava",
+    "internvl", "pixtral", "granite-vision",
+)
+#: Last-resort transcription instruction; the editable copy lives in
+#: `defs/prompts/pdf_vision.md` and the REPL injects it (`ToolContext`).
+PDF_VISION_PROMPT = ("Transcribe this page into plain text, preserving "
+                     "headings, lists and reading order.")
 MAX_ERROR_DETAIL = 300
 
 #: Markers that identify a page which is only a JavaScript shell (or a bot
@@ -238,6 +261,24 @@ class ToolContext:
     #: `ToolHandlerResult.artifact_paths` and `execute_tool()` registers them
     #: here. Typed Any for the same one-way reason as `client`/`store`.
     artifacts: Any = None
+    #: The session's model right now, re-read per call so `/model` switches
+    #: are seen (`read_pdf` decides whether it can see images, and what it
+    #: would have to unload for a scan). None outside a REPL.
+    current_model: Optional[Callable[[], Optional[str]]] = None
+    #: Raw `/api/show` through the host's run-long cache, for capabilities.
+    #: None falls back to a direct `client.show()`.
+    model_show: Optional[Callable[[str], dict[str, Any]]] = None
+    #: Scanned-PDF vision settings, from the `pdf_vision*` config keys.
+    pdf_vision: bool = True
+    pdf_vision_switch: bool = True
+    pdf_vision_model: Optional[str] = None
+    pdf_vision_pages: int = MAX_PDF_VISION_PAGES
+    #: The transcription prompt (loaded from `defs/prompts/pdf_vision.md`);
+    #: empty means the built-in fallback.
+    vision_prompt: str = ""
+    #: "label#pages#mode" -> formatted `read_pdf` result, so a repeated read
+    #: is answered from the session instead of re-running vision.
+    pdf_reads: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -512,8 +553,8 @@ def call_detail(name: str, args: dict[str, Any]) -> str:
         text = str(args.get("command") if name == "run_shell" else args.get("code") or "")
     elif name == "write_file":
         text = f"{args.get('path')} ({len(str(args.get('content') or ''))} chars)"
-    elif name in {"read_file", "list_dir"}:
-        text = str(args.get("path") or ".")
+    elif name in {"read_file", "read_pdf", "list_dir"}:
+        text = str(args.get("path") or args.get("url") or ".")
     elif name == "edit_file":
         old = str(args.get("old_string") or "")
         new = str(args.get("new_string") or "")
@@ -1167,21 +1208,24 @@ def extract_html_text(html: str,
     return title, text, links
 
 
-def extract_pdf_text(data: bytes, max_chars: int = MAX_PDF_CHARS) -> Optional[str]:
+def extract_pdf_text(data: bytes, max_chars: int = MAX_PDF_CHARS,
+                     pages: Optional[list[int]] = None) -> Optional[str]:
     """Text of a PDF from its bytes, or None when nothing can extract it.
 
     An empty string means the PDF was read but carries no extractable text
-    (typically a scan).
+    (typically a scan). `pages` is a list of 0-based page indices to read;
+    None reads from the first page up to MAX_PDF_PAGES.
     """
     if not data:
         return None
-    text = _pdf_text_reader(data, max_chars)
+    text = _pdf_text_reader(data, max_chars, pages)
     if text is None:
-        text = _pdf_text_tool(data, max_chars)
+        text = _pdf_text_tool(data, max_chars, pages)
     return text
 
 
-def _pdf_text_reader(data: bytes, max_chars: int) -> Optional[str]:
+def _pdf_text_reader(data: bytes, max_chars: int,
+                     pages: Optional[list[int]] = None) -> Optional[str]:
     """pypdf-based extraction (in-process); None when pypdf is missing/broken."""
     try:
         from pypdf import PdfReader
@@ -1189,9 +1233,15 @@ def _pdf_text_reader(data: bytes, max_chars: int) -> Optional[str]:
         return None
     try:
         reader = PdfReader(io.BytesIO(data))
+        wanted = set(pages) if pages is not None else None
         chunks: list[str] = []
         total = 0
-        for page in list(reader.pages)[:MAX_PDF_PAGES]:
+        for index, page in enumerate(reader.pages):
+            if wanted is not None:
+                if index not in wanted:
+                    continue
+            elif index >= MAX_PDF_PAGES:
+                break
             page_text = page.extract_text() or ""
             chunks.append(page_text)
             total += len(page_text)
@@ -1202,20 +1252,240 @@ def _pdf_text_reader(data: bytes, max_chars: int) -> Optional[str]:
     return _normalize_text("\n\n".join(chunks))[:max_chars]
 
 
-def _pdf_text_tool(data: bytes, max_chars: int) -> Optional[str]:
+def _pdf_text_tool(data: bytes, max_chars: int,
+                   pages: Optional[list[int]] = None) -> Optional[str]:
     """pdftotext fallback; None when the binary is missing or fails."""
     binary = shutil.which("pdftotext")
     if not binary:
         return None
+    ranges = _page_ranges(pages) if pages is not None else [(None, None)]
+    chunks: list[str] = []
+    total = 0
+    for first, last in ranges:
+        command = [binary, "-layout"]
+        if first is not None and last is not None:
+            command += ["-f", str(first + 1), "-l", str(last + 1)]
+        command += ["-", "-"]
+        try:
+            proc = subprocess.run(command, input=data, capture_output=True,
+                                  timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if proc.returncode != 0:
+            return None
+        chunk = proc.stdout.decode("utf-8", errors="replace")
+        chunks.append(chunk)
+        total += len(chunk)
+        if total >= max_chars:
+            break
+    return _normalize_text("\n\n".join(chunks))[:max_chars]
+
+
+def _page_ranges(pages: list[int]) -> list[tuple[Optional[int], Optional[int]]]:
+    """Contiguous runs of 0-based pages: [0, 1, 2, 6] -> [(0, 2), (6, 6)]."""
+    ranges: list[tuple[Optional[int], Optional[int]]] = []
+    for page in sorted(set(pages)):
+        if ranges and ranges[-1][1] is not None and page == ranges[-1][1] + 1:
+            ranges[-1] = (ranges[-1][0], page)
+        else:
+            ranges.append((page, page))
+    return ranges
+
+
+def parse_page_spec(spec: Any, total: Optional[int] = None,
+                    cap: int = MAX_PDF_VISION_PAGES) -> Optional[list[int]]:
+    """Parse a page selection ("1-3,7", "all") into 0-based page indices.
+
+    Empty/None/"all" returns None (the caller picks its default window). A
+    selection is sorted, de-duplicated, dropped of pages past `total` and
+    capped at `cap` entries; anything unparseable, or a selection with no
+    page left, raises ToolError so the model gets a usable message.
+    """
+    raw = str(spec if spec is not None else "").strip().lower()
+    if not raw or raw == "all":
+        return None
+    selected: set[int] = set()
+    for token in raw.replace(" ", "").split(","):
+        if not token:
+            continue
+        match = re.fullmatch(r"(\d+)(?:-(\d+))?", token)
+        if match is None:
+            raise ToolError(f"bad pages value {spec!r} (use e.g. 1-3,7 or all)")
+        first = int(match.group(1))
+        last = int(match.group(2) or first)
+        if first < 1 or last < first:
+            raise ToolError(f"bad pages range {token!r} (pages start at 1)")
+        selected.update(range(first - 1, last))
+    if total is not None:
+        selected = {page for page in selected if page < total}
+    if not selected:
+        raise ToolError(f"pages {spec!r} selects no page of this PDF")
+    return sorted(selected)[:max(1, cap)]
+
+
+def select_pdf_pages(spec: Any, total: Optional[int], cap: int) -> list[int]:
+    """The 0-based pages to read: the spec, or the first `cap` by default."""
+    pages = parse_page_spec(spec, total, cap)
+    if pages is not None:
+        return pages
+    count = min(total, cap) if total else cap
+    return list(range(max(1, count)))
+
+
+def pdf_page_count(data: bytes) -> Optional[int]:
+    """How many pages a PDF has (pypdf, then `pdfinfo`), or None."""
     try:
-        proc = subprocess.run([binary, "-layout", "-", "-"], input=data,
-                              capture_output=True, timeout=30)
+        from pypdf import PdfReader
+        return len(PdfReader(io.BytesIO(data)).pages)
+    except Exception:
+        pass
+    binary = shutil.which("pdfinfo")
+    if not binary:
+        return None
+    try:
+        proc = subprocess.run([binary, "-"], input=data, capture_output=True,
+                              timeout=15)
     except (OSError, subprocess.TimeoutExpired):
         return None
     if proc.returncode != 0:
         return None
     text = proc.stdout.decode("utf-8", errors="replace")
-    return _normalize_text(text)[:max_chars]
+    match = re.search(r"^Pages:\s+(\d+)\s*$", text, re.M)
+    return int(match.group(1)) if match else None
+
+
+def render_pdf_page(data: bytes, page: int, directory: str,
+                    dpi: int = PDF_VISION_DPI) -> Path:
+    """Rasterize one 0-based page to a JPEG file under `directory`."""
+    binary = shutil.which("pdftoppm")
+    if not binary:
+        raise ToolError("reading a scan needs pdftoppm (install poppler-utils)")
+    prefix = os.path.join(directory, f"page-{page + 1}")
+    command = [binary, "-jpeg", "-r", str(max(72, min(int(dpi), 300))),
+               "-jpegopt", "quality=90", "-singlefile",
+               "-f", str(page + 1), "-l", str(page + 1), "-", prefix]
+    try:
+        proc = subprocess.run(command, input=data, capture_output=True,
+                              timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ToolError(f"could not render page {page + 1}: {exc}") from exc
+    path = Path(prefix + ".jpg")
+    if proc.returncode != 0 or not path.is_file():
+        detail = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
+        first = detail.splitlines()[0] if detail else ""
+        raise ToolError(f"could not render page {page + 1}"
+                        + (f": {first}" if first else ""))
+    return path
+
+
+def _model_capabilities(client: Any, model: str,
+                        show: Optional[Callable[[str], dict[str, Any]]]
+                        ) -> list[str]:
+    """One model's capability list; [] when the backend cannot answer."""
+    try:
+        data = show(model) if show is not None else client.show(model)
+    except Exception:
+        return []
+    return [str(capability) for capability in (data.get("capabilities") or [])]
+
+
+def _preference_rank(model: str) -> int:
+    name = canonical_model_name(model).lower()
+    for rank, family in enumerate(PDF_VISION_PREFERENCE):
+        if family in name:
+            return rank
+    return len(PDF_VISION_PREFERENCE)
+
+
+def _model_size(entry: dict[str, Any]) -> int:
+    try:
+        return int(entry.get("size") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def vision_models_installed(client: Any,
+                            show: Optional[Callable[[str], dict[str, Any]]]
+                            ) -> list[dict[str, Any]]:
+    """Installed models that report the `vision` capability, best first."""
+    found: list[dict[str, Any]] = []
+    for entry in client.tags():
+        name = str(entry.get("name") or entry.get("model") or "")
+        if not name:
+            continue
+        capabilities = _model_capabilities(client, name, show)
+        if "vision" in capabilities:
+            found.append({"name": name, "size": _model_size(entry),
+                          "capabilities": capabilities})
+    return sorted(found, key=lambda item: (_preference_rank(item["name"]),
+                                           item["size"], item["name"]))
+
+
+def pick_vision_model(client: Any, *, current: Optional[str],
+                      pinned: Optional[str] = None,
+                      show: Optional[Callable[[str], dict[str, Any]]] = None,
+                      allow_switch: bool = True) -> tuple[str, str]:
+    """The model that reads a scanned PDF, with a short reason.
+
+    Order: the pinned `pdf_vision_model`, then the session model when it can
+    see, then the best installed vision model (preference list, smallest
+    tag). With `allow_switch` off a model other than the session's is
+    refused instead of loaded. Raises ToolError when nothing can be used.
+    """
+    chosen = ""
+    reason = ""
+    if pinned:
+        if not client.model_exists(pinned):
+            raise ToolError(
+                f"the configured pdf_vision_model {pinned!r} is not "
+                f"installed; pull it or clear that config key")
+        chosen, reason = pinned, "pinned by pdf_vision_model"
+    elif current and "vision" in _model_capabilities(client, current, show):
+        chosen, reason = current, "the session model can read images"
+    else:
+        try:
+            installed = vision_models_installed(client, show)
+        except OllamaError as exc:
+            raise ToolError(f"could not list the installed models: {exc}") from exc
+        if not installed:
+            raise ToolError(
+                "this PDF has no text layer (a scan) and no vision model is "
+                "installed; pull one (for example `ollamarun pull qwen3-vl:2b`) "
+                "or set pdf_vision_model in the config")
+        chosen, reason = installed[0]["name"], "picked automatically"
+    if (not allow_switch and current
+            and canonical_model_name(chosen) != canonical_model_name(current)):
+        raise ToolError(
+            f"this PDF has no text layer (a scan) and {current} cannot read "
+            f"images; using {chosen} would unload it, which pdf_vision_switch "
+            f"forbids — set pdf_vision_switch: true or pin a vision session "
+            f"model")
+    return chosen, reason
+
+
+def vision_transcribe(client: Any, model: str, images: list[str], prompt: str,
+                      *, timeout: float, cancel: Optional[Any] = None,
+                      capabilities: Optional[list[str]] = None) -> str:
+    """One vision-model chat call over page images; returns its text."""
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt, "images": images}],
+        "options": {"temperature": 0, "num_predict": 2048},
+    }
+    if capabilities and "thinking" in capabilities:
+        payload["think"] = False
+    chunks: list[str] = []
+    try:
+        for event in client.chat(payload, timeout=timeout, cancel=cancel):
+            if event.get("error"):
+                raise ToolError(f"vision model {model}: {event['error']}")
+            message = event.get("message") or {}
+            piece = message.get("content") or ""
+            if piece:
+                chunks.append(piece)
+    except OllamaError as exc:
+        raise ToolError(f"vision model {model} failed: {exc}") from exc
+    return "".join(chunks).strip()
 
 
 def _http_phrase(status: int) -> str:
@@ -1547,6 +1817,16 @@ def _handler_read_file(args: dict[str, Any], ctx: ToolContext) -> str:
     if not path.is_file():
         raise ToolError(f"not a file: {path}")
     try:
+        with path.open("rb") as handle:
+            head = handle.read(5)
+    except OSError as exc:
+        raise ToolError(f"could not read {path}: {exc}") from exc
+    if head == b"%PDF-":
+        raise ToolError(
+            f"{path} is a PDF, which read_file cannot show as text; call "
+            f"read_pdf with this path (it extracts the text layer and reads "
+            f"scans with a vision model)")
+    try:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
             text = handle.read(MAX_READ_CHARS)
     except OSError as exc:
@@ -1565,6 +1845,202 @@ def _handler_read_file(args: dict[str, Any], ctx: ToolContext) -> str:
     numbered = "\n".join(f"{offset + index + 1}: {line}"
                          for index, line in enumerate(window))
     return f"{path} ({len(lines)} lines shown)\n{numbered}"
+
+
+# ── PDFs: text layer first, page images when it is a scan ───────────────────
+
+
+def _pdf_pages_label(total: Optional[int]) -> str:
+    if total:
+        return f"{total} page{'s' if total != 1 else ''}"
+    return "page count unknown"
+
+
+def _check_read_pdf_cancel(ctx: ToolContext) -> None:
+    cancel = getattr(ctx, "cancel", None)
+    if cancel is not None and cancel.cancelled:
+        raise ToolCancelled("read_pdf cancelled: the turn was stopped")
+
+
+def _read_pdf_source(args: dict[str, Any],
+                     ctx: ToolContext) -> tuple[str, bytes]:
+    """The PDF bytes and a label, from `path` or `url` (exactly one)."""
+    raw_path = str(args.get("path") or "").strip()
+    raw_url = str(args.get("url") or "").strip()
+    if bool(raw_path) == bool(raw_url):
+        raise ToolError("give exactly one of 'path' or 'url'")
+    if not raw_url:
+        path = _resolve_in_workspace(raw_path, ctx)
+        if not path.is_file():
+            raise ToolError(f"not a file: {path}")
+        try:
+            if path.stat().st_size > MAX_PDF_BYTES:
+                raise ToolError(
+                    f"{path} is larger than the "
+                    f"{MAX_PDF_BYTES // (1024 * 1024)} MB PDF limit")
+            return str(path), path.read_bytes()
+        except OSError as exc:
+            raise ToolError(f"could not read {path}: {exc}") from exc
+    parsed = urllib.parse.urlsplit(raw_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ToolError("url must be an absolute http:// or https:// URL")
+    timeout = _clamp_timeout(args.get("timeout"), min(ctx.timeout, FETCH_TIMEOUT))
+    try:
+        response = requests.get(raw_url, timeout=timeout,
+                                headers=dict(BROWSER_HEADERS),
+                                allow_redirects=True, stream=True)
+    except requests.RequestException as exc:
+        raise ToolError(f"could not fetch {raw_url}: {_request_error(exc)}") from exc
+    collected = bytearray()
+    try:
+        if response.status_code >= 400:
+            raise ToolError(f"could not fetch {raw_url}: "
+                            f"HTTP {response.status_code}")
+        for chunk in response.iter_content(64 * 1024):
+            collected.extend(chunk)
+            if len(collected) > MAX_PDF_BYTES:
+                raise ToolError(
+                    f"{raw_url} is larger than the "
+                    f"{MAX_PDF_BYTES // (1024 * 1024)} MB PDF limit")
+    finally:
+        response.close()
+    return raw_url, bytes(collected)
+
+
+def _pdf_text_result(label: str, text: Optional[str],
+                     total: Optional[int]) -> str:
+    """The text-layer answer for one read_pdf call."""
+    head = f"{label} ({_pdf_pages_label(total)})"
+    if text is None:
+        return (f"{head}; its text could not be extracted — the file may be "
+                f"encrypted or malformed, or this machine has no PDF text "
+                f"reader (install poppler-utils or pypdf)")
+    if not text.strip():
+        return (f"{head}; no text layer — the pages are images (a scan), not "
+                f"selectable text")
+    return f"{head}, text layer:\n{text}"
+
+
+def _pdf_vision_result(ctx: ToolContext, data: bytes, label: str,
+                       args: dict[str, Any], total: Optional[int],
+                       max_chars: int) -> str:
+    """Rasterize the selected pages and have a vision model read them."""
+    if not ctx.pdf_vision:
+        return (f"{label} ({_pdf_pages_label(total)}); no text layer — a scan. "
+                f"Reading pages with a vision model is disabled "
+                f"(pdf_vision: false)")
+    if ctx.client is None:
+        raise ToolError(
+            "reading a scan needs a vision model, and no Ollama client is "
+            "available here; set pdf_vision: false to skip that path")
+    current = ctx.current_model() if ctx.current_model is not None else None
+    model, reason = pick_vision_model(
+        ctx.client, current=current, pinned=ctx.pdf_vision_model,
+        show=ctx.model_show, allow_switch=ctx.pdf_vision_switch)
+    capabilities = _model_capabilities(ctx.client, model, ctx.model_show)
+    try:
+        page_cap = int(ctx.pdf_vision_pages)
+    except (TypeError, ValueError):
+        page_cap = MAX_PDF_VISION_PAGES
+    page_cap = max(1, min(page_cap, MAX_PDF_VISION_PAGES))
+    pages = select_pdf_pages(args.get("pages"), total, page_cap)
+    prompt = (ctx.vision_prompt or "").strip() or PDF_VISION_PROMPT
+    swapped = bool(current and canonical_model_name(current)
+                   != canonical_model_name(model))
+    unloaded_current = False
+    ctx.title_note = (f"{current} → {model}" if swapped else f"vision: {model}")
+    directory = tempfile.mkdtemp(prefix="ollamarun-pdf-")
+    timeout = max(ctx.timeout, PDF_VISION_TIMEOUT)
+    sections: list[str] = []
+    produced = 0
+    try:
+        if swapped:
+            try:
+                if ctx.client.is_resident(current):
+                    ctx.client.unload(current)
+                    unloaded_current = True
+            except OllamaError:
+                pass
+        for page in pages:
+            _check_read_pdf_cancel(ctx)
+            image_path = render_pdf_page(data, page, directory)
+            try:
+                record = encode_image(image_path)
+            finally:
+                try:
+                    image_path.unlink()
+                except OSError:
+                    pass
+            page_text = vision_transcribe(
+                ctx.client, model, [record["b64"]], prompt, timeout=timeout,
+                cancel=ctx.cancel, capabilities=capabilities)
+            _check_read_pdf_cancel(ctx)
+            if page_text:
+                sections.append(f"--- page {page + 1} ---\n{page_text}")
+                produced += len(page_text)
+            else:
+                sections.append(f"--- page {page + 1} ---\n(no text recognized)")
+            if produced >= max_chars:
+                break
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+        if swapped:
+            try:
+                ctx.client.unload(model)
+            except OllamaError:
+                pass
+    notes: list[str] = []
+    if swapped:
+        notes.append(
+            f"note: {current} cannot read images, so the pages were read with "
+            f"{model} ({reason})"
+            + ("; the session model was unloaded and reloads on the next round"
+               if unloaded_current else
+               "; the session model reloads on the next round"))
+    body = "\n\n".join(sections)[:max_chars]
+    if not body.strip():
+        body = "(the vision model returned no text for these pages)"
+    head = f"{label} ({_pdf_pages_label(total)}; read with {model})"
+    return "\n".join([head] + notes + [body])
+
+
+def _handler_read_pdf(args: dict[str, Any], ctx: ToolContext) -> str:
+    label, data = _read_pdf_source(args, ctx)
+    if not data:
+        raise ToolError(f"{label} is empty")
+    if len(data) > MAX_PDF_BYTES:
+        raise ToolError(f"{label} is larger than the "
+                        f"{MAX_PDF_BYTES // (1024 * 1024)} MB PDF limit")
+    if b"%PDF-" not in data[:1024]:
+        raise ToolError(f"{label} is not a PDF (no %PDF header)")
+    mode = str(args.get("mode") or "auto").strip().lower()
+    if mode not in {"auto", "text", "vision"}:
+        raise ToolError("mode must be 'auto', 'text' or 'vision'")
+    try:
+        max_chars = int(args.get("max_chars") or MAX_PDF_CHARS)
+    except (TypeError, ValueError):
+        max_chars = MAX_PDF_CHARS
+    max_chars = max(1000, min(max_chars, MAX_PDF_CHARS))
+    cache_key = f"{label}#{args.get('pages') or 'all'}#{mode}#{max_chars}"
+    cached = ctx.pdf_reads.get(cache_key)
+    if cached is not None:
+        return ("(the same PDF was read earlier in this session — not reading "
+                "it again)\n" + cached)
+    total = pdf_page_count(data)
+    text: Optional[str] = None
+    if mode != "vision":
+        selected = select_pdf_pages(args.get("pages"), total, MAX_PDF_PAGES)
+        text = extract_pdf_text(data, max_chars, pages=selected)
+    # Any real text layer wins in auto: a readable PDF must never cost a
+    # model swap. A scan (no text at all) goes to vision; `mode=vision`
+    # forces it even when there is text, for figures and tables.
+    has_text = bool(text and text.strip())
+    if mode == "text" or (mode == "auto" and has_text):
+        result = _pdf_text_result(label, text, total)
+    else:
+        result = _pdf_vision_result(ctx, data, label, args, total, max_chars)
+    ctx.pdf_reads[cache_key] = result
+    return result
 
 
 def _handler_write_file(args: dict[str, Any], ctx: ToolContext) -> str:
@@ -2272,10 +2748,13 @@ def _pdf_result(url: str, response: Any, size: int) -> str:
     head = _status_url_line(url, response.url or url, response.status_code)
     text = extract_pdf_text(response.content or b"")
     if text is None:
-        return (f"{head}\n(a PDF, {size} bytes; no PDF text extractor is "
-                f"available on this machine — pypdf or pdftotext would read it)")
+        return (f"{head}\n(a PDF, {size} bytes; its text could not be "
+                f"extracted — the file may be encrypted or malformed. If it is "
+                f"a scan, call read_pdf with this URL to read the pages with a "
+                f"vision model)")
     if not text.strip():
-        return f"{head}\n(a PDF, {size} bytes; no extractable text — likely a scan)"
+        return (f"{head}\n(a PDF, {size} bytes; no text layer — a scan. Call "
+                f"read_pdf with this URL to read the pages with a vision model)")
     return f"{head}\n(PDF turned into text, {size} bytes)\n{text}"
 
 
@@ -2471,6 +2950,7 @@ HANDLERS: dict[str, Callable[[dict[str, Any], ToolContext],
     "shell": _handler_shell,
     "python": _handler_python,
     "read_file": _handler_read_file,
+    "read_pdf": _handler_read_pdf,
     "write_file": _handler_write_file,
     "edit_file": _handler_edit_file,
     "make_dir": _handler_make_dir,

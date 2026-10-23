@@ -42,6 +42,28 @@ Safe modules only run unattended; `open`/`import os`-style code asks.
 | `offset` | integer | optional | first line (0-based) |
 | `limit` | integer | optional | how many lines |
 
+A PDF is refused here with a pointer to `read_pdf`.
+
+### `read_pdf` — auto (read-only)
+
+Read a PDF by path or URL. A text layer is extracted directly (pypdf, then
+`pdftotext`); a scan or image-only PDF is rasterized with `pdftoppm` and read
+by a vision model, one page at a time, with `--- page N ---` markers. The
+session model does it when it reports `vision`; otherwise the best installed
+vision model is picked automatically, the session model is unloaded for the
+pass and the vision model is unloaded afterwards (the next round reloads the
+session model). The result names the model that read the pages. Config:
+`pdf_vision`, `pdf_vision_model`, `pdf_vision_switch`, `pdf_vision_pages`;
+prompt: `defs/prompts/pdf_vision.md`.
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `path` | string | optional | local PDF path (one of `path`/`url`) |
+| `url` | string | optional | absolute http(s) PDF URL |
+| `pages` | string | optional | e.g. `1-3,7` or `all` (default: the first pages) |
+| `mode` | string | optional | `auto` (default), `text` (never a model), `vision` (always page images) |
+| `max_chars` | integer | optional | character cap for the returned text |
+
 ### `write_file` — asks
 
 | Parameter | Type | | Description |
@@ -96,8 +118,9 @@ Moves the target to the trash (`trash-put`) — never a permanent unlink.
 ### `fetch_url` — auto (read-only)
 
 Fetch one http(s) URL as readable content: HTML → text plus links, JSON
-pretty-printed, PDFs text-extracted. A URL already fetched in the session is
-answered from the cache; failures come back as one actionable line.
+pretty-printed, PDFs text-extracted (a scan points at `read_pdf`). A URL
+already fetched in the session is answered from the cache; failures come
+back as one actionable line.
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |

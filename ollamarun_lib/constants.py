@@ -124,7 +124,7 @@ except ImportError:  # pragma: no cover - fallback path
     TEXTUAL_VERSION = ""
     TextualApp = None
 
-VERSION = "2.11"
+VERSION = "2.12"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -226,6 +226,7 @@ TOOL_COLORS: dict[str, str] = {
     "run_shell": "cyan",
     "run_python": "yellow",
     "read_file": "deep_sky_blue1",
+    "read_pdf": "pale_green1",
     "write_file": "orange1",
     "edit_file": "light_goldenrod2",
     "make_dir": "dark_sea_green2",
@@ -355,6 +356,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tts_tools": True,
     "chem_inventory": "chemInventoryAPI",
     "chem_tools": True,
+    # Scanned PDFs (`read_pdf`): the text layer first, then page images read
+    # by a vision model. `pdf_vision_model` pins that model (empty = auto:
+    # the session model when it can see, else the best installed vision
+    # model). `pdf_vision_switch` allows unloading the session model to load
+    # one; off means a scan fails instead of swapping. `pdf_vision_pages`
+    # caps how many pages one read turns into images.
+    "pdf_vision": True,
+    "pdf_vision_model": None,
+    "pdf_vision_switch": True,
+    "pdf_vision_pages": 10,
     # Turn manager (`turns.py`): the serve front end's event buffers. The
     # HTTP listener keys land with the server phase.
     "serve_max_active_turns": 4,

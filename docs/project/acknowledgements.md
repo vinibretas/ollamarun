@@ -27,4 +27,5 @@ This project exists mostly because of other people's work:
 - **The system tools it leans on** — [Tailscale](https://tailscale.com)
   (`--remote`), [trash-cli](https://github.com/andreafrancia/trash-cli)
   (`trash-put` deletes), [poppler](https://poppler.freedesktop.org)
-  (`pdftotext`) and NVIDIA's `nvidia-smi` (GPU probes).
+  (`pdftotext`, and `pdftoppm` for the pages `read_pdf` sends to a vision
+  model) and NVIDIA's `nvidia-smi` (GPU probes).

@@ -20,7 +20,7 @@ are offered depends on the host:
 
 | Condition | Tools |
 | --- | --- |
-| Always | `run_shell`, `run_python`, `read_file`, `write_file`, `edit_file`, `list_dir`, `make_dir`, `move_file`, `copy_file`, `delete_file`, `fetch_url`, `search_sessions`, `list_models`, `system_status`, `context_status`, `session_info` |
+| Always | `run_shell`, `run_python`, `read_file`, `read_pdf`, `write_file`, `edit_file`, `list_dir`, `make_dir`, `move_file`, `copy_file`, `delete_file`, `fetch_url`, `search_sessions`, `list_models`, `system_status`, `context_status`, `session_info` |
 | The `ddgs` package resolves | `web_search` |
 | A `tts-remote` CLI resolves | `speak`, `list_voices` |
 | A `chemInventoryAPI` CLI resolves (config `chem_tools: true`) | `chem_search`, `chem_container`, `chem_locations` |
@@ -70,6 +70,7 @@ llama3.2:3b › /tools
 │ make_dir        │ on    │ rules, else asks            │
 │ move_file       │ on    │ rules, else asks            │
 │ read_file       │ on    │ auto (read-only)            │
+│ read_pdf        │ on    │ auto (read-only)            │
 │ run_python      │ on    │ safe list, rules, else asks │
 │ run_shell       │ on    │ safe list, rules, else asks │
 │ search_sessions │ on    │ auto (read-only)            │
