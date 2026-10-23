@@ -976,7 +976,7 @@ def test_stream_error_reporting() -> int:
     out_buffer = io.StringIO()
     console = Console(file=out_buffer, width=100, force_terminal=False)
     renderer_err = orun.renderer.err_console
-    repl_err = orun.repl.err_console
+    repl_err = orun.repl.core.err_console
     with tempfile.TemporaryDirectory() as tmp:
         store = orun.SessionStore(sessions_dir=Path(tmp) / "sessions",
                                   index_path=Path(tmp) / "index.json")
@@ -1017,7 +1017,7 @@ def test_stream_error_reporting() -> int:
                   and text.count("mid-stream boom") == 1,
                   f"{result.error!r} / {text!r}")
 
-            orun.repl.err_console = stderr_console
+            orun.repl.core.err_console = stderr_console
             client = _FakeClient(resident=["m1"], models=["m1"])
 
             def exploding_unload(model):
@@ -1043,7 +1043,7 @@ def test_stream_error_reporting() -> int:
                   cap.get())
         finally:
             orun.renderer.err_console = renderer_err
-            orun.repl.err_console = repl_err
+            orun.repl.core.err_console = repl_err
     return failures
 
 
@@ -2089,12 +2089,12 @@ def test_tool_colors() -> int:
                                    color_system="truecolor", width=100,
                                    theme=orun.THEME)
         from ollamarun_lib.repl.commands import tools as tools_command
-        real_console = orun.repl.console
+        real_console = orun.repl.core.console
         real_tools_console = tools_command.console
         # the approval prompt itself lives in ui.py now (the front-end seam)
         real_prompt = orun.ui._prompt_approval
         real_interactive = repl.ui.interactive
-        orun.repl.console = terminal_console
+        orun.repl.core.console = terminal_console
         tools_command.console = terminal_console
         orun.ui._prompt_approval = lambda suggestions: ("deny", None)
         repl.ui.interactive = True  # the gate is the Ui's, not the console's
@@ -2103,7 +2103,7 @@ def test_tool_colors() -> int:
             repl._approve_tool_call(repl.tool_registry["write_file"],
                                     {"path": "notes.txt", "content": "x"}, "fp")
         finally:
-            orun.repl.console = real_console
+            orun.repl.core.console = real_console
             tools_command.console = real_tools_console
             orun.ui._prompt_approval = real_prompt
             repl.ui.interactive = real_interactive
@@ -6850,7 +6850,7 @@ def test_tool_commands() -> int:
 
 def test_approval_rules() -> int:
     failures = 0
-    import ollamarun_lib.repl as repl_module
+    import ollamarun_lib.repl.core as repl_module
     from ollamarun_lib.ui import _prompt_approval
 
     # ── the hard floor no rule may ever cover ──────────────────────────────

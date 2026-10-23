@@ -369,11 +369,10 @@ def test_pyflakes_clean() -> int:
     """The pyflakes gate: the package, the entry script and both test files.
 
     The only tolerated findings are the deliberate re-export sites — the
-    `constants.py` hub's imported-but-unused names, every package
-    `__init__.py` (pure re-export hubs), and `repl._prompt_approval`'s
-    compatibility re-export — so any other unused import, undefined name or
-    dead local fails the suite.  pyflakes is a required test dependency
-    (like `openai`).
+    `constants.py` hub's imported-but-unused names and every package
+    `__init__.py` (pure re-export hubs) — so any other unused import,
+    undefined name or dead local fails the suite.  pyflakes is a required
+    test dependency (like `openai`).
     """
     failures = 0
     try:
@@ -405,9 +404,6 @@ def test_pyflakes_clean() -> int:
             # Pure re-export hub: every name is deliberate (and the star
             # lines themselves always flag as re-exports).
             return True
-        if rel == "ollamarun_lib/repl.py":
-            return ("_prompt_approval" in message
-                    and "imported but unused" in message)
         return False
 
     findings = [line for line in output.getvalue().splitlines() if line.strip()]
@@ -424,7 +420,7 @@ def test_pyflakes_clean() -> int:
 #: allowlist can only shrink.
 MODULE_SIZE_BUDGET = 800
 SIZE_BUDGET_ALLOWLIST = {
-    "ollamarun_lib/repl/__init__.py",
+    "ollamarun_lib/repl/core.py",
     "ollamarun_lib/ctxfit.py",
     "ollamarun_lib/agent_api.py",
     "ollamarun_lib/session_host.py",
