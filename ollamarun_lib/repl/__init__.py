@@ -15,6 +15,7 @@ import shlex
 import subprocess
 import threading
 import time
+import types
 from dataclasses import dataclass
 from difflib import get_close_matches
 from pathlib import Path
@@ -25,8 +26,8 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
-from .client import OllamaClient, OllamaError, build_chat_payload
-from .constants import (
+from ..client import OllamaClient, OllamaError, build_chat_payload
+from ..constants import (
     DEFAULT_TIMEOUT,
     HAS_PROMPT_TOOLKIT,
     HISTORY_PATH,
@@ -41,8 +42,8 @@ from .constants import (
     patch_stdout,
     tool_color,
 )
-from .files import expand_file_mentions
-from .helpers import (
+from ..files import expand_file_mentions
+from ..helpers import (
     CancelToken,
     coerce_value,
     human_bytes,
@@ -59,10 +60,10 @@ from .helpers import (
     short_stamp,
     shortcut,
 )
-from .images import encode_image
-from .prompts import (default_system_prompt, load_prompt, summarize_prompt,
+from ..images import encode_image
+from ..prompts import (default_system_prompt, load_prompt, summarize_prompt,
                       title_prompt)
-from .ctxfit import (
+from ..ctxfit import (
     FitRequest,
     NUM_CTX_HELP,
     machine_state_for,
@@ -71,7 +72,7 @@ from .ctxfit import (
     parse_fill_percent,
     parse_num_ctx_arg,
 )
-from .interactive import (
+from ..interactive import (
     GPU_LAYERS_USAGE,
     MODEL_SORT_KEYS,
     _CODE_BLOCK_RE,
@@ -91,11 +92,11 @@ from .interactive import (
     resolve_gpu_layers,
     sort_models,
 )
-from .events import ROUND_STARTED, TOOL_CALL, TOOL_RESULT, TURN_ERROR, RuntimeEvent
-from .renderer import (GenerationResult, HeadlessRenderer, Renderer, StreamSink,
+from ..events import ROUND_STARTED, TOOL_CALL, TOOL_RESULT, TURN_ERROR, RuntimeEvent
+from ..renderer import (GenerationResult, HeadlessRenderer, Renderer, StreamSink,
                        thinking_panel, tool_call_panel, tool_result_panel,
                        user_message_box)
-from .runtime import (AgentRuntime, ApprovalDecision, ApprovalRequest, TurnHooks,
+from ..runtime import (AgentRuntime, ApprovalDecision, ApprovalRequest, TurnHooks,
                       TurnSettings, approval_notice, build_payload,
                       context_length as resolve_context_length,
                       context_report as build_context_report,
@@ -103,8 +104,8 @@ from .runtime import (AgentRuntime, ApprovalDecision, ApprovalRequest, TurnHooks
                       model_show as read_model_show,
                       resident_context_length,
                       session_report as build_session_report)
-from .session import Session, SessionStore, export_html, export_json, export_markdown
-from .tools import (
+from ..session import Session, SessionStore, export_html, export_json, export_markdown
+from ..tools import (
     DEFAULT_SHELL_ALLOW,
     MAX_PDF_VISION_PAGES,
     REQUIREMENT_HINTS,
@@ -126,7 +127,7 @@ from .tools import (
     tool_definitions,
     tool_schemas as build_tool_schemas,
 )
-from .ui import (ConsoleUi, StatusSnapshot, Ui,
+from ..ui import (ConsoleUi, StatusSnapshot, Ui,
                  _prompt_approval)  # deliberate compatibility re-export
 # (the pyflakes gate exempts exactly this finding; see test_pyflakes_clean)
 
@@ -3093,3 +3094,6 @@ COMMAND_HANDLERS: dict[str, Callable[[Repl, str], Any]] = {
 }
 
 
+#: Public surface re-exported by `ollamarun_lib/__init__.py`.
+__all__ = [name for name, value in globals().items()
+           if not name.startswith("_") and not isinstance(value, types.ModuleType)]
