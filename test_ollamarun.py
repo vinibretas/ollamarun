@@ -5759,7 +5759,7 @@ def test_session_model_tools() -> int:
 def test_system_status_tool() -> int:
     failures = 0
     registry = orun.default_registry(tts=False)
-    tools_mod = orun.tools
+    from ollamarun_lib.tools import system_status as tools_mod
     probe_names = ("local_ram_probe", "local_gpu_probe", "local_free_disk",
                    "ssh_ram_probe", "ssh_gpu_probe", "ssh_free_disk")
     saved = {name: getattr(tools_mod, name) for name in probe_names}

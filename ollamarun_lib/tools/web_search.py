@@ -69,7 +69,7 @@ def run_web_search(query: str, max_results: int = DEFAULT_SEARCH_RESULTS,
     return format_search_results(query, results)
 
 
-def _handler_web_search(args: dict[str, Any], ctx: ToolContext) -> str:
+def run(args: dict[str, Any], ctx: ToolContext) -> str:
     query = str(args.get("query") or args.get("q") or "").strip()
     if not query:
         raise ToolError("missing 'query'")

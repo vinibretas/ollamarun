@@ -15,7 +15,7 @@ from .spec import ToolContext, ToolError, _clamp_timeout
 from .web_search import run_web_search
 
 
-def _handler_fetch_url(args: dict[str, Any], ctx: ToolContext) -> str:
+def run(args: dict[str, Any], ctx: ToolContext) -> str:
     url = str(args.get("url") or "").strip()
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:

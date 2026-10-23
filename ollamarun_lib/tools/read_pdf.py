@@ -176,7 +176,7 @@ def _pdf_vision_result(ctx: ToolContext, data: bytes, label: str,
     return "\n".join([head] + notes + [body])
 
 
-def _handler_read_pdf(args: dict[str, Any], ctx: ToolContext) -> str:
+def run(args: dict[str, Any], ctx: ToolContext) -> str:
     label, data = _read_pdf_source(args, ctx)
     if not data:
         raise ToolError(f"{label} is empty")

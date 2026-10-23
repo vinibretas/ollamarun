@@ -5,6 +5,7 @@ import json
 from typing import Any, Optional
 
 
+
 def call_fingerprint(name: str, args: dict[str, Any]) -> str:
     basis = json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
     return f"{name}:{basis}"
