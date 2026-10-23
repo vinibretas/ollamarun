@@ -351,7 +351,8 @@ def test_python310_syntax() -> int:
     import ast
 
     repo = Path(__file__).parent
-    paths = sorted((repo / "ollamarun_lib").glob("*.py")) + [repo / "ollamarun"]
+    # rglob: a pipeline stage is allowed to be a package of submodules.
+    paths = sorted((repo / "ollamarun_lib").rglob("*.py")) + [repo / "ollamarun"]
     bad = []
     for path in paths:
         try:
@@ -368,11 +369,11 @@ def test_pyflakes_clean() -> int:
     """The pyflakes gate: the package, the entry script and both test files.
 
     The only tolerated findings are the deliberate re-export sites — the
-    `constants.py` hub's imported-but-unused names, everything in
-    `__init__.py` (a pure star-import re-export hub), and
-    `repl._prompt_approval`'s compatibility re-export — so any other unused
-    import, undefined name or dead local fails the suite.  pyflakes is a
-    required test dependency (like `openai`).
+    `constants.py` hub's imported-but-unused names, every package
+    `__init__.py` (pure re-export hubs), and `repl._prompt_approval`'s
+    compatibility re-export — so any other unused import, undefined name or
+    dead local fails the suite.  pyflakes is a required test dependency
+    (like `openai`).
     """
     failures = 0
     try:
@@ -385,7 +386,7 @@ def test_pyflakes_clean() -> int:
     output = io.StringIO()
     reporter = flakes_reporter.Reporter(output, output)
     repo = Path(__file__).resolve().parent
-    targets = sorted((repo / "ollamarun_lib").glob("*.py"))
+    targets = sorted((repo / "ollamarun_lib").rglob("*.py"))
     targets += sorted((repo / "examples").glob("*.py"))
     targets += [repo / "ollamarun", repo / "test_ollamarun.py",
                 repo / "test_ollamarun_serve.py"]
@@ -400,9 +401,9 @@ def test_pyflakes_clean() -> int:
             return False
         if rel == "ollamarun_lib/constants.py":
             return "imported but unused" in message
-        if rel == "ollamarun_lib/__init__.py":
-            # Pure star-import re-export hub: every name is deliberate (and
-            # the star lines themselves always flag as re-exports).
+        if rel.startswith("ollamarun_lib/") and rel.endswith("__init__.py"):
+            # Pure re-export hub: every name is deliberate (and the star
+            # lines themselves always flag as re-exports).
             return True
         if rel == "ollamarun_lib/repl.py":
             return ("_prompt_approval" in message
@@ -413,6 +414,55 @@ def test_pyflakes_clean() -> int:
     real = [line for line in findings if not tolerated(line)]
     failures = _check(failures, "pyflakes: clean outside the deliberate "
                       "re-exports", not real, "\n".join(real[:6]))
+    return failures
+
+
+#: A module this large mixes too many responsibilities to review comfortably;
+#: the staged refactor splits the named offenders into packages of submodules
+#: and then removes the entries one by one.  A file that grows past the
+#: budget without an entry fails the gate, and so does a stale entry, so the
+#: allowlist can only shrink.
+MODULE_SIZE_BUDGET = 800
+SIZE_BUDGET_ALLOWLIST = {
+    "ollamarun_lib/tools.py",
+    "ollamarun_lib/repl.py",
+    "ollamarun_lib/ctxfit.py",
+    "ollamarun_lib/agent_api.py",
+    "ollamarun_lib/session_host.py",
+    "ollamarun_lib/cli.py",
+    "ollamarun_lib/mathrender.py",
+    "ollamarun_lib/openai_api.py",
+    "ollamarun_lib/helpers.py",
+    "ollamarun_lib/interactive.py",
+    "ollamarun_lib/host_client.py",
+    "ollamarun_lib/tui.py",
+    "ollamarun_lib/artifacts.py",
+    "ollamarun_lib/renderer.py",
+}
+
+
+def test_module_size_budget() -> int:
+    """No module slips past the size budget, and no allowlist entry goes stale.
+
+    The budget is a review aid, not a hard design law: a genuinely cohesive
+    module can stay listed, but adding an entry is a decision someone has to
+    make in this test rather than a silent drift.
+    """
+    failures = 0
+    repo = Path(__file__).resolve().parent
+    sizes = {}
+    for path in sorted((repo / "ollamarun_lib").rglob("*.py")):
+        rel = path.relative_to(repo).as_posix()
+        sizes[rel] = len(path.read_text(encoding="utf-8").splitlines())
+    over = [f"{rel}: {count}" for rel, count in sizes.items()
+            if count > MODULE_SIZE_BUDGET and rel not in SIZE_BUDGET_ALLOWLIST]
+    stale = sorted(rel for rel in SIZE_BUDGET_ALLOWLIST
+                   if sizes.get(rel, 0) <= MODULE_SIZE_BUDGET)
+    failures = _check(failures, f"no module over {MODULE_SIZE_BUDGET} lines "
+                      "outside the shrinking allowlist", not over,
+                      "\n".join(over[:6]))
+    failures = _check(failures, "the size-budget allowlist has no stale entries",
+                      not stale, ", ".join(stale[:6]))
     return failures
 
 
@@ -7361,6 +7411,7 @@ def run_all(*, live: bool = False) -> int:
         + test_artifact_content_parts() + test_artifact_remote_fetch()
         + test_artifact_upload_api() + test_artifact_fetch_api()
         + test_python310_syntax() + test_pyflakes_clean()
+        + test_module_size_budget()
         + test_turn_result_mapping()
         + test_turn_event_envelope()
         + test_turn_manager_lifecycle()
