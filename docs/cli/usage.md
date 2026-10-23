@@ -26,7 +26,7 @@ what the flags are for.
 | `--host HOST[:PORT]` | `OLLAMA_HOST` or the `host` config key, then `127.0.0.1:11434` | The Ollama server to talk to. |
 | `--remote NAME` | — | Run on a tailnet machine (`pi`, `kiddo`, `g3`, `optiplex7070`/`optiplex`, `guri`, or any `host[:port]`). See [Remote inference](../cli/remote.md). |
 | `--pull` | off | Pull the model when it is missing without asking (free-disk line and per-layer progress). See [Pulling models](../cli/models/pulling.md). |
-| `--sort KEY` | `modified` | Order for the model picker and lists: `modified`, `name`, `size`, `parameters`, `context` (aliases like `recent`/`newest` work). See [Picker and sorting](../cli/models/picker.md). |
+| `--sort KEY\|TEXT` | `modified` | Order for the model picker and lists: `modified`, `name`, `size`, `parameters`, `context` (aliases like `recent`/`newest` work), or any other text for an fzf-style fuzzy ranking (`--sort qwen3`, `--sort fuzzy "qwen 3b"`; matches come first, highlighted, and misses stay below). See [Picker and sorting](../cli/models/picker.md). |
 | `--insecure` | off | Skip TLS verification for an HTTPS host (the same escape hatch `ollama` has). |
 
 ## Prompt input

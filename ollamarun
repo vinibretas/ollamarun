@@ -2,6 +2,20 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 2.11
+
+Summary of changes in this version:
+  - `--sort` doubles as an fzf-style fuzzy search for the model picker and
+    lists: any value that is not one of the fixed keys is a query
+    (`--sort qwen3`, or the explicit `--sort fuzzy "qwen 3b"`), and a
+    multi-word query ANDs its terms like fzf. Matching models rise to the
+    top by score -- boundary and camelCase hits, consecutive runs, tighter
+    spans -- with the matched characters highlighted, while models the
+    query misses stay in the table below, alphabetically, so every row is
+    still selectable. The same spelling works in the picker prompt
+    (`-s fuzzy qwen`), in `/model --list --sort fuzzy qwen`, and as
+    `--sort=fuzzy:qwen`; a bare `--sort fuzzy` is a usage error.
+
 Version: 2.10
 
 Summary of changes in this version:

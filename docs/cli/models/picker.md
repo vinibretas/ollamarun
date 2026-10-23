@@ -1,8 +1,8 @@
 # Picker and sorting
 
 A model-less run opens the picker; `/model` opens it from inside a session.
-It is a sortable table: type a number, a name, a `--sort KEY`, or `q` to
-quit.
+It is a sortable table: type a number, a name, a `--sort KEY`, a fuzzy query
+(`--sort fuzzy TEXT`), or `q` to quit.
 
 ```text
                                                          models
@@ -15,14 +15,14 @@ quit.
 │  4 │ llama3.2:3b                                           │    1.9 GiB │    3.2B │ 2026-10-15 10:56:22 │ llama      │
 │  5 │ smollm2:1.7b                                          │    1.7 GiB │    1.7B │ 2026-10-14 12:42:04 │ llama      │
 …
-model number, name, --sort KEY or 'q' to quit (q):
+model number, name, --sort KEY|fuzzy TEXT or 'q' to quit (q):
 ```
 
 Quitting without a choice is not an error — but a model-less run then has
 nothing to do:
 
 ```text
-model number, name, --sort KEY or 'q' to quit (q): q
+model number, name, --sort KEY|fuzzy TEXT or 'q' to quit (q): q
 no model given — pass MODEL or configure one
 ```
 
@@ -35,15 +35,23 @@ no model given — pass MODEL or configure one
 | `size` | Largest first. |
 | `parameters` | Most parameters first (MoE totals included). |
 | `context` | Largest context window first. |
+| anything else | An fzf-style fuzzy query: strongest match first, then the models it misses, alphabetically. |
 
-Aliases like `recent`, `newest` and `mtime` map to `modified`.
-`context` costs one lazy `/api/show` per model, fetched in parallel behind a
-status line and cached per host — the first sorted-by-context prompt takes a
-moment, later ones do not.
+Aliases like `recent`, `newest` and `mtime` map to `modified`. Anything that
+is not a key is a query, so `--sort qwen3` ranks the names fzf-style; the
+explicit spelling is `--sort fuzzy TEXT` (or `--sort=fuzzy:TEXT`). A query
+with spaces is several AND-ed terms, like fzf's extended mode: `--sort fuzzy
+"qwen 3b"` requires both. Matching is case-insensitive, the matched
+characters are highlighted in the name column, and ties break on the tighter
+match, then the shorter and alphabetically earlier name. It is a ranking,
+not a filter — every model stays in the table, so a number still selects
+whatever row it labels. `context` costs one lazy `/api/show` per model,
+fetched in parallel behind a status line and cached per host — the first
+sorted-by-context prompt takes a moment, later ones do not.
 
-Ways in: `--sort KEY` seeds the picker at launch, the picker prompt itself
-takes `--sort KEY` in place, and the session remembers the last choice for
-the next run.
+Ways in: `--sort KEY|TEXT` seeds the picker at launch, the picker prompt
+itself takes the same in place (`--sort fuzzy qwen`, or the shorthand
+`--sort qwen`), and the session remembers the last choice for the next run.
 
 ## From the REPL
 
@@ -61,7 +69,7 @@ llama3.2:3b › /model --list --sort size
 | Command | Effect |
 | --- | --- |
 | `/model NAME` | Switch model (unloads the previous one — see [Housekeeping](housekeeping.md)). |
-| `/model --list [--sort KEY]` | The table without the interactive prompt. |
+| `/model --list [--sort KEY\|fuzzy TEXT]` | The table without the interactive prompt. |
 | `/ps` | The resident models — `ollama ps` with VRAM, quant and unload time. |
 
 ```text

@@ -7,11 +7,13 @@ convenience spellings are noted per command.
 
 ## Model and session lifecycle
 
-### `/model`, `/models [NAME | --list | --sort KEY]`
+### `/model`, `/models [NAME | --list | --sort KEY | --sort fuzzy TEXT]`
 Without an argument: the interactive [picker](models/picker.md). With a
 name: switch model (unloading the current one). `--list` prints the table
 instead, `--sort KEY` orders it (`modified`, `name`, `size`, `parameters`,
-`context`).
+`context`). Any other value is an fzf-style fuzzy query (`--sort qwen3`, or
+`--sort fuzzy "qwen 3b"`): strongest matches first with the matched
+characters highlighted, the rest of the table below, alphabetically.
 
 ```text
 llama3.2:3b › /model --list --sort size

@@ -141,7 +141,7 @@ COMMAND_INFO: dict[str, tuple[str, str]] = {
     "/sessions": ("[filter]", "browse and switch saved sessions"),
     "/title": ("[TEXT|--auto]", "show or set the session title"),
     "/tag": ("[list|add TAG…|rm TAG]", "session tags"),
-    "/model, /models": ("[NAME|--list|--sort KEY]",
+    "/model, /models": ("[NAME|--list|--sort KEY|fuzzy TEXT]",
                         "switch model, list or sort the installed models"),
     "/ps": ("", "show resident models (ollama ps)"),
     "/num-ctx": ("[N | --max-gpu [--probe] | --max-cpu N [--probe]]",
@@ -232,7 +232,8 @@ def completion_candidates(repl: "Repl", text: str) -> list[str]:
     command, _, argument = text.partition(" ")
     if command in {"/model", "/models"} and argument.startswith("--sort "):
         fragment = argument[len("--sort "):]
-        return [key for key in MODEL_SORT_KEYS if key.startswith(fragment)]
+        return [key for key in MODEL_SORT_KEYS + ("fuzzy",)
+                if key.startswith(fragment)]
     if command == "/tools":
         return _tools_completion(repl, argument)
     if " " in argument:
@@ -2578,18 +2579,28 @@ def cmd_model(repl: Repl, argument: str) -> None:
     while index < len(tokens):
         token = tokens[index]
         if token == "--sort" or token.startswith("--sort="):
-            value = token.split("=", 1)[1] if "=" in token else (
+            inline = "=" in token
+            value = token.split("=", 1)[1] if inline else (
                 tokens[index + 1] if index + 1 < len(tokens) else "")
-            if not value:
+            consumed = 1 if inline else 2
+            if value.strip().lower() == "fuzzy":
+                query_at = index + consumed
+                if query_at >= len(tokens) or tokens[query_at].startswith("-"):
+                    console.print("[err]fuzzy sort needs a search string — use "
+                                  "/model --sort fuzzy TEXT[/err]")
+                    return
+                value = "fuzzy " + tokens[query_at]
+                consumed += 1
+            if not value.strip():
                 console.print("[err]usage: /model --sort "
-                              + "|".join(MODEL_SORT_KEYS) + "[/err]")
+                              + "|".join(MODEL_SORT_KEYS) + "|fuzzy TEXT[/err]")
                 return
             try:
                 sort = parse_model_sort(value)
             except ValueError as exc:
                 console.print(f"[err]{escape(str(exc))}[/err]")
                 return
-            index += 1 if "=" in token else 2
+            index += consumed
             continue
         if token == "--list":
             wants_list = True

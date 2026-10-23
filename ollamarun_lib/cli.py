@@ -122,10 +122,10 @@ interactive commands:
   /set parameter NAME V session parameter (temperature, num_ctx, seed, …)
   /set system TEXT      system prompt (unset: the built-in default)
   /show [topic]         model info|license|modelfile|parameters|system|template
-  /model [NAME|--list|--sort KEY]
+  /model [NAME|--list|--sort KEY|--sort fuzzy TEXT]
                         switch model, or list/sort installed models
-                        (KEY: name|size|parameters|context|modified; the
-                        picker prompt takes --sort KEY too)
+                        (KEY: name|size|parameters|context|modified; any
+                        other text is an fzf-style fuzzy query)
   /load [MODEL|SESSION] switch model or resume a saved session
   /save NAME            create an Ollama model from this session
   /pull [MODEL]         pull a model onto this host (updates if present)
@@ -247,10 +247,12 @@ sessions live in ~/etc/data/ollamarun; config in ~/etc/config_files/ollamarun.js
     wrapper.add_argument("--pull", action="store_true",
                          help="pull the model if it is not installed, without asking "
                               "(shows free disk space and progress on a terminal)")
-    wrapper.add_argument("--sort", metavar="KEY",
+    wrapper.add_argument("--sort", metavar="KEY|TEXT",
                          help="order for the model picker and lists: "
                               + ", ".join(MODEL_SORT_KEYS)
-                              + " (default: modified)")
+                              + " (default: modified), or any other text for "
+                                "an fzf-style fuzzy ranking (--sort qwen3, or "
+                                "--sort fuzzy \"qwen 3b\")")
     wrapper.add_argument("-m", "--model", dest="model_flag", metavar="MODEL",
                          help="model name (same as the positional MODEL)")
     wrapper.add_argument("--system", metavar="TEXT",
@@ -753,6 +755,11 @@ def normalize_argv(argv: Optional[list[str]], store: SessionStore,
     come from prompts, so one equal to the prompt itself is not a
     reference). Everything else is rewritten to an explicit
     `--continue=__latest__`, leaving the token in place as the prompt.
+
+    The explicit `--sort fuzzy TEXT` form is folded into one
+    `--sort=fuzzy:TEXT` token here for the same reason: argparse's single
+    value cannot take the two-word spelling, and the query may contain
+    spaces once quoted.
     """
     if argv is None:
         argv = sys.argv[1:]
@@ -760,6 +767,17 @@ def normalize_argv(argv: Optional[list[str]], store: SessionStore,
     index = 0
     while index < len(argv):
         token = argv[index]
+        if token == "--sort" and index + 1 < len(argv) \
+                and argv[index + 1].lower() == "fuzzy" \
+                and index + 2 < len(argv) and not argv[index + 2].startswith("-"):
+            out.append("--sort=fuzzy:" + argv[index + 2])
+            index += 3
+            continue
+        if token == "--sort=fuzzy" and index + 1 < len(argv) \
+                and not argv[index + 1].startswith("-"):
+            out.append("--sort=fuzzy:" + argv[index + 1])
+            index += 2
+            continue
         if token in {"-c", "--continue"} and index + 1 < len(argv) \
                 and not argv[index + 1].startswith("-"):
             candidate = argv[index + 1]

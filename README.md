@@ -343,7 +343,11 @@ mirror ollama's REPL; `/undo`, `/retry`, `/edit`, `/branch`, `/context`,
 - The model picker (a model-less `ollamarun` run, `/model`) sorts
   by `modified` (newest first), `name`, `size`, `parameters` or `context`;
   `--sort KEY` seeds it and the picker prompt takes `--sort KEY` in place.
-  `context` costs one lazy `/api/show` per model, cached per host.
+  Any other text is an fzf-style fuzzy query (`--sort qwen3`, or the explicit
+  `--sort fuzzy "qwen 3b"`): matches rise to the top by score with the
+  matched characters highlighted, and the models it misses stay below,
+  alphabetically. `context` costs one lazy `/api/show` per model, cached per
+  host.
 - A model missing from the target machine (local or `--remote`) offers to pull
   it after printing that machine's free disk space (local `disk_usage`,
   remote via a BatchMode ssh `df` probe; degrades to unknown), with live
@@ -957,7 +961,7 @@ saved history.
 
 ```console
 $ ollamarun MODEL [PROMPT] [--host HOST | --remote NAME] [--ui MODE]
-                  [--pull] [--sort KEY] [--gpu-layers SPEC]
+                  [--pull] [--sort KEY|TEXT] [--gpu-layers SPEC]
                   [--num-ctx [N | max-gpu | --max-cpu N] [--probe]]
                   [--think [STR]] [--render MODE] [--option K=V]
                   [--image PATH] [--system TEXT | --system-file FILE | --no-system]
@@ -990,7 +994,7 @@ Dispatched in the REPL and the TUI; `/help` also lists the shortcuts (`/?`).
 | `/sessions [filter]` | Browse and switch saved sessions |
 | `/title [TEXT\|--auto]` | Show or set the session title |
 | `/tag [list\|add TAG…\|rm TAG]` | Session tags |
-| `/model, /models [NAME\|--list\|--sort KEY]` | Switch model, list or sort the installed models |
+| `/model, /models [NAME\|--list\|--sort KEY\|fuzzy TEXT]` | Switch model, list or sort the installed models |
 | `/ps` | Show resident models (ollama ps) |
 | `/num-ctx [N \| --max-gpu [--probe] \| --max-cpu N [--probe]]` | Context window: N, the largest that keeps the GPU, or N% of DRAM |
 | `/gpu-layers [N\|N%\|+N\|-N\|all\|cpu\|auto]` | GPU layers for this model |

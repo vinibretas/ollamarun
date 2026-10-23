@@ -798,6 +798,15 @@ def test_normalize_argv() -> int:
              ["-c", "20260101-000000-dead", "hi"]),
             ("-c followed by option", ["-c", "--render", "plain", "hi"],
              ["-c", "--render", "plain", "hi"]),
+            ("--sort fuzzy TEXT folds into one token",
+             ["--sort", "fuzzy", "qwen 3b", "--list"],
+             ["--sort=fuzzy:qwen 3b", "--list"]),
+            ("--sort=fuzzy TEXT folds the query in",
+             ["--sort=fuzzy", "qwen3"], ["--sort=fuzzy:qwen3"]),
+            ("--sort with a key is untouched", ["--sort", "size", "m1"],
+             ["--sort", "size", "m1"]),
+            ("--sort fuzzy without a query is left for the parser",
+             ["--sort", "fuzzy"], ["--sort", "fuzzy"]),
         ]
         parser = orun.build_parser()
         for name, argv, expected in cases:
@@ -4564,6 +4573,91 @@ class _TagClient(_FakeClient):
         return {"model_info": {"llama.context_length": length}} if length else {}
 
 
+def test_fuzzy_sort() -> int:
+    failures = 0
+
+    def check(name, got, expected):
+        nonlocal failures
+        if got == expected:
+            print(f"PASS  {name}")
+        else:
+            print(f"FAIL  {name}: {got!r} != {expected!r}")
+            failures += 1
+
+    match = orun.fuzzy_match("qwen", "qwen3:8b")
+    check("fuzzy_match: prefix hit", match is not None, True)
+    check("fuzzy_match: positions", match.positions if match else None,
+          (0, 1, 2, 3))
+    check("fuzzy_match: case-insensitive",
+          orun.fuzzy_match("QWEN", "qwen3:8b") is not None, True)
+    check("fuzzy_match: miss", orun.fuzzy_match("qwen", "llama3.2"), None)
+    check("fuzzy_match: out of order", orun.fuzzy_match("nq", "qwen"), None)
+    check("fuzzy_match: empty term", orun.fuzzy_match("", "qwen"), None)
+
+    boundary = orun.fuzzy_match("b", "a-b")
+    middle = orun.fuzzy_match("b", "ab")
+    check("fuzzy_match: boundary beats mid-word",
+          bool(boundary and middle and boundary.score > middle.score), True)
+    consecutive = orun.fuzzy_match("qwen", "qwen3")
+    scattered = orun.fuzzy_match("qwen", "qxxwxxexxn")
+    check("fuzzy_match: consecutive beats scattered",
+          bool(consecutive and scattered and consecutive.score > scattered.score),
+          True)
+    camel = orun.fuzzy_match("c", "gpuCurator")
+    plain = orun.fuzzy_match("c", "gpucurator")
+    check("fuzzy_match: camel boundary beats plain",
+          bool(camel and plain and camel.score > plain.score), True)
+    check("fuzzy_match: multi-term AND hit",
+          orun.fuzzy_match_query("qwen 3b", "qwen3:8b") is not None, True)
+    check("fuzzy_match: multi-term AND miss",
+          orun.fuzzy_match_query("qwen zz", "qwen3:8b"), None)
+    check("fuzzy_match: highlight positions",
+          orun.fuzzy_positions("qwen", "qwen3:8b"), (0, 1, 2, 3))
+
+    check("parse_model_sort: implicit fuzzy",
+          orun.parse_model_sort("qwen3"), "fuzzy:qwen3")
+    check("parse_model_sort: explicit fuzzy",
+          orun.parse_model_sort("fuzzy qwen 3b"), "fuzzy:qwen 3b")
+    check("parse_model_sort: explicit fuzzy, colon",
+          orun.parse_model_sort("fuzzy:qwen"), "fuzzy:qwen")
+    check("parse_model_sort: keeps the typed case",
+          orun.parse_model_sort("Qwen"), "fuzzy:Qwen")
+    for bad in ("", "fuzzy", "fuzzy:"):
+        try:
+            orun.parse_model_sort(bad)
+            check(f"parse_model_sort rejects {bad!r}", False, True)
+        except ValueError as exc:
+            check(f"parse_model_sort rejects {bad!r}",
+                  "search string" in str(exc) or "empty sort" in str(exc), True)
+
+    models = [
+        {"name": "my-qwen-model"},
+        {"name": "qwen2.5:14b"},
+        {"name": "qwen3:8b"},
+        {"name": "llama3.2:3b"},
+    ]
+
+    def names(items):
+        return [item["name"] for item in items]
+
+    check("fuzzy sort: strongest matches first",
+          names(orun.sort_models(models, "fuzzy:qwen")),
+          ["qwen3:8b", "qwen2.5:14b", "my-qwen-model", "llama3.2:3b"])
+    check("fuzzy sort: non-matches stay, alphabetically",
+          names(orun.sort_models(models, "fuzzy:zzz")),
+          ["llama3.2:3b", "my-qwen-model", "qwen2.5:14b", "qwen3:8b"])
+    check("fuzzy sort: leaves the input alone", names(models),
+          ["my-qwen-model", "qwen2.5:14b", "qwen3:8b", "llama3.2:3b"])
+
+    with orun.console.capture() as cap:
+        orun.console.print(orun.model_table(
+            orun.sort_models(models, "fuzzy:qwen"), sort="fuzzy:qwen"))
+    text = _plain(cap.get())
+    check("model_table names a fuzzy sort", "fuzzy 'qwen'" in text, True)
+    check("model_table still shows the non-match", "llama3.2:3b" in text, True)
+    return failures
+
+
 def test_model_sort() -> int:
     failures = 0
 
@@ -4581,11 +4675,6 @@ def test_model_sort() -> int:
     check("parse_model_sort: params alias", orun.parse_model_sort("params"), "parameters")
     check("parse_model_sort: ctx alias", orun.parse_model_sort("ctx"), "context")
     check("parse_model_sort: recent alias", orun.parse_model_sort("recent"), "modified")
-    try:
-        orun.parse_model_sort("bogus")
-        check("parse_model_sort rejects unknown keys", False, True)
-    except ValueError as exc:
-        check("parse_model_sort rejects unknown keys", "name" in str(exc), True)
 
     check("parameter_count: 7.6B",
           orun.model_parameter_count({"details": {"parameter_size": "7.6B"}}), 7.6)
@@ -4630,6 +4719,12 @@ def test_model_sort() -> int:
     check("sort by context without data is deterministic",
           names(orun.sort_models(models, "context")),
           ["a-big:latest", "m-mid:latest", "z-small:latest"])
+    check("sort by fuzzy ranks matches first",
+          names(orun.sort_models(models, "fuzzy:big")),
+          ["a-big:latest", "m-mid:latest", "z-small:latest"])
+    check("sort by fuzzy keeps non-matches, alphabetically",
+          names(orun.sort_models(models, "fuzzy:z")),
+          ["z-small:latest", "a-big:latest", "m-mid:latest"])
     check("sort_models leaves the input alone", names(models),
           ["z-small:latest", "a-big:latest", "m-mid:latest"])
 
@@ -4639,6 +4734,10 @@ def test_model_sort() -> int:
     check("model_table names the sort", "by context" in text, True)
     check("model_table shows ctx values", "131k" in text, True)
     check("model_table shows params", "70B" in text, True)
+    with orun.console.capture() as cap:
+        orun.console.print(orun.model_table(models, sort="fuzzy:big"))
+    check("model_table names a fuzzy sort",
+          "fuzzy 'big'" in _plain(cap.get()), True)
     return failures
 
 
@@ -4693,13 +4792,34 @@ def test_model_picker_sort() -> int:
     check("context column is shown", "131k" in text, True)
 
     client = _TagClient(tags)
-    ui = _ScriptedUi(["--sort bogus", "2"])
+    ui = _ScriptedUi(["--sort mid", "1"])
     with orun.console.capture() as cap:
         picked = orun.pick_model(client, None, ui=ui, sort="size")
     text = _plain(cap.get())
-    check("bad sort key warns", "unknown sort key" in text, True)
-    check("bad sort key keeps the previous order", picked, "m-mid:latest")
-    check("bad sort key shows the usage", "sort keys:" in text, True)
+    check("fuzzy sort picks the strongest match", picked, "m-mid:latest")
+    check("fuzzy sort names the query", "fuzzy 'mid'" in text, True)
+
+    seen = {}
+    ui = _ScriptedUi(["--sort fuzzy qwen", "q"])
+    with orun.console.capture():
+        orun.pick_model(client, None, ui=ui, sort="modified",
+                        on_sort=lambda key: seen.update(sort=key))
+    check("picker accepts --sort fuzzy TEXT", seen.get("sort"), "fuzzy:qwen")
+
+    client = _TagClient(tags)
+    ui = _ScriptedUi(["--sort nothing-matches", "1"])
+    with orun.console.capture() as cap:
+        picked = orun.pick_model(client, None, ui=ui, sort="modified")
+    text = _plain(cap.get())
+    check("fuzzy sort with no match warns", "no model matches" in text, True)
+    check("no-match fuzzy keeps every model, alphabetically",
+          picked, "a-big:latest")
+
+    ui = _ScriptedUi(["--sort fuzzy", "q"])
+    with orun.console.capture() as cap:
+        orun.pick_model(client, None, ui=ui, sort="modified")
+    check("bare fuzzy shows the usage",
+          "needs a search string" in _plain(cap.get()), True)
     return failures
 
 
@@ -4752,12 +4872,24 @@ def test_model_command_sort() -> int:
           orun.COMMAND_HANDLERS.get("/models") is orun.cmd_model, True)
     check("/models is advertised", "/model, /models" in orun.COMMAND_INFO, True)
 
+    with orun.console.capture() as cap:
+        orun.cmd_model(repl, "--list --sort fuzzy small")
+    text = _plain(cap.get())
+    check("/model --list --sort fuzzy TEXT ranks the match first",
+          text.index("z-small") < text.index("a-big"), True)
+    check("--list keeps the fuzzy spec", repl.model_sort, "fuzzy:small")
+
+    with orun.console.capture():
+        orun.cmd_model(repl, "--list --sort big")
+    check("--list accepts an implicit fuzzy query", repl.model_sort, "fuzzy:big")
+
     saved_pick = orun.repl.pick_model
-    orun.repl.pick_model = lambda *args, **kwargs: check("bad --sort must not pick", False, True)
+    orun.repl.pick_model = lambda *args, **kwargs: check("bare fuzzy --sort must not pick", False, True)
     try:
         with orun.console.capture() as cap:
-            orun.cmd_model(repl, "--sort bogus")
-        check("bad --sort key errors", "unknown sort key" in _plain(cap.get()), True)
+            orun.cmd_model(repl, "--sort fuzzy")
+        check("bare fuzzy --sort errors",
+              "needs a search string" in _plain(cap.get()), True)
     finally:
         orun.repl.pick_model = saved_pick
 
@@ -4789,10 +4921,10 @@ def test_sort_flag() -> int:
     check("--sort defaults to None", parser.parse_args(["m1"]).sort, None)
 
     with orun.console.capture() as cap:
-        rc = orun.main(["--sort", "bogus"])
+        rc = orun.main(["--sort", "fuzzy"])
     text = _plain(cap.get())
-    check("main rejects a bad --sort key", rc, 2)
-    check("bad --sort prints the valid keys", "name" in text, True)
+    check("main rejects a bare fuzzy --sort", rc, 2)
+    check("bare fuzzy --sort prints the usage", "search string" in text, True)
 
     seen = {}
     saved_pick = orun.cli.pick_model
@@ -4999,10 +5131,17 @@ def test_slash_completer() -> int:
             failures += 1
 
         names = {c.text for c in completer.get_completions(_Doc("/model --sort "), None)}
-        if names == set(orun.MODEL_SORT_KEYS):
-            print("PASS  SlashCompleter offers every sort key")
+        if names == set(orun.MODEL_SORT_KEYS) | {"fuzzy"}:
+            print("PASS  SlashCompleter offers every sort key and fuzzy")
         else:
             print(f"FAIL  SlashCompleter all sort keys: {names}")
+            failures += 1
+
+        names = {c.text for c in completer.get_completions(_Doc("/model --sort f"), None)}
+        if names == {"fuzzy"}:
+            print("PASS  SlashCompleter completes the fuzzy keyword")
+        else:
+            print(f"FAIL  SlashCompleter fuzzy keyword: {names}")
             failures += 1
 
         names = {c.text for c in completer.get_completions(_Doc("/tools "), None)}
@@ -8121,7 +8260,7 @@ if __name__ == "__main__":
              + test_background_cli()
              + test_remote_hosts()
              + test_pull_and_disk_helpers() + test_ensure_model()
-             + test_model_sort() + test_model_picker_sort()
+             + test_model_sort() + test_fuzzy_sort() + test_model_picker_sort()
              + test_model_command_sort() + test_sort_flag()
              + test_gpu_layers() + test_slash_completer()
              + test_prompt_toolkit_fallback() + test_textual_optional()
