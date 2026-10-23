@@ -34,7 +34,7 @@ The harness layers, roughly top to bottom:
 - **State** — `session.py` persists conversations; `emit.py` backs the
   non-interactive inspection flags.
 - **Inference** — `client.py` speaks the Ollama HTTP API; `interactive.py`
-  handles pickers/pull/GPU-layer specs; `ctxfit.py` sizes contexts.
+  handles pickers/pull/GPU-layer specs; `ctxfit/` sizes contexts.
 
 `--remote NAME` retargets every Ollama call at a tailnet machine: the known
 names are `pi`, `kiddo`, `g3`, `optiplex7070` (alias `optiplex`) and `guri`,
@@ -132,7 +132,7 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"2.13"` — keep this
+  constant in `ollamarun_lib/constants.py`, currently `"2.14"` — keep this
   line current when you bump it) and prepend a new bullet list under
   `Summary of changes in this version:` in the top-level `ollamarun` entry
   script's module docstring — read the existing entries there before adding
@@ -386,32 +386,36 @@ a module's own docstring for what lives there before editing:
    Also
    the GPU-layer spec logic: `model_block_count()`,
    `parse_gpu_layers_spec()`, `resolve_gpu_layers()`, `gpu_layers_label()`.
-15. **`ctxfit.py`** — the context fits behind `/num-ctx --max-gpu` and
-   `/num-ctx --max-cpu N`: `kv_bytes_per_token()` (llama.cpp's KV formula
-   applied to `/api/show`'s GGUF metadata, per-layer `head_count_kv` arrays
-   included), `machine_state_for()`/`probe_machine_gpu()` (free VRAM plus
-   the ollama unit env) and `machine_ram_for()`/`probe_machine_ram()`
-   (available DRAM from /proc/meminfo), locally or over one ssh probe each;
-   `estimate_max_gpu_ctx()` (weights from `/api/tags`, llama.cpp's fit
-   margin, resident models' `/api/ps` VRAM credited back, pinned
-   `/gpu-layers`); `estimate_max_cpu_ctx()` (the budget is MemAvailable plus
-   the resident model's own host RAM -- a reload returns it -- and the
-   host footprint is the weights plus per-token KV of the layers llama.cpp's
-   fit leaves on the CPU, `max_cpu_overhead_mb` reserved); the
-   `/api/ps`-verified `probe_max_gpu_ctx()`/`probe_max_cpu_ctx()` that solve
-   each next candidate from the measured affine footprint line instead of
-   bisecting, plus `ModelProfile`/`model_profile()` (the
+15. **`ctxfit/`** — the context fits behind `/num-ctx --max-gpu` and
+   `/num-ctx --max-cpu N`, one module per stage: `defaults.py` (shared
+   numbers and the calibration path), `quantization.py` (labels and bytes per
+   parameter), `machine.py` (`machine_state_for()`/`probe_machine_gpu()` —
+   free VRAM plus the ollama unit env — and `machine_ram_for()`/
+   `probe_machine_ram()`, available DRAM from /proc/meminfo, locally or over
+   one ssh probe each), `profile.py` (`kv_bytes_per_token()` — llama.cpp's KV
+   formula applied to `/api/show`'s GGUF metadata, per-layer `head_count_kv`
+   arrays included — and `ModelProfile`/`model_profile()`: the
    parameters/quantization cross-check, per-layer KV geometry with sliding
    windows and MLA, `ssm.*`/shortconv recurrent state and the
-   embedding/output/block weight split behind every estimate) and
-   `CtxCalibrationStore` (bounded, host/model/placement-scoped measured
-   samples that calibrate later estimates and seed probe search;
-   stale/incompatible data falls back to the profile)
-   (`FitRequest`/`GpuFit`/`CpuFit`/`ProbeResult`), the rich reports and
-   `max_gpu_context()`/`max_cpu_context()`, which the REPL
-   command and the CLI `--num-ctx max-gpu` / `--num-ctx --max-cpu N` flags
-   both call. The probes themselves live in `helpers.py` (`local_gpu_probe`,
-   `ssh_gpu_probe`, `local_ram_probe`, `ssh_ram_probe`, `host_is_self`).
+   embedding/output/block weight split behind every estimate),
+   `calibration.py` (`CtxCalibrationStore`: bounded, host/model/placement-
+   scoped measured samples that calibrate later estimates and seed probe
+   search; stale/incompatible data falls back to the profile),
+   `estimate.py` (`estimate_max_gpu_ctx()`: weights from `/api/tags`,
+   llama.cpp's fit margin, resident models' `/api/ps` VRAM credited back,
+   pinned `/gpu-layers`; `estimate_max_cpu_ctx()`: the budget is MemAvailable
+   plus the resident model's own host RAM — a reload returns it — and the
+   host footprint is the weights plus per-token KV of the layers llama.cpp's
+   fit leaves on the CPU, `max_cpu_overhead_mb` reserved), `probe.py` (the
+   `/api/ps`-verified `probe_max_gpu_ctx()`/`probe_max_cpu_ctx()`, solving
+   each next candidate from the measured affine footprint line instead of
+   bisecting), `report.py` (the rich reports), `api.py` (`fit_context()`,
+   `max_gpu_context()`/`max_cpu_context()` and the argument parsers, which
+   the REPL command and the CLI `--num-ctx max-gpu` / `--num-ctx --max-cpu N`
+   flags both call) and `models.py` (`FitRequest`/`GpuFit`/`CpuFit`/
+   `ProbeResult`). The package hub re-exports the public surface. The probes
+   themselves live in `helpers.py` (`local_gpu_probe`, `ssh_gpu_probe`,
+   `local_ram_probe`, `ssh_ram_probe`, `host_is_self`).
 16. **`runtime.py`** — the agent turn runtime: `AgentRuntime` (the loop
    and tool execution that used to live in `Repl._generate`/
    `Repl._execute_tool_calls`), `TurnSettings`, `TurnHooks` (the host
