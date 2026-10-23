@@ -2088,11 +2088,14 @@ def test_tool_colors() -> int:
         terminal_console = Console(file=recorded, force_terminal=True,
                                    color_system="truecolor", width=100,
                                    theme=orun.THEME)
+        from ollamarun_lib.repl.commands import tools as tools_command
         real_console = orun.repl.console
+        real_tools_console = tools_command.console
         # the approval prompt itself lives in ui.py now (the front-end seam)
         real_prompt = orun.ui._prompt_approval
         real_interactive = repl.ui.interactive
         orun.repl.console = terminal_console
+        tools_command.console = terminal_console
         orun.ui._prompt_approval = lambda suggestions: ("deny", None)
         repl.ui.interactive = True  # the gate is the Ui's, not the console's
         try:
@@ -2101,6 +2104,7 @@ def test_tool_colors() -> int:
                                     {"path": "notes.txt", "content": "x"}, "fp")
         finally:
             orun.repl.console = real_console
+            tools_command.console = real_tools_console
             orun.ui._prompt_approval = real_prompt
             repl.ui.interactive = real_interactive
         styled = recorded.getvalue()
@@ -4852,6 +4856,7 @@ def test_model_picker_sort() -> int:
 
 def test_model_command_sort() -> int:
     failures = 0
+    import ollamarun_lib.repl.commands.model as model_commands
 
     def check(name, got, expected):
         nonlocal failures
@@ -4878,7 +4883,7 @@ def test_model_command_sort() -> int:
     check("--list keeps the sort for the session", repl.model_sort, "size")
 
     seen = {}
-    saved_pick = orun.repl.pick_model
+    saved_pick = model_commands.pick_model
 
     def fake_pick(client, current=None, *, ui=None, sort="modified", on_sort=None):
         seen["sort"] = sort
@@ -4886,12 +4891,12 @@ def test_model_command_sort() -> int:
             on_sort("parameters")
         return None
 
-    orun.repl.pick_model = fake_pick
+    model_commands.pick_model = fake_pick
     try:
         with orun.console.capture():
             orun.cmd_model(repl, "")
     finally:
-        orun.repl.pick_model = saved_pick
+        model_commands.pick_model = saved_pick
     check("picker starts with the session sort", seen.get("sort"), "size")
     check("picker sort sticks for later pickers", repl.model_sort, "parameters")
 
@@ -4910,23 +4915,23 @@ def test_model_command_sort() -> int:
         orun.cmd_model(repl, "--list --sort big")
     check("--list accepts an implicit fuzzy query", repl.model_sort, "fuzzy:big")
 
-    saved_pick = orun.repl.pick_model
-    orun.repl.pick_model = lambda *args, **kwargs: check("bare fuzzy --sort must not pick", False, True)
+    saved_pick = model_commands.pick_model
+    model_commands.pick_model = lambda *args, **kwargs: check("bare fuzzy --sort must not pick", False, True)
     try:
         with orun.console.capture() as cap:
             orun.cmd_model(repl, "--sort fuzzy")
         check("bare fuzzy --sort errors",
               "needs a search string" in _plain(cap.get()), True)
     finally:
-        orun.repl.pick_model = saved_pick
+        model_commands.pick_model = saved_pick
 
-    saved_ensure = orun.repl.ensure_model
-    orun.repl.ensure_model = lambda client, name, config, **kwargs: name
+    saved_ensure = model_commands.ensure_model
+    model_commands.ensure_model = lambda client, name, config, **kwargs: name
     try:
         with orun.console.capture():
             orun.cmd_model(repl, "--sort name z-small:latest")
     finally:
-        orun.repl.ensure_model = saved_ensure
+        model_commands.ensure_model = saved_ensure
     check("--sort with a name sets the sort", repl.model_sort, "name")
     check("--sort with a name still switches", repl.session.model, "z-small:latest")
     return failures
