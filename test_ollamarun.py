@@ -5948,7 +5948,9 @@ trailer << /Root 1 0 R >>
 
 def test_web_tools() -> int:
     failures = 0
-    from ollamarun_lib import tools as web_tools
+    from ollamarun_lib.tools import fetch_url as fetch_tools
+    from ollamarun_lib.tools import net as net_tools
+    from ollamarun_lib.tools import web_search as search_tools
 
     # ── HTML turned into readable text
     html = ("<html><head><title>Widget &amp; Co</title>"
@@ -6038,7 +6040,7 @@ def test_web_tools() -> int:
                       with_links)
 
     failures = _check(failures, "DNS failures get a short explanation",
-                      "could not be resolved" in web_tools._request_error(
+                      "could not be resolved" in net_tools._request_error(
                           requests.exceptions.ConnectionError(
                               "HTTPSConnectionPool: Failed to resolve 'nope.invalid'")))
 
@@ -6110,14 +6112,14 @@ def test_web_tools() -> int:
                           pdf_out.ok and "Hello PDF world" in pdf_out.text,
                           pdf_out.text[:120])
 
-        real_extract = web_tools.extract_pdf_text
-        web_tools.extract_pdf_text = lambda data, max_chars=1, pages=None: None
+        real_extract = fetch_tools.extract_pdf_text
+        fetch_tools.extract_pdf_text = lambda data, max_chars=1, pages=None: None
         try:
             no_pdf = orun.execute_tool(registry["fetch_url"],
                                        {"url": "https://example.com/nopdf.pdf"},
                                        ctx)
         finally:
-            web_tools.extract_pdf_text = real_extract
+            fetch_tools.extract_pdf_text = real_extract
         failures = _check(failures, "a failed PDF extraction points at read_pdf",
                           "its text could not be extracted" in no_pdf.text
                           and "read_pdf" in no_pdf.text, no_pdf.text[:200])
@@ -6147,8 +6149,8 @@ def test_web_tools() -> int:
                          "url": "https://docs.test/ai-hat",
                          "snippet": "More detail"}]
 
-        original_ddgs = web_tools.DDGS
-        web_tools.DDGS = _FakeDDGS
+        original_ddgs = search_tools.DDGS
+        search_tools.DDGS = _FakeDDGS
         try:
             search = orun.execute_tool(registry["web_search"],
                                        {"query": "raspberry pi ai hat"}, ctx)
@@ -6202,7 +6204,7 @@ def test_web_tools() -> int:
             failures = _check(failures, "search_available follows the backend",
                               orun.search_available() is True)
         finally:
-            web_tools.DDGS = original_ddgs
+            search_tools.DDGS = original_ddgs
     finally:
         requests.get = real_get
 
@@ -6319,7 +6321,7 @@ class _PdfClient:
 
 def test_pdf_tool() -> int:
     failures = 0
-    from ollamarun_lib import tools as pdf_tools
+    from ollamarun_lib.tools import read_pdf as pdf_tools
 
     registry = orun.default_registry(tts=False)
     spec = registry.get("read_pdf")
