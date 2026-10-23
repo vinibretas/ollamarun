@@ -39,6 +39,16 @@ def _plain(text: str) -> str:
 sys.path.insert(0, str(Path(__file__).parent))
 
 import ollamarun_lib as orun
+import ollamarun_lib.repl.core as repl_core
+
+# The banner and `/context` name the context window by measuring the machine's
+# ollama service environment. Tests never shell out to systemctl/ssh: the
+# default here is "nothing measured", and the cases that exercise the probe
+# patch these (or set the Repl's `_server_context` cache) with the value under
+# test. `python3 test_ollamarun_serve.py` imports this module, so the API half
+# is hermetic too.
+repl_core.local_service_env = lambda *args, **kwargs: {}
+repl_core.ssh_service_env = lambda *args, **kwargs: {}
 
 MATH_CASES = [
     ("inline compact",
@@ -1210,6 +1220,263 @@ def test_live_stream_final_frame_is_complete() -> int:
     return failures
 
 
+def test_thinking_hint_at_end() -> int:
+    """Expanded thinking renders once (in the live frame) and closes with a
+    `/thinking full` hint, never a second, full panel below the answer."""
+    failures = 0
+
+    def finished(mode: str, thinking: str, content: str) -> str:
+        buffer = io.StringIO()
+        console = Console(file=buffer, width=100, force_terminal=True)
+        renderer = orun.Renderer(console, mode="markdown", thinking_mode=mode,
+                                 tps_footer=False, show_stats=False)
+        # Force the frozen-live-frame branch without starting a real Live.
+        renderer._started = True
+        renderer._use_live = True
+        renderer._live = None
+        renderer.result = orun.GenerationResult(thinking=thinking, content=content)
+        renderer.end(content=content, thinking=thinking)
+        return _plain(buffer.getvalue())
+
+    expanded = finished("expanded", "SECRET_THINKING", "The answer.")
+    failures = _check(failures, "expanded thinking is not re-printed as a panel",
+                      "SECRET_THINKING" not in expanded, expanded)
+    failures = _check(failures, "expanded thinking ends with a /thinking full hint",
+                      "/thinking full" in expanded and "The answer." not in expanded,
+                      expanded)
+    collapsed = finished("collapsed", "SECRET_THINKING", "The answer.")
+    failures = _check(failures, "collapsed thinking prints no end hint",
+                      "/thinking full" not in collapsed
+                      and "SECRET_THINKING" not in collapsed, collapsed)
+    hidden = finished("hidden", "SECRET_THINKING", "The answer.")
+    failures = _check(failures, "hidden thinking prints no end hint",
+                      "/thinking full" not in hidden
+                      and "SECRET_THINKING" not in hidden, hidden)
+    return failures
+
+
+def test_banner_and_resume() -> int:
+    """The banner reports the context window, model facts, tools, placement
+    and stats; a resumed session replays its history, a fresh one does not."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+        config = dict(orun.DEFAULT_CONFIG)
+        show = {"model_info": {"llama.context_length": 65536},
+                "details": {"parameter_size": "2.3B",
+                            "quantization_level": "Q4_K_M"},
+                "capabilities": ["completion", "tools", "thinking"]}
+        client = _FakeClient(models=["m1"], show_data=show,
+                             ps_entries=[{"name": "m1", "context_length": 32768}])
+        session = orun.Session.create("m1", client.base, title="resume test")
+        session.add_message("user", "hello there")
+        session.add_message("assistant", "hi")
+        session.stats.update({"turns": 1, "prompt_tokens": 100,
+                              "completion_tokens": 40,
+                              "last_prompt_tokens": 30000,
+                              "last_completion_tokens": 400})
+        repl = orun.Repl(args, config, client, store, session)
+
+        with orun.console.capture() as cap:
+            repl._banner()
+        out = _plain(cap.get())
+        failures = _check(failures, "banner reports the measured context window",
+                          "window" in out and "32768" in out
+                          and "loaded runner" in out and "model max 65536" in out,
+                          out)
+        failures = _check(failures, "banner shows model size, quant and capabilities",
+                          "2.3B" in out and "Q4_K_M" in out
+                          and "tools · thinking" in out, out)
+        failures = _check(failures, "banner shows tools policy and gpu placement",
+                          "allowlist" in out and "8 rounds" in out
+                          and "auto (ollama decides)" in out, out)
+        failures = _check(failures, "banner shows session stats",
+                          "stats" in out and "1 turn ·" in out, out)
+        failures = _check(failures, "banner colours the share of the window in use",
+                          "usage" in out and "30.400k used" in out and "93%" in out,
+                          out)
+
+        # A session num_ctx is what the next request asks for, so it is the
+        # window -- reported as the setting it is.
+        session.parameters["num_ctx"] = 8192
+        with orun.console.capture() as cap:
+            repl._banner()
+        num_ctx_out = _plain(cap.get())
+        failures = _check(failures, "banner names the session num_ctx setting",
+                          "8192" in num_ctx_out
+                          and "(num_ctx=8192)" in num_ctx_out
+                          and "model max 65536" in num_ctx_out, num_ctx_out)
+        session.parameters.pop("num_ctx")
+
+        # A cold model on a machine whose load context is configured in the
+        # ollama service environment reports that measured knob -- and never
+        # the architectural maximum as the window.
+        cold_client = _FakeClient(models=["m1"], show_data=show)
+        cold = orun.Repl(args, config, cold_client, store,
+                         orun.Session.create("m1", cold_client.base, title="cold"))
+        saved_probe = repl_core.local_service_env
+        repl_core.local_service_env = lambda *a, **k: {"OLLAMA_CONTEXT_LENGTH": "4096"}
+        try:
+            with orun.console.capture() as cap:
+                cold._banner()
+        finally:
+            repl_core.local_service_env = saved_probe
+        cold_out = _plain(cap.get())
+        failures = _check(failures, "a cold banner reports the measured env, not the max",
+                          "4096 tok (OLLAMA_CONTEXT_LENGTH=4096)" in cold_out
+                          and "model max 65536" in cold_out
+                          and "window 65536" not in cold_out, cold_out)
+
+        # Without anything measurable the window says so instead of guessing.
+        bare_client = _FakeClient(models=["m1"], show_data=show)
+        bare = orun.Repl(args, config, bare_client, store,
+                         orun.Session.create("m1", bare_client.base, title="bare"))
+        with orun.console.capture() as cap:
+            bare._banner()
+        bare_out = _plain(cap.get())
+        failures = _check(failures, "an unmeasurable window is labelled, not invented",
+                          "not loaded yet" in bare_out
+                          and "model max 65536" in bare_out
+                          and "window 65536" not in bare_out, bare_out)
+
+        # `--remote`: ollama runs elsewhere, so the window is measured on that
+        # machine -- the probe goes over ssh to the session's remote node.
+        seen = {}
+
+        def _fake_ssh(target, **kwargs):
+            seen["target"] = target
+            seen.setdefault("user", kwargs.get("user"))
+            return {"OLLAMA_CONTEXT_LENGTH": "8192"}
+
+        remote_client = _FakeClient(models=["m1"], show_data=show)
+        remote_repl = orun.Repl(args, config, remote_client, store,
+                                orun.Session.create("m1", "http://g3:11434",
+                                                    title="remote", remote="g3"))
+        saved_ssh = repl_core.ssh_service_env
+        repl_core.ssh_service_env = _fake_ssh
+        try:
+            with orun.console.capture() as cap:
+                remote_repl._banner()
+        finally:
+            repl_core.ssh_service_env = saved_ssh
+        remote_out = _plain(cap.get())
+        failures = _check(failures, "a --remote session measures the remote machine",
+                          seen.get("target") == "g3"
+                          and "(OLLAMA_CONTEXT_LENGTH=8192)" in remote_out
+                          and "remote g3" in remote_out, remote_out)
+
+        args.continue_ = "__latest__"
+        with orun.console.capture() as cap:
+            repl._print_history()
+        resumed = _plain(cap.get())
+        failures = _check(failures, "resume prints the whole conversation",
+                          "hello there" in resumed and "hi" in resumed, resumed)
+
+        args.continue_ = None
+        with orun.console.capture() as cap:
+            repl._print_history()
+        fresh = _plain(cap.get())
+        failures = _check(failures, "a fresh launch prints no history",
+                          fresh.strip() == "", fresh)
+        with orun.console.capture() as cap:
+            repl._print_history(force=True)
+        failures = _check(failures, "the switch path forces the history print",
+                          "hello there" in _plain(cap.get()))
+    return failures
+
+
+def test_num_ctx_reload() -> int:
+    """`/num-ctx` and `/gpu-layers` reach the runner immediately.
+
+    The window and the placement are load-time properties, so a change
+    unloads a resident model and loads it again with the new settings (a cold
+    model is loaded outright), then verifies the window from `/api/ps` and
+    refreshes the cached one."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+        config = dict(orun.DEFAULT_CONFIG)
+        show = {"model_info": {"llama.context_length": 32768,
+                               "llama.block_count": 32}}
+        client = _FakeClient(models=["m1"], show_data=show,
+                             ps_entries=[{"name": "m1", "context_length": 4096}])
+        repl = orun.Repl(args, config, client, store,
+                         orun.Session.create("m1", client.base))
+
+        with orun.console.capture() as cap:
+            orun.cmd_num_ctx(repl, "8192")
+        out = _plain(cap.get())
+        failures = _check(failures, "/num-ctx unloads and reloads at the new window",
+                          client.unloaded == ["m1"]
+                          and client.loaded == ["m1"]
+                          and client.load_options == [{"num_ctx": 8192}]
+                          and "unloaded m1" in out and "loaded at 8192" in out,
+                          f"{out!r} unloaded={client.unloaded} "
+                          f"loads={client.load_options}")
+        report = repl.context_report()
+        failures = _check(failures, "the window is re-resolved after the reload",
+                          report["window"] == 8192
+                          and report["source"] == "num_ctx=8192", str(report))
+
+        client.unloaded.clear()
+        client.loaded.clear()
+        client.load_options.clear()
+        with orun.console.capture() as cap:
+            orun.cmd_num_ctx(repl, "8192")
+        failures = _check(failures, "an unchanged window is left alone",
+                          client.unloaded == [] and client.loaded == []
+                          and "already loaded at 8192" in _plain(cap.get()),
+                          f"{_plain(cap.get())!r} {client.unloaded} {client.loaded}")
+
+        cold = _FakeClient(models=["m1"], show_data=show)
+        cold_repl = orun.Repl(args, config, cold, store,
+                              orun.Session.create("m1", cold.base))
+        with orun.console.capture() as cap:
+            orun.cmd_num_ctx(cold_repl, "16384")
+        failures = _check(failures, "a cold model is loaded now, not on the message",
+                          cold.loaded == ["m1"]
+                          and cold.load_options == [{"num_ctx": 16384}]
+                          and cold.ps_entries
+                          and cold.ps_entries[0]["context_length"] == 16384
+                          and cold_repl.context_report()["window"] == 16384,
+                          f"loads={cold.load_options} ps={cold.ps_entries}")
+
+        # A placement change reloads even though num_ctx is unchanged, and the
+        # resolved /gpu-layers spec rides along in the load options.
+        expected_gpu = orun.resolve_gpu_layers("25%", 32)
+        client.unloaded.clear()
+        client.loaded.clear()
+        client.load_options.clear()
+        with orun.console.capture() as cap:
+            orun.cmd_gpu_layers(repl, "25%")
+        failures = _check(failures, "/gpu-layers applies the placement by reloading",
+                          repl.session.gpu_layers == "25%"
+                          and client.unloaded == ["m1"]
+                          and client.load_options == [{"num_ctx": 8192,
+                                                       "num_gpu": expected_gpu}],
+                          f"options={client.load_options} "
+                          f"unloaded={client.unloaded} out={_plain(cap.get())!r}")
+        repl.session.gpu_layers = None
+
+        # The launch preload carries the session's settings, so --num-ctx and
+        # --gpu-layers are in force from the first load.
+        preload_client = _FakeClient(models=["m1"], show_data=show)
+        preload_session = orun.Session.create("m1", preload_client.base)
+        preload_session.parameters["num_ctx"] = 12288
+        preload = orun.Repl(args, config, preload_client, store, preload_session)
+        preload._preload_model()
+        if preload._preload_thread is not None:
+            preload._preload_thread.join(timeout=5)
+        failures = _check(failures, "the preload loads with the session's settings",
+                          preload_client.load_options == [{"num_ctx": 12288}],
+                          str(preload_client.load_options))
+    return failures
+
+
 def test_tool_loop_separation() -> int:
     """The answer that ends a tool loop is separated from the processing
     above it by a bright centered `response` rule -- and only the committed
@@ -1521,10 +1788,18 @@ class _FakeClient:
 
     def unload(self, model):
         self.unloaded.append(model)
+        self.ps_entries = [entry for entry in self.ps_entries
+                           if (entry.get("name") or entry.get("model")) != model]
 
     def load(self, model, *, keepalive=None, options=None):
         self.loaded.append(model)
         self.load_options.append(dict(options or {}))
+        # A real load replaces the /api/ps entry, window included, so tests
+        # that read the runner back (the /num-ctx reload) see the new state.
+        self.ps_entries = [entry for entry in self.ps_entries
+                           if (entry.get("name") or entry.get("model")) != model]
+        self.ps_entries.append({"name": model, "model": model,
+                                "context_length": (options or {}).get("num_ctx")})
 
     def capabilities(self, model):
         return list(self.capability_list)
@@ -2136,7 +2411,9 @@ def test_tool_colors() -> int:
 def test_ps_table_and_cmd_ps() -> int:
     failures = 0
     entries = [{"name": "llama3:latest", "size": 4_000_000_000, "size_vram": 3_500_000_000,
-                "details": {"quantization_level": "Q4_0"}, "expires_at": "2026-01-01T00:00:00Z"}]
+                "details": {"quantization_level": "Q4_0"},
+                "context_length": 4096,
+                "expires_at": "2026-01-01T00:00:00Z"}]
     table = orun.ps_table(entries)
     with orun.console.capture() as cap:
         orun.console.print(table)
@@ -2145,6 +2422,18 @@ def test_ps_table_and_cmd_ps() -> int:
         print("PASS  ps_table renders model/quant/size columns")
     else:
         print(f"FAIL  ps_table: {out!r}")
+        failures += 1
+    if "context" in out and "4096 tok" in out:
+        print("PASS  ps_table reports the loaded runner's context window")
+    else:
+        print(f"FAIL  ps_table context column: {out!r}")
+        failures += 1
+    with orun.console.capture() as cap:
+        orun.console.print(orun.ps_table([dict(entries[0], context_length=None)]))
+    if "?" in _plain(cap.get()):
+        print("PASS  ps_table degrades an unreported window to ?")
+    else:
+        print(f"FAIL  ps_table missing context: {_plain(cap.get())!r}")
         failures += 1
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -2238,10 +2527,19 @@ def test_context_usage() -> int:
             print(f"FAIL  /context rows: {out!r}")
             failures += 1
 
+        if ("context length" in out and "not loaded yet" in out
+                and "model max" in out and "8192" in out
+                and "user" in out and "assistant" in out):
+            print("PASS  /context shows the measured source, model max and roles")
+        else:
+            print(f"FAIL  /context source/roles: {out!r}")
+            failures += 1
+
         # The warning must key off the combined usage: 100/150 alone is only
         # 67%, but 100 + 40 over a 150-token window is 93% and must warn.
-        warn_client = _FakeClient(models=["m1"],
-                                  show_data={"model_info": {"llama.context_length": 150}})
+        warn_client = _FakeClient(
+            models=["m1"], show_data={"model_info": {"llama.context_length": 8192}},
+            ps_entries=[{"name": "m1", "context_length": 150}])
         warn_repl = orun.Repl(args, config, warn_client, store, session)
         with orun.console.capture() as cap:
             warn_repl._context_warning()
@@ -2284,18 +2582,22 @@ def test_context_usage() -> int:
             failures += 1
         session.parameters.pop("num_ctx")
 
-        # Before the model is loaded the show answer is provisional: once
-        # /api/ps reports the runner, the next call picks the real window up.
+        # Before the runner is loaded nothing is invented: the window stays
+        # unknown (the architectural maximum is reported separately, never as
+        # the window) and the next call picks up whatever /api/ps reports.
         grow_client = _FakeClient(models=["m1"],
                                   show_data={"model_info": {"llama.context_length": 262144}})
         grow_repl = orun.Repl(args, config, grow_client, store, session)
-        first = grow_repl.context_length()
+        pre = grow_repl.context_report()
         grow_client.ps_entries = [{"name": "m1:latest", "context_length": 65536}]
-        second = grow_repl.context_length()
-        if first == 262144 and second == 65536:
-            print("PASS  a pre-load context is re-checked against /api/ps")
+        post = grow_repl.context_report()
+        if (pre["window"] is None and pre["source"] == "not loaded yet"
+                and pre["model_max"] == 262144
+                and post["window"] == 65536
+                and post["source"] == "loaded runner"):
+            print("PASS  an unloaded window stays unknown until /api/ps reports")
         else:
-            print(f"FAIL  provisional context upgrade: {first} -> {second}")
+            print(f"FAIL  pre-load window: {pre} -> {post}")
             failures += 1
 
         # The warning measures against the loaded window too: 140 tokens over
@@ -2312,6 +2614,55 @@ def test_context_usage() -> int:
             print("PASS  context warning measures against the loaded window")
         else:
             print(f"FAIL  loaded-window warning: {_plain(cap.get())!r}")
+            failures += 1
+
+        # A cold model whose load context is configured in the ollama service
+        # environment: the window is that measured knob, reported by name and
+        # value -- not an invented "default" and not the arch maximum, which
+        # stays a separate `model max` fact.
+        env_client = _FakeClient(
+            models=["m1"], show_data={"model_info": {"llama.context_length": 262144}})
+        env_repl = orun.Repl(args, config, env_client, store,
+                             orun.Session.create("m1", env_client.base))
+        saved_probe = repl_core.local_service_env
+        repl_core.local_service_env = lambda *a, **k: {
+            "OLLAMA_CONTEXT_LENGTH": "1234", "OLLAMA_KEEP_ALIVE": "5m"}
+        try:
+            report = env_repl.context_report()
+            with orun.console.capture() as cap:
+                env_repl._banner()
+            banner = _plain(cap.get())
+            with orun.console.capture() as cap:
+                orun.cmd_context(env_repl, "")
+            table = _plain(cap.get())
+        finally:
+            repl_core.local_service_env = saved_probe
+        if (report["window"] == 1234
+                and report["source"] == "OLLAMA_CONTEXT_LENGTH=1234"
+                and "1234" in banner and "OLLAMA_CONTEXT_LENGTH=1234" in banner
+                and "model max 262144" in banner
+                and "1234" in table and "OLLAMA_CONTEXT_LENGTH=1234" in table):
+            print("PASS  the ollama service environment is measured as the window")
+        else:
+            print(f"FAIL  measured service env: {report} {banner!r} {table!r}")
+            failures += 1
+
+        # The measured value is cached for the run: a second report/banner
+        # never probes the service again.
+        calls = []
+        repl_core.local_service_env = lambda *a, **k: (
+            calls.append(1), {"OLLAMA_CONTEXT_LENGTH": "1234"})[1]
+        try:
+            cached = orun.Repl(args, config, env_client, store,
+                               orun.Session.create("m1", env_client.base))
+            cached.context_report()
+            cached._banner()
+        finally:
+            repl_core.local_service_env = saved_probe
+        if len(calls) == 1:
+            print("PASS  the service environment is measured once per run")
+        else:
+            print(f"FAIL  probe caching: {len(calls)} calls")
             failures += 1
     return failures
 
@@ -2387,17 +2738,21 @@ def test_environment_tools() -> int:
         ctx_repl = orun.Repl(args, config, client, store, ctx_session)
         report = ctx_repl.context_report()
         failures = _check(failures, "context_report labels a session num_ctx",
-                          report["window"] == 32768 and report["source"] == "num_ctx",
+                          report["window"] == 32768
+                          and report["source"] == "num_ctx=32768",
                           str(report))
 
-        # Unloaded and no num_ctx: the show default is provisional.
+        # Unloaded, no num_ctx and nothing measurable on the machine: the
+        # window is unknown rather than the architectural maximum, which the
+        # report carries separately as `model_max`.
         bare_client = _FakeClient(models=["m1"], show_data=show)
         bare_session = orun.Session.create("m1", bare_client.base, title="bare")
         bare_repl = orun.Repl(args, config, bare_client, store, bare_session)
         report = bare_repl.context_report()
-        failures = _check(failures, "context_report marks an unloaded default provisional",
-                          report["window"] == 262144
-                          and report["source"] == "model default (runner not loaded yet)",
+        failures = _check(failures, "context_report leaves an unloaded window unknown",
+                          report["window"] is None
+                          and report["source"] == "not loaded yet"
+                          and report["model_max"] == 262144,
                           str(report))
 
         # Nearly full: the result tells the model to wrap up.
@@ -3447,17 +3802,22 @@ def test_cmd_num_ctx_max_gpu() -> int:
             with orun.console.capture() as cap:
                 orun.cmd_num_ctx(repl, "--max-gpu")
             out = _plain(cap.get())
-            failures += _fit_check("/num-ctx --max-gpu estimates and sets num_ctx",
+            failures += _fit_check("/num-ctx --max-gpu estimates, sets and loads",
                                repl.session.parameters.get("num_ctx") == 48128
-                               and "estimate only" in out and client.load_ctxs == [],
-                               f"params={repl.session.parameters} out={out[-160:]}")
+                               and "estimate only" in out
+                               and client.load_ctxs == [48128]
+                               and "loaded at 48128" in out,
+                               f"params={repl.session.parameters} "
+                               f"loads={client.load_ctxs} out={out[-160:]}")
 
             with orun.console.capture() as cap:
                 orun.cmd_num_ctx(repl, "--max-gpu --probe")
             out = _plain(cap.get())
             failures += _fit_check("/num-ctx --max-gpu --probe verifies by loading",
                                repl.session.parameters.get("num_ctx") == client.truth()
-                               and "100% GPU" in out and "model is loaded" in out,
+                               and "100% GPU" in out
+                               and "loaded at" in out
+                               and client.load_ctxs[-1] == client.truth(),
                                f"params={repl.session.parameters} probes={client.load_ctxs}")
 
             with orun.console.capture() as cap:
@@ -3854,11 +4214,22 @@ def test_cmd_num_ctx_max_cpu() -> int:
             with orun.console.capture() as cap:
                 orun.cmd_num_ctx(repl, "--max-cpu 30")
             out = _plain(cap.get())
-            failures += _fit_check("/num-ctx --max-cpu estimates without loading",
-                                   repl.session.parameters.get("num_ctx") is not None
+            chosen = repl.session.parameters.get("num_ctx")
+            failures += _fit_check("/num-ctx --max-cpu estimates, sets and loads",
+                                   chosen is not None
                                    and "estimate only" in out
-                                   and client.load_ctxs == [],
-                                   f"params={repl.session.parameters} out={out[-160:]}")
+                                   and client.load_ctxs == [chosen]
+                                   and f"loaded at {chosen}" in out,
+                                   f"params={repl.session.parameters} "
+                                   f"loads={client.load_ctxs} out={out[-160:]}")
+
+            # The probe is its own operation and measures the machine: start
+            # from an unloaded one, since the estimate above now leaves the
+            # model resident at its chosen window (as a real /num-ctx does).
+            client.current = None
+            client.ps_entries = []
+            client.loaded.clear()
+            client.load_ctxs.clear()
 
             with orun.console.capture() as cap:
                 orun.cmd_num_ctx(repl, "--max-cpu 30 --probe")
@@ -3866,7 +4237,9 @@ def test_cmd_num_ctx_max_cpu() -> int:
             target = 16 * 2 ** 30 * 30 // 100
             failures += _fit_check("/num-ctx --max-cpu N --probe lands on the boundary",
                                    repl.session.parameters.get("num_ctx") == client.truth(target)
-                                   and "host RAM" in out and "model is loaded" in out,
+                                   and "host RAM" in out
+                                   and "loaded at" in out
+                                   and client.load_ctxs[-1] == client.truth(target),
                                    f"params={repl.session.parameters} "
                                    f"truth={client.truth(target)} probes={client.load_ctxs}")
 
@@ -4469,6 +4842,40 @@ def test_pull_and_disk_helpers() -> int:
           orun.ssh_free_disk("box", runner=_no_ssh), None)
     check("ssh_free_disk tolerates garbage output",
           orun.ssh_free_disk("box", runner=lambda *a, **k: _Proc(0, "nope\n")), None)
+
+    # The ollama service environment is measured, never assumed: the context
+    # knob is read by name, and a missing/unparsable value answers None so a
+    # caller falls through instead of inventing a number.
+    env_line = ('Environment=OLLAMA_HOST=0.0.0.0:11434 '
+                'OLLAMA_CONTEXT_LENGTH=1234 OLLAMA_KEEP_ALIVE=5m')
+    check("local_service_env parses the unit environment",
+          orun.local_service_env(runner=lambda *a, **k: _Proc(0, env_line)),
+          {"OLLAMA_HOST": "0.0.0.0:11434", "OLLAMA_CONTEXT_LENGTH": "1234",
+           "OLLAMA_KEEP_ALIVE": "5m"})
+    check("local_service_env tolerates a failing systemctl",
+          orun.local_service_env(runner=lambda *a, **k: _Proc(1)), {})
+    check("ssh_service_env parses the remote environment",
+          orun.ssh_service_env("box", runner=lambda *a, **k: _Proc(0, env_line)),
+          {"OLLAMA_HOST": "0.0.0.0:11434", "OLLAMA_CONTEXT_LENGTH": "1234",
+           "OLLAMA_KEEP_ALIVE": "5m"})
+    check("ssh_service_env tolerates an unreachable host",
+          orun.ssh_service_env("box", runner=_no_ssh), {})
+    check("service_context_length reports the knob as configured",
+          orun.service_context_length({"OLLAMA_CONTEXT_LENGTH": "1234"}),
+          (1234, "OLLAMA_CONTEXT_LENGTH=1234"))
+    check("service_context_length is None when the knob is unset",
+          orun.service_context_length({"OLLAMA_HOST": "x"}), None)
+    check("service_context_length rejects junk",
+          orun.service_context_length({"OLLAMA_CONTEXT_LENGTH": "many"}), None)
+    check("model_default_num_ctx reads the parameters block",
+          orun.model_default_num_ctx({"parameters": "stop \"x\"\nnum_ctx 2048"}),
+          2048)
+    check("model_default_num_ctx reads the raw Modelfile",
+          orun.model_default_num_ctx(
+              {"modelfile": "FROM qwen3\nPARAMETER num_ctx 8192\n"}),
+          8192)
+    check("model_default_num_ctx is None without a declaration",
+          orun.model_default_num_ctx({"parameters": "temperature 0.6"}), None)
 
     line = orun.disk_free_line(_FakeClient(), dict(orun.DEFAULT_CONFIG))
     check("disk_free_line: unknown without ssh", "unknown" in line, True)
@@ -8552,6 +8959,7 @@ if __name__ == "__main__":
              + test_normalize_argv() + test_renderer_plain()
              + test_renderer_feed_parity()
              + test_renderer_stop_keys()
+             + test_thinking_hint_at_end()
              + test_stream_error_reporting()
              + test_thinking_display() + test_math_layout()
              + test_render_content() + test_tps_estimator()
@@ -8565,6 +8973,8 @@ if __name__ == "__main__":
              + test_ps_table_and_cmd_ps()
              + test_maybe_show_ps() + test_resolve_num_ctx()
              + test_context_usage()
+             + test_banner_and_resume()
+             + test_num_ctx_reload()
              + test_cmd_num_ctx() + test_ctxfit()
              + test_ctxfit_outcome() + test_ctxfit_cancel_progress()
              + test_fit_service()

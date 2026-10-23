@@ -52,7 +52,7 @@ from .machine import (MachineGpu, MachineRam, machine_ram_for,
                       machine_state_for, probe_machine_gpu, probe_machine_ram)
 from .models import (CpuFit, FitCancelled, FitRequest, GpuFit, Probe,
                      ProbeResult)
-from .probe import probe_max_cpu_ctx, probe_max_gpu_ctx
+from .probe import probe_max_cpu_ctx, probe_max_gpu_ctx, wait_for_ps
 from .profile import (KvLayerSpec, ModelProfile, kv_bytes_at,
                       kv_bytes_per_token, kv_element_bytes, model_profile,
                       model_total_layers, trained_context_length)

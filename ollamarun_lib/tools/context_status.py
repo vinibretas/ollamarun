@@ -20,8 +20,8 @@ def run(args: dict[str, Any], ctx: ToolContext) -> str:
     window = data.get("window")
     model_max = data.get("model_max")
     if window is None:
-        lines.append("context window: unknown (server unreachable or the model "
-                     "is not loaded yet)")
+        note = ("model max " + str(model_max)) if model_max else "no /api/show answer"
+        lines.append(f"context window: {data.get('source') or 'unknown'} ({note})")
     else:
         source = str(data.get("source") or "unknown")
         detail = f"{window} tokens ({source}"

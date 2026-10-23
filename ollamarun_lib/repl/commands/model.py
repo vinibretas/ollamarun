@@ -92,13 +92,19 @@ def cmd_num_ctx(repl: Repl, argument: str) -> None:
                                                   ssh_user=ssh_user),
         )
 
-    def apply(ctx: Optional[int], *, probe: bool) -> None:
+    def apply(ctx: Optional[int]) -> None:
+        """Store the window and put it on the runner now.
+
+        The window is a load-time property, so this unloads a resident model
+        and loads it again at the new context (printing what happened), rather
+        than leaving the change to the next message.
+        """
         if ctx is None:
             return
         repl.session.parameters["num_ctx"] = ctx
         repl.session.touch()
-        note = " [dim]· model is loaded at that context[/dim]" if probe else ""
-        console.print(f"[ok]num_ctx set to {ctx}[/ok]{note}")
+        console.print(f"[ok]num_ctx set to {ctx}[/ok]")
+        repl.reload_model()
 
     head = tokens[0].lower()
     rest = tokens[1:]
@@ -126,7 +132,7 @@ def cmd_num_ctx(repl: Repl, argument: str) -> None:
             else:
                 console.print(f"[err]{usage}[/err]")
                 return
-        apply(max_cpu_context(fit_request(), percent=percent, probe=probe), probe=probe)
+        apply(max_cpu_context(fit_request(), percent=percent, probe=probe))
         return
 
     kind, value = parse_num_ctx_arg(tokens[0])
@@ -142,7 +148,7 @@ def cmd_num_ctx(repl: Repl, argument: str) -> None:
             else:
                 console.print(f"[err]{usage}[/err]")
                 return
-        apply(max_gpu_context(fit_request(), probe=probe), probe=probe)
+        apply(max_gpu_context(fit_request(), probe=probe))
         return
     if kind == "error":
         console.print(f"[err]{usage}[/err]")
@@ -155,9 +161,7 @@ def cmd_num_ctx(repl: Repl, argument: str) -> None:
     if max_ctx and requested > max_ctx:
         console.print(f"[warn]{requested} exceeds {escape(repl.session.model)}'s max context "
                       f"({max_ctx}) — capped to {max_ctx}[/warn]")
-    repl.session.parameters["num_ctx"] = applied
-    repl.session.touch()
-    console.print(f"[ok]num_ctx set to {applied}[/ok]")
+    apply(applied)
 
 
 def cmd_gpu_layers(repl: Repl, argument: str) -> None:
@@ -193,8 +197,9 @@ def cmd_gpu_layers(repl: Repl, argument: str) -> None:
     repl.session.gpu_layers = new_spec
     repl.session.touch()
     console.print(f"[ok]gpu layers[/ok] {escape(repl.gpu_layers_summary())}")
-    if repl.unload_model():
-        console.print("[dim]the model will reload with the new setting[/dim]")
+    # The placement is a load-time property too, so apply it now: `force`
+    # because an unchanged num_ctx must not skip a placement-only change.
+    repl.reload_model(force=True)
 
 
 

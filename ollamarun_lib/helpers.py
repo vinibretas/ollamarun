@@ -501,6 +501,71 @@ def parse_service_env(text: str) -> dict[str, str]:
     return env
 
 
+# The ollama service environment is the config that decides what a *cold*
+# model loads with: `ollama serve --help` documents OLLAMA_CONTEXT_LENGTH as
+# the context "to use unless otherwise specified" (its own fallback is
+# VRAM-dependent), and a model's Modelfile `num_ctx` overrides it. The value
+# is only ever read for reporting -- ollamarun never writes this config.
+OLLAMA_CONTEXT_ENV = "OLLAMA_CONTEXT_LENGTH"
+
+SERVICE_ENV_COMMAND = "systemctl show ollama -p Environment 2>/dev/null"
+
+
+def service_context_length(env: dict[str, str]) -> Optional[tuple[int, str]]:
+    """(length, "KEY=VALUE") measured from an ollama service environment.
+
+    None when the knob is unset or not a positive integer, so the caller can
+    fall through to another source instead of inventing a number. The pair
+    carries the knob's own name and value because that measured config *is*
+    the provenance worth showing (it is a setting, not a default).
+    """
+    raw = (env or {}).get(OLLAMA_CONTEXT_ENV)
+    if raw is None:
+        return None
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return value, f"{OLLAMA_CONTEXT_ENV}={value}"
+
+
+def local_service_env(runner: Any = None) -> dict[str, str]:
+    """The ollama service environment on this machine ({} when unavailable)."""
+    run = runner or subprocess.run
+    try:
+        proc = run(["systemctl", "show", "ollama", "-p", "Environment"],
+                   capture_output=True, text=True, timeout=8)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if proc.returncode != 0:
+        return {}
+    return parse_service_env(proc.stdout)
+
+
+def ssh_service_env(target: str, *, user: Optional[str] = None, timeout: float = 8.0,
+                    runner: Any = None, cancel: Optional[Any] = None
+                    ) -> dict[str, str]:
+    """The ollama service environment on `target` over SSH ({} on failure).
+
+    Best-effort exactly like `ssh_gpu_probe`: a missing/unreachable host, no
+    key or a bad response return {} so the caller degrades to "not known".
+    """
+    if not target or shutil.which("ssh") is None:
+        return {}
+    dest = f"{user}@{target}" if user else target
+    run = _probe_runner(cancel, runner)
+    try:
+        proc = run(["ssh", *SSH_OPTS, dest, SERVICE_ENV_COMMAND],
+                   capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if proc.returncode != 0:
+        return {}
+    return parse_service_env(proc.stdout)
+
+
 def local_gpu_probe(runner: Any = None) -> tuple[list[tuple[int, int]], dict[str, str]]:
     """(devices, ollama service env) on this machine; both empty when unavailable."""
     run = runner or subprocess.run
@@ -789,6 +854,33 @@ def format_context(used: Optional[int], total: Optional[int]) -> str:
         return f"ctx {human_tokens(used)}"
     return (f"ctx {human_tokens(used)}/{human_tokens(total)} "
             f"({used * 100 / total:.3f}%)")
+
+
+def usage_color(pct: Optional[float]) -> str:
+    """Threshold colour for a context-usage share: ok / warn / err.
+
+    Shared by `/context` and the startup banner so both read the same way.
+    """
+    if pct is not None and pct >= 90:
+        return "err"
+    if pct is not None and pct >= 70:
+        return "warn"
+    return "ok"
+
+
+def source_color(source: str) -> str:
+    """Colour a context window's measured provenance.
+
+    `loaded runner` is the only value measured live from the runner itself
+    (`/api/ps`); a session `num_ctx`, a model's own `num_ctx` and the ollama
+    service environment's knob are configuration; anything else is unknown.
+    Shared by `/context` and the banner.
+    """
+    if source == "loaded runner":
+        return "ok"
+    if source in {"not loaded yet", "unknown"}:
+        return "warn"
+    return "info"
 
 
 def shortcut(text: str, limit: int = 60) -> str:

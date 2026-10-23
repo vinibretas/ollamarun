@@ -19,14 +19,18 @@ def ps_table(entries: list[dict[str, Any]]) -> Table:
     table.add_column("size")
     table.add_column("VRAM")
     table.add_column("quant")
+    table.add_column("context")
     table.add_column("until")
     for entry in entries:
         details = entry.get("details") or {}
+        context = entry.get("context_length")
         table.add_row(
             escape(str(entry.get("name") or entry.get("model") or "?")),
             human_bytes(entry.get("size")),
             human_bytes(entry.get("size_vram")),
             escape(str(details.get("quantization_level") or "?")),
+            f"[bold]{context}[/bold] tok" if isinstance(context, int) and context > 0
+            else "[dim]?[/dim]",
             short_stamp(entry.get("expires_at")) or "?")
     return table
 

@@ -35,7 +35,7 @@ from .events import (APPROVAL_REQUIRED, APPROVAL_RESOLVED, ARTIFACT_CREATED,
                      TURN_COMPLETED, TURN_ERROR, TURN_STARTED, TURN_WARNING,
                      RuntimeEvent)
 from .helpers import CancelToken, canonical_model_name
-from .interactive import model_context_length
+from .interactive import model_context_length, model_default_num_ctx
 from .renderer import GenerationResult
 from .session import Session
 from .tools import (ToolContext, ToolRule, ToolRunner, call_detail,
@@ -525,60 +525,88 @@ def resident_context_length(client: Any, session: Session) -> Optional[int]:
     return None
 
 
-def context_length(client: Any, session: Session,
+def resolve_window(client: Any, session: Session,
                    show_cache: dict[Any, dict[str, Any]],
                    totals: dict[Any, Optional[int]],
-                   provisional: set[Any], *, refresh: bool = False) -> Optional[int]:
-    """The effective window: session `num_ctx`, loaded runner, or model default."""
+                   sources: dict[Any, str],
+                   provisional: set[Any], *, refresh: bool = False,
+                   server_default: Optional[Any] = None
+                   ) -> tuple[Optional[int], str]:
+    """(window, source) as measured on the machine running ollama.
+
+    Priority: the session's `num_ctx` (what the next request asks for and
+    would reload at), the loaded runner's window from `/api/ps`, the model's
+    own Modelfile default from `/api/show`, then `server_default()` -- the
+    context measured from the ollama service environment, a
+    `(length, "KEY=VALUE")` pair. That last source reports the configured
+    knob as itself (it is a setting, not an invented "default"), and when
+    nothing is known the window is None rather than the model's architectural
+    maximum, which is not what a load uses.
+
+    Only `/api/ps` may sharpen a value after the fact, so those answers are
+    marked provisional and re-checked on the next call.
+    """
     key = (session.model, session.parameters.get("num_ctx"))
     if refresh or key not in totals:
         if refresh:
             show_cache.pop((client.base, session.model), None)
-        total = model_context_length(model_show(client, session, show_cache,
-                                                session.model),
-                                     session.parameters)
-        pending = False
-        if not isinstance(session.parameters.get("num_ctx"), int):
+        num_ctx = session.parameters.get("num_ctx")
+        if isinstance(num_ctx, int) and num_ctx > 0:
+            totals[key], sources[key] = num_ctx, f"num_ctx={num_ctx}"
+            provisional.discard(key)
+        else:
             resident = resident_context_length(client, session)
             if resident is not None:
-                total = resident
+                totals[key], sources[key] = resident, "loaded runner"
+                provisional.discard(key)
             else:
-                pending = True
-        totals[key] = total
-        if pending:
-            provisional.add(key)
-        else:
-            provisional.discard(key)
+                default = model_default_num_ctx(
+                    model_show(client, session, show_cache, session.model))
+                measured = server_default() if server_default is not None else None
+                if default is not None:
+                    totals[key], sources[key] = default, f"model num_ctx={default}"
+                elif measured is not None:
+                    totals[key], sources[key] = int(measured[0]), str(measured[1])
+                else:
+                    totals[key], sources[key] = None, "not loaded yet"
+                provisional.add(key)
     elif key in provisional:
         resident = resident_context_length(client, session)
         if resident is not None:
-            totals[key] = resident
+            totals[key], sources[key] = resident, "loaded runner"
             provisional.discard(key)
-    return totals[key]
+    return totals.get(key), sources.get(key, "unknown")
+
+
+def context_length(client: Any, session: Session,
+                   show_cache: dict[Any, dict[str, Any]],
+                   totals: dict[Any, Optional[int]],
+                   sources: dict[Any, str],
+                   provisional: set[Any], *, refresh: bool = False,
+                   server_default: Optional[Any] = None) -> Optional[int]:
+    """The window the model actually runs with (see `resolve_window`)."""
+    return resolve_window(client, session, show_cache, totals, sources,
+                          provisional, refresh=refresh,
+                          server_default=server_default)[0]
 
 
 def context_report(client: Any, session: Session,
                    show_cache: dict[Any, dict[str, Any]],
                    totals: dict[Any, Optional[int]],
-                   provisional: set[Any]) -> dict[str, Any]:
-    """Plain data for the `context_status` tool (window + usage)."""
+                   sources: dict[Any, str],
+                   provisional: set[Any],
+                   server_default: Optional[Any] = None) -> dict[str, Any]:
+    """Plain data for the `context_status` tool (window + usage).
+
+    `model_max` is the architectural maximum from `/api/show` and is reported
+    separately -- it is never presented as the window.
+    """
     parameters = session.parameters or {}
     num_ctx = parameters.get("num_ctx")
-    key = (session.model, num_ctx)
-    window = context_length(client, session, show_cache, totals, provisional)
+    window, source = resolve_window(client, session, show_cache, totals, sources,
+                                    provisional, server_default=server_default)
     model_max = model_context_length(model_show(client, session, show_cache,
                                                 session.model), {})
-    pending = key in provisional
-    if window is None:
-        source = "unknown"
-    elif isinstance(num_ctx, int) and window == num_ctx:
-        source = "num_ctx"
-    elif pending:
-        source = "model default (runner not loaded yet)"
-    elif model_max is not None and window == model_max:
-        source = "model default"
-    else:
-        source = "loaded runner"
     roles: dict[str, int] = {}
     for message in session.messages:
         role = str(message.get("role") or "?")

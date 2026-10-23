@@ -14,10 +14,15 @@ The banner names what is in effect:
 
 ```text
 ╭─ ollamarun ──────────────────────────────────────────────────────────╮
-│ model   llama3.2:3b                                                  │
+│ model   llama3.2:3b · 3.2B · Q4_K_M · tools · thinking               │
 │ session 20261018-105614-b08e · new session                           │
 │ host    http://127.0.0.1:11434                                       │
+│ window  4096 tok (OLLAMA_CONTEXT_LENGTH=4096) · model max 131072     │
+│ usage   12 messages · 3.2k used (78%)                                │
 │ render  markdown · thinking collapsed · 95 local models              │
+│ tools   allowlist · 8 rounds                                         │
+│ gpu     auto (ollama decides)                                        │
+│ stats   6 turns · 41.2k prompt tok · 3.4k completion tok             │
 │ background pid 1234 · survives detach                                │
 │ /help for commands · Ctrl+D closes the session · Ctrl+C twice        │
 │ detaches · Ctrl+T thinking                                           │
@@ -25,11 +30,26 @@ The banner names what is in effect:
 llama3.2:3b › 
 ```
 
+The `window` line names the window the model will *actually run with* and
+where that number came from — the session's `num_ctx` (`num_ctx=8192`), the
+loaded runner (`loaded runner`, from `/api/ps`), the model's own Modelfile
+default (`model num_ctx=8192`) or the ollama service environment
+(`OLLAMA_CONTEXT_LENGTH=4096`, read from the unit) — the same value
+[`/context`](commands.md#context) and the footer use. The model's trained
+maximum is never presented as the window; it is a separate `model max` fact
+next to it, and a cold model whose load context cannot be measured reads
+`not loaded yet`. The line below carries the message count and the
+colour-coded share in use (yellow at 70%, red at 90%). In a resumed session
+the stored messages are replayed below the banner and the bar carries the
+conversation's turn and token totals, so the session picks up where it left
+off.
+
 The model starts loading in the background the moment the session opens —
 the prompt is available immediately, with a `waiting for <model>…` spinner on
 its right while the load runs. When the model becomes resident, a one-time
-[`ollama ps`](../cli/models/housekeeping.md) table prints what is loaded and
-for how long.
+[`ollama ps`](../cli/models/housekeeping.md) table prints what is loaded (its
+`context` column carries the window the runner actually uses) and for how
+long.
 
 ## Typing prompts
 

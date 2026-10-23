@@ -51,9 +51,13 @@ def _refresh_machine(req: FitRequest, fit: GpuFit) -> None:
         req.machine = fresh
 
 
-def _wait_for_ps(client: Any, model: str, ctx: int,
-                 *, timeout: float = 8.0) -> Optional[dict[str, Any]]:
-    """The /api/ps entry for `model` once it reports the requested context."""
+def wait_for_ps(client: Any, model: str, ctx: Optional[int] = None,
+                *, timeout: float = 8.0) -> Optional[dict[str, Any]]:
+    """The /api/ps entry for `model` once it reports the requested context.
+
+    With `ctx` None the first entry for the model answers (used when a load
+    carried no explicit `num_ctx` and any window is acceptable).
+    """
     wanted = canonical_model_name(model)
     deadline = time.monotonic() + timeout
     while True:
@@ -63,7 +67,7 @@ def _wait_for_ps(client: Any, model: str, ctx: int,
                 if canonical_model_name(name) != wanted:
                     continue
                 seen = entry.get("context_length")
-                if seen in (None, ctx):
+                if ctx is None or seen in (None, ctx):
                     return entry
         except OllamaError:
             return None
@@ -170,7 +174,7 @@ def probe_max_gpu_ctx(req: FitRequest, fit: GpuFit) -> ProbeResult:
             last_partial = False
             tested += 1
         else:
-            entry = _wait_for_ps(req.client, req.model, ctx)
+            entry = wait_for_ps(req.client, req.model, ctx)
             if entry is None or not int(entry.get("size") or 0):
                 result.reason = ("could not read the loaded model back from "
                                  "/api/ps (stale or missing entry)")
@@ -329,7 +333,7 @@ def probe_max_cpu_ctx(req: FitRequest, fit: CpuFit) -> ProbeResult:
             low_bad = ctx if low_bad is None else min(low_bad, ctx)
             tested += 1
         else:
-            entry = _wait_for_ps(req.client, req.model, ctx)
+            entry = wait_for_ps(req.client, req.model, ctx)
             if entry is None or not int(entry.get("size") or 0):
                 result.reason = ("could not read the loaded model back from "
                                  "/api/ps (stale or missing entry)")

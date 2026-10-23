@@ -717,6 +717,24 @@ def model_context_length(show_data: dict[str, Any],
     return None
 
 
+def model_default_num_ctx(show_data: dict[str, Any]) -> Optional[int]:
+    """The model's own `num_ctx` from `/api/show`, when it declares one.
+
+    Ollama applies a model's Modelfile parameters at load, so this value (not
+    the `<arch>.context_length` architectural maximum) is what a cold load
+    runs with when the request asks for nothing. Read from the parsed
+    `parameters` block first, then the raw Modelfile text.
+    """
+    for field in ("parameters", "modelfile"):
+        raw = show_data.get(field)
+        if not isinstance(raw, str):
+            continue
+        match = re.search(r"(?:^|\s)num_ctx\s+(\d+)", raw, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
+
+
 def model_block_count(show_data: dict[str, Any]) -> Optional[int]:
     """Transformer block count from `/api/show`'s `<arch>.block_count`."""
     for key, value in (show_data.get("model_info") or {}).items():

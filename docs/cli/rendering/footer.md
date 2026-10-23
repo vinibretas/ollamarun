@@ -20,11 +20,14 @@ Counting rules: values read raw below 1k, 3-decimal `k` above. The ctx part
 appears from the second round on, when there is a base to count from — it
 adds the current round's chunks to the last request's totals.
 
-The **denominator is the window the model is actually loaded with**, not the
+The **denominator is the window the model will actually run with**, never the
 model's architectural maximum: a session `num_ctx` wins, then the loaded
-runner's `/api/ps` window, then the model default. Until the runner reports,
-the counter is marked provisional. (That resolution order is the same one
-[`/context`](../context/overview.md) and the 80%/85% warnings use.)
+runner's `/api/ps` window, then the model's own Modelfile `num_ctx`, then the
+ollama service environment's `OLLAMA_CONTEXT_LENGTH` (read from the unit).
+That is known before the runner reports, so the counter does not wait for
+`/api/ps`; only when none of those answers does it show no share. (That
+resolution order is the same one [`/context`](../context/overview.md) and the
+80%/85% warnings use.)
 
 `--no-tps` hides the footer for a run; `/tps [on|off]` toggles it
 mid-session; config `tps_footer: false` turns it off permanently. The

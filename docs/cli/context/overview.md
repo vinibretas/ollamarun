@@ -17,30 +17,43 @@ the machine can actually afford.
 | Layer split | `/gpu-layers SPEC`, `--gpu-layers SPEC` | Pins how many layers run on the GPU (`N`, `P%`, `+N`/`-N`, `all`, `cpu`, `auto`). |
 
 Everything is stored **on the session**, so `/load` restores it, and it wins
-over the equivalent raw options (`/set parameter num_ctx` / `num_gpu`).
+over the equivalent raw options (`/set parameter num_ctx` / `num_gpu`). Both
+knobs are load-time properties, so a change is applied to the runner
+immediately — a resident model is unloaded and loaded again with the new
+settings — instead of waiting for the next message.
 
 ## Seeing where you stand
 
-`/context` reports the working numbers:
+`/context` reports the working numbers, colour-coded so the relevant ones
+stand out (the window and its source, a count per message role, and the used
+tokens/share/free space, which turn yellow at 70% and red at 90%):
 
 ```text
 qwen3:0.6b › /context
              context
-╭────────────────────────┬───────╮
-│ field                  │ value │
-├────────────────────────┼───────┤
-│ messages               │     0 │
-│ last prompt tokens     │     ? │
-│ last completion tokens │     ? │
-│ context used           │     ? │
-│ context length         │  8192 │
-╰────────────────────────┴───────╯
+╭────────────────────────┬──────────────────────────────────────╮
+│ field                  │                                value │
+├────────────────────────┼──────────────────────────────────────┤
+│ model                  │                           qwen3:0.6b │
+│ context length         │ 4096 tok (OLLAMA_CONTEXT_LENGTH=4096) │
+│ model max              │                               40960 tok │
+│ messages               │                                    0 │
+│ last prompt tokens     │                                    ? │
+│ last completion tokens │                                    ? │
+│ context used           │                                    ? │
+╰────────────────────────┴──────────────────────────────────────╯
 ```
 
-`context length` is the *effective* window, resolved in this order: the
-session's `num_ctx` → the loaded runner's window (`/api/ps`) → the model's
-default (`/api/show`). The same value feeds the
-[footer's ctx counter](../rendering/footer.md) and the warning below.
+`context length` is the window the model will *actually run with*, resolved
+in this order: the session's `num_ctx` → the loaded runner's window
+(`/api/ps`) → the model's own Modelfile `num_ctx` (`/api/show`) → the ollama
+service environment's `OLLAMA_CONTEXT_LENGTH`, read from the running unit
+(locally, or over ssh for `--remote`). The parenthesised label is that
+measured provenance — the setting's own name and value, never an invented
+"default" — and when nothing can be measured the cell reads `not loaded yet`.
+The model's trained maximum is a separate `model max` row, never the window.
+The same value feeds the [footer's ctx counter](../rendering/footer.md) and
+the warning below, and the [startup banner](../repl.md) shows it too.
 
 ## The 80% warning, and 85% compaction
 

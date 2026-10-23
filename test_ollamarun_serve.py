@@ -5436,8 +5436,8 @@ def test_agent_turn_lifecycle() -> int:
                     "done_reason": "stop"}]]
         client = _ServeClient(models=["m1"],
                               capabilities=["completion", "tools"],
-                              show_data={"model_info": {
-                                  "llama.context_length": 8192}},
+                              show_data={"model_info": {"llama.context_length": 8192},
+                                         "parameters": "num_ctx 8192"},
                               chat_script=script)
         server, api, store, thread = _start_agent_api(tmp, client)
         try:
@@ -6296,8 +6296,8 @@ def test_agent_context_warning() -> int:
         session.stats["last_completion_tokens"] = 5
         store.save(session)
         client = _ServeClient(models=["m1"], capabilities=["completion", "tools"],
-                              show_data={"model_info": {
-                                  "llama.context_length": 100}},
+                              show_data={"model_info": {"llama.context_length": 100},
+                                         "parameters": "num_ctx 100"},
                               chat_once_reply="Summary of the earlier talk",
                               chat_script=[[{"message": {"content": "ok"},
                                              "done": True}]])

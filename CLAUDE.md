@@ -132,7 +132,7 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"2.14"` — keep this
+  constant in `ollamarun_lib/constants.py`, currently `"2.17"` — keep this
   line current when you bump it) and prepend a new bullet list under
   `Summary of changes in this version:` in the top-level `ollamarun` entry
   script's module docstring — read the existing entries there before adding
@@ -195,12 +195,18 @@ a module's own docstring for what lives there before editing:
    bool/host/think coercion, `--remote` resolution (`resolve_remote`,
    `remote_node`, `tailscale_map`, `tailscale_peer_state`, `is_local_host`),
    disk-space probes (`local_free_disk`, `ssh_free_disk` — the ssh probes
-   take a `cancel` token), `run_cancellable()`/`CommandCancelled` (the
+   take a `cancel` token), the ollama service-environment probes behind the
+   context window (`local_service_env`, `ssh_service_env`, both injectable
+   via `runner=`, and `service_context_length`, which reads
+   `OLLAMA_CONTEXT_LENGTH` by name and never invents a value — these are
+   read-only: nothing writes the unit),
+   `run_cancellable()`/`CommandCancelled` (the
    process-group-killing subprocess runner every tool shares), config load
    (`load_config`) and the response-timings policy (`resolve_show_stats`),
    logging setup, and the count formatters shared by both front ends
    (`human_tokens`/`format_context` for the ctx counter, `human_chars`,
-   `human_duration`), `serve_settings()` (the one validated `serve_*`
+   `human_duration`, plus `usage_color`/`source_color` for the ctx share and
+   a window's provenance), `serve_settings()` (the one validated `serve_*`
    policy matrix: defaults, types, ranges and zero semantics, consumed
    by `serve_main`), `model_allowed()` (the `serve_models` tag-aware
    fnmatch allowlist) and `ModelTracker` (the models a serve process
@@ -368,7 +374,9 @@ a module's own docstring for what lives there before editing:
 14. **`interactive.py`** — `open_in_editor` (`$OLLAMA_EDITOR`),
    `pick_model`/`pick_session` (fuzzy pickers; `ui=` routes the question to
    the TUI front end), `model_context_length`
-   (reads context window from `/api/show`), and the missing-model flow:
+   (reads context window from `/api/show`), `model_default_num_ctx` (the
+   model's own Modelfile `num_ctx`, what a cold load runs with), and the
+   missing-model flow:
    `ensure_model()` (free-space line + y/N pull prompt, `--pull` skip,
    picker on decline), `pull_with_progress()` and `disk_free_line()`.
    Model-list sorting lives here too: `MODEL_SORT_KEYS`/`parse_model_sort`
@@ -409,8 +417,11 @@ a module's own docstring for what lives there before editing:
    fit leaves on the CPU, `max_cpu_overhead_mb` reserved), `probe.py` (the
    `/api/ps`-verified `probe_max_gpu_ctx()`/`probe_max_cpu_ctx()`, solving
    each next candidate from the measured affine footprint line instead of
-   bisecting), `report.py` (the rich reports), `api.py` (`fit_context()`,
-   `max_gpu_context()`/`max_cpu_context()` and the argument parsers, which
+   bisecting, plus the public `wait_for_ps()` read-back the probes and the
+   REPL's reload both use — an entry matching the model and, when given, the
+   requested `num_ctx`), `report.py` (the rich reports), `api.py`
+   (`fit_context()`, `max_gpu_context()`/`max_cpu_context()` and the
+   argument parsers, which
    the REPL command and the CLI `--num-ctx max-gpu` / `--num-ctx --max-cpu N`
    flags both call) and `models.py` (`FitRequest`/`GpuFit`/`CpuFit`/
    `ProbeResult`). The package hub re-exports the public surface. The probes
@@ -467,10 +478,20 @@ a module's own docstring for what lives there before editing:
    runtime settings, `/tools` and `session_info` — so `--format` cannot leave
    the harness looking on while it steps aside.
    `Repl.context_length()` is the one effective-window resolver behind the
-   footer/status-bar ctx counter, `/context` and the 80%/85% warnings: a
-   session `num_ctx` first, then the loaded runner's `/api/ps`
-   `context_length`, then `/api/show`'s model default; a show-only answer
-   stays provisional until `/api/ps` reports the runner. `model_show()` is
+   footer/status-bar ctx counter, `/context`, the banner and the 80%/85%
+   warnings: a session `num_ctx` first, then the loaded runner's `/api/ps`
+   `context_length`, then the model's own Modelfile `num_ctx` from
+   `/api/show` (`interactive.model_default_num_ctx`), then
+   `server_default_context()` — the ollama service environment measured on
+   the machine that is answering (`OLLAMA_CONTEXT_LENGTH`, via
+   `helpers.local_service_env`/`ssh_service_env`, cached once per run and
+   display-only, using the Repl's ssh seam for `--remote`). Each answer is
+   labelled with its measured provenance (`num_ctx=8192`, `loaded runner`,
+   `model num_ctx=8192`, `OLLAMA_CONTEXT_LENGTH=4096`) and the model's
+   architectural maximum is reported separately as `model_max` — never as
+   the window; with nothing measurable the window is None (`not loaded
+   yet`) and anything `/api/ps` can still sharpen stays provisional until
+   the runner reports. `model_show()` is
    the run-long `/api/show` cache the length/block-count/awareness readers
    share, and `context_report()`/`session_report()` assemble the plain
    dicts the `context_status`/`session_info` tools format (window + usage,
@@ -712,7 +733,14 @@ always resident) is cross-cutting logic that lives in the REPL commands
 (`cmd_model` in `repl/commands/model.py`, `cmd_load` in
 `repl/commands/sessions.py`) and `main()`'s exit path
 (`cli.py`), coordinated through `/api/ps` lookups in `OllamaClient` — not a
-separate module. The model picker those commands (and a model-less
+separate module. Applying a *load-time* setting is `Repl.reload_model()` in
+`repl/core.py`: `/num-ctx` and `/gpu-layers` call it so a change reaches the
+runner immediately (unload, `client.load(options=load_options())`, wait for
+`/api/ps` via `ctxfit.wait_for_ps`, then `_reset_window_cache()`), a cold
+model is loaded outright, an unchanged `num_ctx` is left alone unless
+`force=True` (a placement-only change), and `_preload_model()` passes the
+same `load_options()` so `--num-ctx`/`--gpu-layers` are in force from the
+first load. The model picker those commands (and a model-less
 `ollamarun` run) open is ordered by the session's `model_sort`, seeded from
 `--sort` (a key or a `fuzzy:TEXT` ranking) and updated whenever a sort is
 chosen at the prompt.

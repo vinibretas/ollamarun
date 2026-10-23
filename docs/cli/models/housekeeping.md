@@ -17,10 +17,34 @@ llama3.2:3b › /ps
 ## Loading
 
 The session's model starts loading in the background the moment the REPL
-opens, and a one-time `ollama ps` table prints when it becomes resident —
-so the first message does not wait for a cold load you could have seen
-coming. One-shots load on demand; either way the [timings footer](../rendering/footer.md)
+opens — carrying the session's `num_ctx` and resolved `num_gpu`, so
+`--num-ctx`/`--gpu-layers` are in force from that first load — and a one-time
+`ollama ps` table prints when it becomes resident, so the first message does
+not wait for a cold load you could have seen coming. One-shots load on
+demand; either way the [timings footer](../rendering/footer.md)
 reports the load component per request.
+
+## Context and placement changes
+
+`num_ctx` and `num_gpu` are load-time properties, so `/num-ctx` and
+`/gpu-layers` do not wait for the next message: they apply the change now.
+A resident model is unloaded and loaded again with the new settings, a model
+that is not loaded yet is loaded at them, the window is read back from
+`/api/ps` to confirm it, and the cached window is refreshed so
+[`/context`](../context/overview.md), the [footer](../rendering/footer.md)
+and the warnings are immediately right:
+
+```text
+qwen3:0.6b › /num-ctx 8192
+num_ctx set to 8192
+unloaded qwen3:0.6b
+loading qwen3:0.6b at 8,192 ctx…
+loaded at 8192 (loaded runner)
+```
+
+An unchanged window is left alone (`already loaded at 8192`); `/gpu-layers`
+reloads even when `num_ctx` did not move, since the placement changed. The
+load is synchronous — the prompt returns when the runner does.
 
 ## Switching
 

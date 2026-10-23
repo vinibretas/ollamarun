@@ -21,17 +21,21 @@ from ..constants import (DEFAULT_TIMEOUT, HAS_PROMPT_TOOLKIT, HISTORY_PATH,
                          THINKING_MODES, FileHistory, KeyBindings,
                          PromptSession, console, err_console, patch_stdout,
                          tool_color)
+from ..ctxfit import wait_for_ps
 from ..events import (ROUND_STARTED, TOOL_CALL, TOOL_RESULT, TURN_ERROR,
                       RuntimeEvent)
 from ..files import expand_file_mentions
-from ..helpers import (CancelToken, naive_title, now_iso, remote_node,
-                       resolve_show_stats, shortcut)
+from ..helpers import (CancelToken, human_tokens, local_service_env, naive_title,
+                       now_iso, remote_node, resolve_show_stats,
+                       service_context_length, shortcut, source_color,
+                       ssh_service_env, usage_color)
 from ..interactive import (gpu_layers_label, model_block_count, open_in_editor,
                            parse_model_sort, resolve_gpu_layers)
 from ..prompts import (default_system_prompt, load_prompt, summarize_prompt,
                        title_prompt)
 from ..renderer import (GenerationResult, HeadlessRenderer, Renderer,
-                        StreamSink, tool_result_panel, user_message_box)
+                        StreamSink, render_transcript, tool_result_panel,
+                        user_message_box)
 from ..runtime import (AgentRuntime, ApprovalDecision, ApprovalRequest,
                        TurnHooks, TurnSettings, approval_notice, build_payload)
 from ..runtime import context_length as resolve_context_length
@@ -51,6 +55,24 @@ from .commands.registry import COMMAND_HANDLERS
 from .completion import SlashCompleter
 from .queue import MessageQueue
 from .view import ps_table
+
+
+#: Sentinel for "this cached probe has not run yet" (None is a valid answer).
+_UNSET = object()
+
+#: Capability colours on the banner's model line: the load-bearing features
+#: get an identity, everything else stays dim.
+_CAP_STYLES = {"tools": "ok", "thinking": "ai", "vision": "info"}
+
+
+def _join_bits(bits: list[str]) -> str:
+    """Styled banner fragments joined by a dim separator."""
+    return " [dim]·[/dim] ".join(bits)
+
+
+def _plural(count: int, word: str) -> str:
+    """`1 message` / `2 messages`."""
+    return f"{count} {word}" if count == 1 else f"{count} {word}s"
 
 
 class Repl:
@@ -194,7 +216,11 @@ class Repl:
         self._last_tps: Optional[float] = None
         self._turn_summary = ""
         self._context_totals: dict[tuple[str, Any], Optional[int]] = {}
+        self._context_sources: dict[tuple[str, Any], str] = {}
         self._context_provisional: set[tuple[str, Any]] = set()
+        # The ollama service environment measured at most once per run
+        # (`server_default_context()`); `_UNSET` means "not probed yet".
+        self._server_context: Any = _UNSET
         self._show_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self._tool_round = 0
         # The Textual front end sets `tui_mode` and `stream_sink`; the inline
@@ -366,6 +392,93 @@ class Repl:
             console.print(f"[dim]unloaded {escape(target)}[/dim]")
         return True
 
+    def load_options(self) -> dict[str, Any]:
+        """The options a load should carry to match the next request.
+
+        `num_ctx` and `num_gpu` are load-time properties, so whichever of
+        them a change just touched also has to reach the loader; the resolved
+        `/gpu-layers` spec wins over a raw `num_gpu` parameter, exactly as in
+        the chat payload. The rest of the session's parameters ride along.
+        """
+        options = dict(self.session.parameters or {})
+        gpu_layers = self.gpu_layers_value()
+        if gpu_layers is not None:
+            options["num_gpu"] = gpu_layers
+        return options
+
+    def reload_model(self, *, force: bool = False) -> Optional[int]:
+        """Load the session's model with its current settings, right now.
+
+        `num_ctx` and `num_gpu` only take effect at load time, so a change to
+        either would otherwise sit in the session until the next message
+        happens to reload the runner. This unloads whatever is resident (a
+        reload would evict it anyway), loads again with `load_options()`, waits
+        for `/api/ps` to report the window and refreshes the cached one, so
+        the footer, `/context`, the banner and the warnings are right
+        immediately. A model that is not loaded yet is loaded too, at the new
+        settings, instead of leaving the change for the first message.
+
+        `force` reloads even when the resident window already matches (a
+        placement change with an unchanged `num_ctx`). Returns the window the
+        runner reports afterwards, or None when it could not be read back.
+        """
+        model = self.session.model
+        if not model:
+            return None
+        options = self.load_options()
+        target = options.get("num_ctx")
+        if not isinstance(target, int) or target <= 0:
+            target = None
+        resident = self._resident_context_length()
+        if resident is not None and not force and target is not None \
+                and resident == target:
+            console.print(f"[dim]already loaded at {resident}[/dim]")
+            return resident
+        try:
+            if resident is not None:
+                self.client.unload(model)
+                console.print(f"[dim]unloaded {escape(model)}[/dim]")
+            console.print(f"[dim]loading {escape(model)}"
+                          + (f" at {target:,} ctx" if target else "")
+                          + "…[/dim]")
+            self.client.load(model, keepalive=self.session.keepalive
+                             or getattr(self.args, "keepalive", None),
+                             options=options)
+        except OllamaError as exc:
+            console.print(f"[warn]could not load {escape(model)}: "
+                          f"{escape(str(exc))}[/warn]")
+            self._reset_window_cache()
+            return None
+        entry = wait_for_ps(self.client, model, target)
+        window = entry.get("context_length") if entry else None
+        if not isinstance(window, int) or window <= 0:
+            window = None
+        self._reset_window_cache()
+        if window is None:
+            console.print(f"[ok]loaded {escape(model)}[/ok] "
+                          "[dim](window not reported)[/dim]")
+        elif target is not None and window != target:
+            console.print(f"[warn]the runner reports {window} tokens, "
+                          f"not {target}[/warn]")
+        else:
+            console.print(f"[ok]loaded at {window}[/ok] "
+                          "[dim](loaded runner)[/dim]")
+        return window
+
+    def _reset_window_cache(self) -> None:
+        """Forget the cached windows after a load, then resolve the fresh one.
+
+        Every cached answer for the model is stale once the runner changed; a
+        re-resolve repopulates the current key (from `/api/ps` when the load
+        landed) so the status bar keeps a denominator.
+        """
+        for key in [key for key in self._context_totals
+                    if key[0] == self.session.model]:
+            self._context_totals.pop(key, None)
+            self._context_sources.pop(key, None)
+            self._context_provisional.discard(key)
+        self.context_length()
+
     def _preload_model(self) -> None:
         """Starts loading the session's model in the background so it's
         already warm by the time the first message is sent, without
@@ -373,7 +486,11 @@ class Repl:
         the "waiting for model" indicator shown while this runs, and
         _read_line()'s use of patch_stdout() for how `ollama ps` (printed
         below, once loading finishes) safely interleaves with an active
-        prompt instead of corrupting it."""
+        prompt instead of corrupting it.
+
+        The session's `num_ctx`/`num_gpu` ride along in the load options, so
+        `--num-ctx`/`--gpu-layers` given at launch are in force from this
+        first load instead of waiting for the first message to reload."""
         model = self.session.model
         if not model:
             return
@@ -382,7 +499,8 @@ class Repl:
         def _load() -> None:
             try:
                 try:
-                    self.client.load(model, keepalive=keepalive)
+                    self.client.load(model, keepalive=keepalive,
+                                     options=self.load_options())
                 except OllamaError:
                     return
                 if console.is_terminal:
@@ -626,15 +744,43 @@ class Repl:
         """The window the model actually runs with, cached per model/num_ctx.
 
         Priority: the session's `num_ctx` (what the next request asks for and
-        would reload at), the loaded runner's `/api/ps` context, then the
-        model's own default from `/api/show`. A show-only answer is
-        *provisional* -- the model may not be loaded yet when the footer
-        first asks -- so it is re-checked against `/api/ps` until the loaded
-        window shows up.
+        would reload at), the loaded runner's `/api/ps` context, the model's
+        own Modelfile default, then the ollama service environment measured on
+        the machine that is answering (see `server_default_context`). The
+        architectural maximum from `/api/show` is never the window -- it is
+        reported separately as `model_max`. Answers that `/api/ps` can still
+        sharpen are provisional and re-checked until the runner shows up.
         """
         return resolve_context_length(self.client, self.session, self._show_cache,
-                                      self._context_totals, self._context_provisional,
-                                      refresh=refresh)
+                                      self._context_totals, self._context_sources,
+                                      self._context_provisional,
+                                      refresh=refresh,
+                                      server_default=self.server_default_context)
+
+    def server_default_context(self) -> Optional[tuple[int, str]]:
+        """The context measured from the ollama service environment, or None.
+
+        This is what a *cold* load will run with: the session `num_ctx` wins
+        when set, a model's own `num_ctx` wins over the environment, and once
+        a runner is resident `/api/ps` is the truth -- so this answers only
+        when nothing else can. The probe runs at most once per run and is
+        display-only: no config is ever written. `(length, "KEY=VALUE")`.
+        """
+        if self._server_context is _UNSET:
+            self._server_context = self._probe_server_context()
+        return self._server_context
+
+    def _probe_server_context(self) -> Optional[tuple[int, str]]:
+        """Read the ollama service env locally, or over ssh for `--remote`."""
+        if self.headless and not self.host_mode:
+            return None
+        target = getattr(self.tool_ctx, "ssh_target", None)
+        if target:
+            env = ssh_service_env(target, user=self.tool_ctx.ssh_user,
+                                  cancel=self.tool_ctx.cancel)
+        else:
+            env = local_service_env()
+        return service_context_length(env)
 
     def _context_total(self) -> Optional[int]:
         """The cached window size for the current model/num_ctx, if known."""
@@ -644,7 +790,9 @@ class Repl:
     def context_report(self) -> dict[str, Any]:
         """Plain data for the `context_status` tool (window + usage)."""
         return build_context_report(self.client, self.session, self._show_cache,
-                                    self._context_totals, self._context_provisional)
+                                    self._context_totals, self._context_sources,
+                                    self._context_provisional,
+                                    server_default=self.server_default_context)
 
     def session_report(self) -> dict[str, Any]:
         """Plain data for the `session_info` tool (identity, settings, tools)."""
@@ -989,6 +1137,7 @@ class Repl:
             elif console.is_terminal:
                 console.print("[dim]system prompt: built-in default[/dim]")
         self._banner()
+        self._print_history()
         self._context_warning()
         try:
             while True:
@@ -1030,30 +1179,161 @@ class Repl:
         return 0
 
     def _banner(self) -> None:
-        model_count = len(self.model_names)
-        lines = [
-            f"[key]model[/key]   {escape(self.session.model)}",
-            f"[key]session[/key] {self.session.id} · {escape(self.session.display_title())}",
-            f"[key]host[/key]    {escape(self.client.base)}"
-            + (f" · {escape(self.session.remote)}" if self.session.remote else ""),
-            f"[key]render[/key]  {self.render_mode}"
-            + ("" if self.math else " · math off")
-            + f" · thinking {self.thinking_mode}"
-            + (" · tts auto" if self.tts_auto else "")
-            + f" · {model_count} local models",
+        show = self.model_show()
+        details = show.get("details") or {}
+        model_bits = [f"[answer]{escape(self.session.model)}[/answer]"]
+        facts = [str(bit) for bit in (details.get("parameter_size"),
+                                      details.get("quantization_level")) if bit]
+        if facts:
+            model_bits.append(f"[dim]{escape(' · '.join(facts))}[/dim]")
+        for cap in (show.get("capabilities") or []):
+            name = str(cap)
+            if not name or name == "completion":
+                continue
+            style = _CAP_STYLES.get(name, "dim")
+            model_bits.append(f"[{style}]{escape(name)}[/{style}]")
+        rows: list[tuple[str, str]] = [
+            ("model", _join_bits(model_bits)),
+            ("session", f"[dim]{self.session.id}[/dim] · "
+                        f"{escape(self.session.display_title())}"),
+            ("host", f"[dim]{escape(self.client.base)}[/dim]"
+                     + (f" · [warn]remote {escape(self.session.remote)}[/warn]"
+                        if self.session.remote else "")),
         ]
-        if self.session.messages:
-            lines.append(f"[key]context[/key] {len(self.session.messages)} messages")
+        report = self.context_report()
+        rows.append(("window", self._banner_context(report)))
+        usage = self._banner_usage(report)
+        if usage:
+            rows.append(("usage", usage))
+        rows += [
+            ("render", self._banner_render()),
+            ("tools", self._banner_tools()),
+            ("gpu", self._banner_gpu()),
+        ]
+        stats = self._banner_stats()
+        if stats:
+            rows.append(("stats", stats))
         if self.host_mode:
-            lines.append(f"[key]background[/key] pid {os.getpid()} · survives "
-                         "detach")
-            lines.append("[dim]/help for commands · Ctrl+D closes the session · "
-                         "Ctrl+C twice detaches · Ctrl+T thinking[/dim]")
+            rows.append(("background", f"[dim]pid {os.getpid()} · survives "
+                                       "detach[/dim]"))
+            rows.append(("", "[dim]/help for commands · Ctrl+D closes the "
+                             "session · Ctrl+C twice detaches · Ctrl+T "
+                             "thinking[/dim]"))
         else:
-            lines.append("[dim]/help for commands · Ctrl+D to exit · "
-                         "Ctrl+T thinking[/dim]")
+            rows.append(("", "[dim]/help for commands · Ctrl+D to exit · "
+                             "Ctrl+T thinking[/dim]"))
+        width = max(len(label) for label, _ in rows)
+        lines = [f"[key]{label:<{width}}[/key] {value}" if label else value
+                 for label, value in rows]
         console.print(Panel("\n".join(lines), title="ollamarun", border_style="cyan",
                             title_align="left"))
+
+    def _banner_context(self, report: Optional[dict[str, Any]] = None) -> str:
+        """The banner's context window: the measured value and its provenance.
+
+        The value is whatever the model will actually run with -- the
+        session's `num_ctx`, the loaded runner (`/api/ps`), the model's own
+        default or the ollama service environment -- and the parenthesised
+        text is that measured provenance. `model max` is the architectural
+        maximum from `/api/show`, shown as a separate fact, never as the
+        window.
+        """
+        report = report if report is not None else self.context_report()
+        window = report.get("window")
+        source = str(report.get("source") or "unknown")
+        model_max = report.get("model_max")
+        if window:
+            style = source_color(source)
+            head = (f"[bold]{window}[/bold] tok "
+                    f"[{style}]({escape(source)})[/{style}]")
+        else:
+            head = f"[warn]{escape(source)}[/warn]"
+        if model_max and model_max != window:
+            head += f" · [dim]model max {model_max}[/dim]"
+        return head
+
+    def _banner_usage(self, report: Optional[dict[str, Any]] = None) -> str:
+        """Message count and the share of the window in use; empty if unused."""
+        report = report if report is not None else self.context_report()
+        window = report.get("window")
+        used = report.get("used")
+        total = int((report.get("messages") or {}).get("total") or 0)
+        if not total:
+            return ""
+        bits = [f"[dim]{_plural(total, 'message')}[/dim]"]
+        if used:
+            pct = used * 100 / window if window else None
+            detail = f"{human_tokens(used)} used"
+            if pct is not None:
+                detail += f" ({pct:.0f}%)"
+            color = usage_color(pct) if pct is not None else "dim"
+            bits.append(f"[{color}]{detail}[/{color}]")
+        return _join_bits(bits)
+
+    def _banner_render(self) -> str:
+        bits = [f"[info]{escape(self.render_mode)}[/info]"]
+        if not self.math:
+            bits.append("[warn]math off[/warn]")
+        style = "info" if self.thinking_mode == "expanded" else "dim"
+        bits.append(f"[{style}]thinking {escape(self.thinking_mode)}[/{style}]")
+        if self.tts_auto:
+            bits.append("[dim]tts auto[/dim]")
+        bits.append(f"[dim]{len(self.model_names)} local models[/dim]")
+        return _join_bits(bits)
+
+    def _banner_tools(self) -> str:
+        if not self.tools_active():
+            return "[dim]off[/dim]"
+        if self.auto_approve:
+            mode = "[ok]auto (all allowed)[/ok]"
+        else:
+            mode = f"[info]{escape(self.tools_policy)}[/info]"
+        return f"{mode} · [dim]{self.tools_max_rounds} rounds[/dim]"
+
+    def _banner_gpu(self) -> str:
+        summary = self.gpu_layers_summary()
+        low = summary.lower()
+        if "cpu" in low:
+            style = "warn"
+        elif low.startswith("auto"):
+            style = "dim"
+        else:
+            style = "info"
+        return f"[{style}]{escape(summary)}[/{style}]"
+
+    def _banner_stats(self) -> str:
+        """Turn/token totals for a resumed session; empty for a fresh one."""
+        if not self.session.messages:
+            return ""
+        stats = self.session.stats or {}
+        bits = [_plural(int(stats.get("turns") or 0), "turn")]
+        if stats.get("prompt_tokens"):
+            bits.append(f"{human_tokens(stats['prompt_tokens'])} prompt tok")
+        if stats.get("completion_tokens"):
+            bits.append(f"{human_tokens(stats['completion_tokens'])} completion tok")
+        return f"[dim]{escape(' · '.join(bits))}[/dim]"
+
+    def _print_history(self, *, force: bool = False) -> None:
+        """Replay a resumed conversation so a session can be picked up cold.
+
+        Called after the banner at launch (for `-c`/`--session`/`-r`) and
+        whenever `/load`/`/sessions` switches the active session; a fresh or
+        empty session prints nothing. A headless serve turn never reaches
+        here, but stays silent if it somehow does.
+        """
+        if self.headless and not self.host_mode:
+            return
+        if not self.session.messages:
+            return
+        args = self.args
+        resumed = force or (getattr(args, "continue_", None) is not None
+                            or bool(getattr(args, "session", None))
+                            or bool(getattr(args, "resume", False)))
+        if not resumed:
+            return
+        console.print()
+        render_transcript(self.session, console, show_stats=False)
+        console.print()
 
     def context_used(self) -> Optional[int]:
         """Tokens that the next request will carry: the last prompt plus the

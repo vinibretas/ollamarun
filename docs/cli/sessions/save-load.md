@@ -18,6 +18,11 @@ terminal was closed or detached — `-c` attaches to it instead of starting a
 new process: a running turn is replayed and continues, and a turn that
 finished while away is shown. A second terminal takes the session over.
 
+An interactive resume also replays the stored conversation below the
+[startup banner](../repl.md), so the whole exchange is on screen before the
+first prompt; the same replay runs whenever `/load` or `/sessions` switches
+the active session. Fresh and empty sessions print nothing.
+
 A named session keeps its name as its title, and later runs can omit the
 model — it comes from the session:
 

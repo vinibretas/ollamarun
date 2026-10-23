@@ -278,16 +278,21 @@ the pager, `--render markdown|plain|raw` picks the mode.
   as an animated `thinking · N chars · Ctrl+T to expand` line. Ctrl+T expands
   a tail-capped boxed preview in place (press again to collapse; the stream
   never pauses), and the choice sticks for the rest of the running REPL —
-  later rounds, turns and a reattached background host included.
-  `/thinking full` prints the stored panel later.
+  later rounds, turns and a reattached background host included. The response
+  is not followed by a second, full panel; the round ends with a dim
+  `thinking · N chars · /thinking full` hint, and `/thinking full` prints the
+  whole stored reasoning on demand.
   `--show-thinking`/`--hidethinking` and config `thinking` set the start mode.
 - **Live footer.** `~24.0 tok/s (avg 21.4) · 45 tok · ctx 12.345k/32.768k
   (38.123%)` — the 5s windowed rate, its cumulative average, the streamed
   token count and a context counter that ticks with every token. Its
-  denominator is the window the model is actually loaded with (`/api/ps`; a
-  session `num_ctx` wins, the architectural maximum is only the fallback),
-  and counts read raw below 1k / 3-decimal k above. The TUI status bar shows
-  the same rate, average and live ctx.
+  denominator is the window the model will actually run with, measured on
+  the machine: a session `num_ctx`, the loaded runner (`/api/ps`), the
+  model's own Modelfile `num_ctx`, or the ollama service environment's
+  `OLLAMA_CONTEXT_LENGTH` (read from the unit, locally or over ssh for
+  `--remote`) — never the architectural maximum, which is reported
+  separately. Counts read raw below 1k / 3-decimal k above. The TUI status
+  bar shows the same rate, average and live ctx.
 - **Timings.** `⏱ load … · prompt … · eval … · total …` prints under every
   answer on a terminal; `--verbose` is obsolete there and now only adds the
   line to piped/redirected output. `--raw`/`--json` never get it, and config
@@ -300,6 +305,18 @@ superset of ollama's own commands, with `@path` file mentions (inlined into
 the prompt), Tab completion for commands/session ids/models/`@files`, prompt
 history (unless `OLLAMA_NOHISTORY` is set) and Ctrl+G to open
 `$OLLAMA_EDITOR` on the current input. See [Slash commands](#slash-commands).
+
+The startup banner names what is in effect, colour-coded and label-aligned:
+the model with its size, quantization and capability colours; the session and
+host (a `remote NAME` marker when inference runs on another machine); the
+context **window the model will actually run with**, with its measured source
+— a session `num_ctx`, the loaded runner (`/api/ps`), the model's own
+Modelfile `num_ctx`, or the ollama service environment's `OLLAMA_CONTEXT_LENGTH`
+read from the unit — and the model's trained maximum as a separate `model max`
+fact, never as the window; the message count with a colour-coded share in use;
+the render/thinking modes, tools policy and GPU placement (`cpu` in yellow).
+A resumed session adds its turn/token totals and replays its stored messages
+below.
 
 ### TUI (`--ui tui`)
 
@@ -344,7 +361,10 @@ is deleted without going through `trash-put`.
 
 - Start/resume: `-c/--continue [ID]`, `--session NAME`, `-r/--resume` picker,
   `--new` to force a fresh session, `--title TEXT`, `--tag TAG` (repeatable),
-  `--auto-title` to ask the model for a title after the first turn.
+  `--auto-title` to ask the model for a title after the first turn. An
+  interactive resume replays the stored conversation under the startup banner
+  (and on every `/load`/`/sessions` switch), so the whole exchange is on
+  screen before the next prompt.
 - Inspect: `--list`, `--show ID`, `--search TEXT`, `--export ID`
   (`--export-format md|json|html`), `--delete ID [-y]`, `--reindex` — all with
   the shared output convention: rich table by default, `--json`/`--csv`/
@@ -397,12 +417,15 @@ mirror ollama's REPL; `/undo`, `/retry`, `/edit`, `/branch`, `/context`,
 `P%` of the model's layers (`block_count` from `/api/show`), `+N`/`-N`
 adjustments (baseline: the current value, else a full offload), `all`, `cpu`
 or `auto`. It is stored in the session, re-resolved per model, wins over
-`/set parameter num_gpu`, and unloads a resident model so the next request
-reloads with the new placement.
+`/set parameter num_gpu`, and applies immediately: a resident model is
+unloaded and loaded again with the new split (a placement-only change
+reloads even when `num_ctx` did not move).
 
-`/num-ctx` sizes the window:
+`/num-ctx` sizes the window; any of the three forms applies the change to
+the runner at once (unload, load at the new context, verified from
+`/api/ps`) rather than at the next message:
 
-- `N` sets it (capped to the model's max with a warning).
+- `N` sets it, capped to the model's max with a warning.
 - `--max-gpu` picks the largest context that still keeps the model fully on
   the GPU. The model is profiled first: `/api/show`'s GGUF metadata supplies
   the per-layer KV geometry (hybrid attention, sliding windows and their
@@ -1039,7 +1062,7 @@ Dispatched in the REPL and the TUI; `/help` also lists the shortcuts (`/?`).
 | `/retry` | Regenerate the last response |
 | `/edit` | Edit the last message in `$EDITOR` and resend |
 | `/branch [TITLE]` | Fork this conversation into a new session |
-| `/context` | Context-window usage |
+| `/context` | Color-coded context-window usage, source and per-role counts |
 | `/summarize` | Compact older messages into a summary |
 | `/image PATH… \| clear` | Attach images to the next message |
 | `/render [markdown\|plain\|raw]` | Response rendering mode |

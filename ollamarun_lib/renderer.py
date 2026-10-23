@@ -643,10 +643,11 @@ class Renderer:
             sys.stdout.flush()
         elif self._use_live:
             # The frozen live frame already shows the complete rule and
-            # rendered content.
-            if result.thinking and self.thinking_visible() \
-                    and self.thinking_mode == "expanded":
-                self.console.print(thinking_panel(result.thinking))
+            # rendered content, and an expanded thinking panel lives inside
+            # it (height-capped). Printing the full panel again here just
+            # repeated it below the answer; a one-line pointer to
+            # `/thinking full` is the affordance instead.
+            pass
         elif self.use_pager:
             self._pager_render(result)
         elif not had_sink:
@@ -659,6 +660,13 @@ class Renderer:
         if self.show_stats and result.stats and self.mode != "raw" \
                 and not self.use_pager:
             self.console.print(f"[dim]⏱  {format_stats(result.stats)}[/dim]")
+        if (self._use_live and result.thinking and not result.tool_calls
+                and not result.error and not result.cancelled
+                and self.thinking_visible()
+                and self.thinking_mode == "expanded"):
+            self.console.print(
+                f"[dim italic]thinking · {human_chars(len(result.thinking))} · "
+                "/thinking full[/dim italic]")
         if result.error and self.mode == "raw":
             # Raw mode suppresses the runtime's `turn.error` console line
             # (`quiet`) and writes the payload to stdout, so the error is

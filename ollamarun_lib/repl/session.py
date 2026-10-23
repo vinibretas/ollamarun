@@ -46,4 +46,5 @@ def _switch_session(repl: Repl, session: Session) -> None:
     console.print(f"[ok]loaded[/ok] {session.id} · {escape(session.display_title())} "
                   f"· model {escape(session.model)}")
     repl.refresh_models()
+    repl._print_history(force=True)
 

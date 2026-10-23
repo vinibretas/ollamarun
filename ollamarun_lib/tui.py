@@ -494,6 +494,7 @@ class OllamarunTui(App[None]):
         self.set_interval(0.1, self._refresh_status)
         self.set_interval(0.25, self._poll_background)
         self.repl._banner()
+        self.repl._print_history()
         self.repl._context_warning()
         self.query_one("#prompt", PromptInput).focus()
         self._start_background_work()

@@ -2,6 +2,61 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 2.17
+
+Summary of changes in this version:
+  - `/num-ctx` and `/gpu-layers` apply to the runner immediately instead of
+    at the next message: the model is unloaded and loaded again with the new
+    settings (a model that is not loaded yet is loaded now), the window is
+    read back from `/api/ps` to confirm it, and the cached window is
+    refreshed so the footer, `/context`, the banner and the warnings are
+    right at once. An unchanged window is left alone; `/gpu-layers` reloads
+    even when `num_ctx` did not change, because the placement is a load-time
+    property too. The launch preload carries the session's `num_ctx` and
+    resolved `num_gpu`, so `--num-ctx`/`--gpu-layers` given at startup are in
+    force from the first load rather than the first message.
+
+Version: 2.16
+
+Summary of changes in this version:
+  - The context window is reported from what is *measured*, never from the
+    model's architectural maximum: the session's `num_ctx`, the loaded
+    runner (`/api/ps`), the model's own Modelfile `num_ctx`, or the ollama
+    service environment (`OLLAMA_CONTEXT_LENGTH`, read from the unit
+    locally or over ssh for `--remote`). Each answer is labelled with that
+    measured provenance (`num_ctx=8192`, `loaded runner`,
+    `OLLAMA_CONTEXT_LENGTH=4096`); when nothing is measurable the window
+    reads `not loaded yet` and the trained maximum is shown separately as
+    `model max`. A cold-start banner no longer claims the model maximum,
+    and the footer, `/context` and the 80% warning all use the same window.
+  - The startup banner is colour-coded and re-laid out: the model line gains
+    size/quantization/capability colours, a `window` line carries the
+    window, its measured source and `model max`, a `usage` line carries the
+    message count and the colour-coded share, and tools policy, GPU
+    placement (`cpu` in yellow), a `remote NAME` marker and aligned labels
+    make the rest scannable. `ollama ps` gained a `context` column, so the
+    loaded window is visible as soon as the preload lands.
+
+Version: 2.15
+
+Summary of changes in this version:
+  - The startup banner reports context properly: alongside the model line
+    (size, quantization and capabilities), it now shows the effective
+    context window with its source (session `num_ctx`, loaded runner or
+    model default) and usage, the tool policy and round budget, the GPU
+    placement summary and, for a resumed session, its turn/token totals.
+  - `/context` gained the same window-source and model-max rows, one
+    colour-coded count per message role, and threshold colours on the used
+    tokens, share and free space, so the relevant numbers stand out.
+  - Resuming a session prints the whole conversation before the prompt:
+    `-c`/`--session`/`-r` at launch and every `/load`/`/sessions` switch
+    replay the stored messages (with `render_transcript`), so a session can
+    be picked up cold. Fresh and empty sessions print nothing.
+  - The expanded thinking panel is no longer printed a second time, in
+    full, below the answer: the single live panel stays where it streams
+    (above the answer, height-capped) and the round closes with a dim
+    `thinking · N chars · /thinking full` hint instead.
+
 Version: 2.14
 
 Summary of changes in this version:

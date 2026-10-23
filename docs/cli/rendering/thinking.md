@@ -23,6 +23,16 @@ of the running REPL: later tool rounds and turns (and a reattached
 background host) start in that mode. `/thinking` prints the current mode
 and changes it too.
 
+When the response finishes, the expanded panel stays where it streamed
+(above the answer); it is not printed a second time below it. The round
+closes with a dim pointer to the full reasoning instead:
+
+```text
+Hi there! 👋 How's your day going?
+⏱  ~42 tok/s · 546 tok
+thinking · 4.2k chars · /thinking full
+```
+
 | Start mode | Where | Effect |
 | --- | --- | --- |
 | `collapsed` | config `thinking` (default) | The ticking line. |

@@ -191,6 +191,9 @@ and the [context overview](context/overview.md).
 ```text
 qwen3:0.6b › /num-ctx 8192
 num_ctx set to 8192
+unloaded qwen3:0.6b
+loading qwen3:0.6b at 8,192 ctx…
+loaded at 8192 (loaded runner)
 qwen3:0.6b › /num-ctx 99999999
 99999999 exceeds qwen3:0.6b's max context (40960) — capped to 40960
 ```
@@ -205,18 +208,25 @@ Pin the GPU/CPU layer split — [GPU layers](context/gpu-layers.md).
 qwen3:0.6b › /gpu-layers 50%
 gpu layers 50% → 15 of 29 layers
 unloaded qwen3:0.6b
-the model will reload with the new setting
+loading qwen3:0.6b…
+loaded at 8192 (loaded runner)
 ```
 
 ### `/context`
-Window usage: message counts, last request's tokens, effective length.
+Window usage, colour-coded: the window the model will really run with and
+its measured source, a count per message role, the trained `model max`, and
+the used tokens, share and free space (yellow at 70%, red at 90%).
 
 ```text
 llama3.2:3b › /context
-│ messages               │     2 │
-│ last prompt tokens     │    94 │
-│ context used           │   100 │
-│ context length         │  8192 │
+│ model                  │           llama3.2:3b │
+│ context length         │ 4096 tok (OLLAMA_CONTEXT_LENGTH=4096) │
+│ model max              │              131072 tok │
+│ messages               │                     2 │
+│ last prompt tokens     │                    94 │
+│ context used           │                   100 │
+│ usage                  │                 2.4% │
+│ free                   │                3996 tok │
 ```
 
 ### `/summarize`

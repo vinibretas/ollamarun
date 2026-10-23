@@ -42,15 +42,23 @@ inline prompt:
 
 ```text
 ╭─ ollamarun ──────────────────────────────────────────────────────────╮
-│ model   llama3.2:3b                                                  │
+│ model   llama3.2:3b · 3.2B · Q4_K_M · tools · thinking               │
 │ session 20261018-105614-b08e · new session                           │
 │ host    http://127.0.0.1:11434                                       │
+│ window  4096 tok (OLLAMA_CONTEXT_LENGTH=4096) · model max 131072     │
 │ render  markdown · thinking collapsed · 95 local models              │
+│ tools   allowlist · 8 rounds                                         │
+│ gpu     auto (ollama decides)                                        │
 │ /help for commands · Ctrl+D closes the session · Ctrl+C twice        │
 │ detaches · Ctrl+T thinking                                           │
 ╰──────────────────────────────────────────────────────────────────────╯
 llama3.2:3b › 
 ```
+
+The `window` line reports the window the model will really run with and its
+measured source (session `num_ctx`, the loaded runner, the model's own
+default or the ollama service environment) — never the model's trained
+maximum, which shows separately as `model max`.
 
 Everything interactive lives behind slash commands — `/model`, `/params`,
 `/tools`, `/undo`, `/branch`, `/export`, `/bye` — and a `@path` mention

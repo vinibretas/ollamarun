@@ -12,8 +12,22 @@ num_ctx set to 40960
 ```
 
 The maximum comes from `/api/show`'s model metadata and is cached per model
-for the run. After the change the resident model is reloaded on the next
-request — the window is a load-time property, not a per-request one.
+for the run. The window is a load-time property, so the change is applied to
+the runner **right away**: a resident model is unloaded and loaded again at
+the new context (a model that is not loaded yet is loaded now), and the
+window is read back from `/api/ps` to confirm it:
+
+```text
+qwen3:0.6b › /num-ctx 8192
+num_ctx set to 8192
+unloaded qwen3:0.6b
+loading qwen3:0.6b at 8,192 ctx…
+loaded at 8192 (loaded runner)
+```
+
+Repeating a window the runner already uses does nothing (`already loaded at
+8192`), and `--num-ctx N` on the command line is in force from the first
+load, since the launch preload carries the session's settings.
 
 ## The two fit forms
 
