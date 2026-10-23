@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+
 from rich import box
 from rich.markup import escape
 from rich.table import Table
+
 from ...constants import console
 from ...helpers import human_duration, shortcut
 

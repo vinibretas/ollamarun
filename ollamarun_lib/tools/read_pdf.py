@@ -13,10 +13,9 @@ from ..helpers import canonical_model_name
 from ..images import encode_image
 from .net import BROWSER_HEADERS, FETCH_TIMEOUT, _request_error
 from .pdf import (MAX_PDF_BYTES, MAX_PDF_CHARS, MAX_PDF_PAGES,
-                  PDF_VISION_PROMPT, PDF_VISION_TIMEOUT,
-                  _model_capabilities, extract_pdf_text,
-                  pdf_page_count, pick_vision_model, render_pdf_page,
-                  select_pdf_pages, vision_transcribe)
+                  PDF_VISION_PROMPT, PDF_VISION_TIMEOUT, _model_capabilities,
+                  extract_pdf_text, pdf_page_count, pick_vision_model,
+                  render_pdf_page, select_pdf_pages, vision_transcribe)
 from .spec import (MAX_PDF_VISION_PAGES, ToolCancelled, ToolContext, ToolError,
                    _clamp_timeout)
 from .workspace import _resolve_in_workspace

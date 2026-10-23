@@ -8,7 +8,6 @@ from ..helpers import short_stamp
 from .spec import ToolContext, ToolError
 from .workspace import _resolve_in_workspace
 
-
 #: Most entries one call lists.
 MAX_LIST_ENTRIES = 200
 

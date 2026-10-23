@@ -22,7 +22,6 @@ from .policy import (_SHELL_SPLIT, _dangerous_shell_args, _python_findings,
                      approval_decision, shell_safety)
 from .spec import ToolSpec
 
-
 #: Commands a stored approval rule may never cover (`dangerous_command`):
 #: privilege escalation, remote shells, wrappers that smuggle another
 #: command, interpreters (equivalent to arbitrary code execution), and

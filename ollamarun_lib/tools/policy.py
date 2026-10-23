@@ -16,7 +16,6 @@ from typing import Any, Optional
 
 from .spec import Decision, ToolSpec
 
-
 #: Commands `run_shell` may execute unattended (basename of argv[0]).
 DEFAULT_SHELL_ALLOW = {
     "ls", "pwd", "cat", "head", "tail", "grep", "rg", "find", "wc", "file",

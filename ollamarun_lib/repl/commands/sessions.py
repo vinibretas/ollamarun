@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING
+
 from rich.markup import escape
+
 from ...client import OllamaError
 from ...constants import console
 from ...helpers import new_session_id, now_iso, remote_node, shortcut

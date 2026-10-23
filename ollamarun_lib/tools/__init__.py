@@ -28,43 +28,42 @@ from __future__ import annotations
 
 import types
 
-from .spec import (MAX_PDF_VISION_PAGES, TRUNCATE_TAIL, Decision, ToolCancelled,
-                   ToolContext, ToolError, ToolHandlerResult, ToolOutcome,
-                   ToolSpec, truncate_output)
-from .policy import (DEFAULT_SHELL_ALLOW, GIT_CONFIG_SAFE, GIT_READONLY,
-                     PYTHON_DANGEROUS_ATTRS, PYTHON_DANGEROUS_CALLS,
-                     PYTHON_DANGEROUS_NAMES, SAFE_PYTHON_MODULES,
-                     approval_decision, python_import_roots, python_safety,
-                     shell_safety)
-from .rules import (PATH_RULE_TOOLS, RULE_FLOOR_COMMANDS, RULE_KINDS,
-                    SHELL_INTERPRETERS, PolicyCheck, ToolRule,
-                    dangerous_command, matching_rule, policy_check, rule_label,
-                    rule_matches, suggest_rules)
 from .args import call_detail, call_fingerprint, normalize_arguments
+from .chem_cli import (chem_inventory_available, find_chem_inventory,
+                       run_chem_inventory)
+from .executor import ABANDON_ON_CANCEL, ToolRunner, execute_tool
 from .html import MAX_PAGE_LINKS, extract_html_text
-from .pdf import (MAX_PDF_BYTES, MAX_PDF_CHARS, MAX_PDF_PAGES, PDF_VISION_DPI,
-                  PDF_VISION_PREFERENCE, PDF_VISION_PROMPT,
-                  PDF_VISION_TIMEOUT, extract_pdf_text, parse_page_spec,
-                  pdf_page_count, pick_vision_model, render_pdf_page,
-                  select_pdf_pages, vision_models_installed, vision_transcribe)
+from .list_dir import MAX_LIST_ENTRIES
 from .net import (BOT_WALL_MARKERS, BROWSER_HEADERS, DEFAULT_SEARCH_RESULTS,
                   FETCH_TIMEOUT, JS_SHELL_MARKERS, MAX_ERROR_DETAIL,
                   MAX_SEARCH_RESULTS, SEARCH_ENGINE_HOSTS, SEARCH_TIMEOUT,
                   SOFT_BLOCK_MARKERS, format_fetch_response,
                   search_engine_query)
-from .web_search import (DDGS, format_search_results, run_web_search,
-                         search_available)
+from .pdf import (MAX_PDF_BYTES, MAX_PDF_CHARS, MAX_PDF_PAGES, PDF_VISION_DPI,
+                  PDF_VISION_PREFERENCE, PDF_VISION_PROMPT, PDF_VISION_TIMEOUT,
+                  extract_pdf_text, parse_page_spec, pdf_page_count,
+                  pick_vision_model, render_pdf_page, select_pdf_pages,
+                  vision_models_installed, vision_transcribe)
+from .policy import (DEFAULT_SHELL_ALLOW, GIT_CONFIG_SAFE, GIT_READONLY,
+                     PYTHON_DANGEROUS_ATTRS, PYTHON_DANGEROUS_CALLS,
+                     PYTHON_DANGEROUS_NAMES, SAFE_PYTHON_MODULES,
+                     approval_decision, python_import_roots, python_safety,
+                     shell_safety)
 from .read_file import MAX_READ_CHARS
-from .list_dir import MAX_LIST_ENTRIES
-from .chem_cli import (chem_inventory_available, find_chem_inventory,
-                       run_chem_inventory)
-from .tts import find_tts_remote, run_tts_say, speech_hosts
 from .registry import (HANDLERS, REQUIREMENT_HINTS, REQUIREMENTS,
                        ToolDefinition, default_registry, load_tool_definitions,
-                       resolve_tool_alias, tool_aliases,
-                       tool_definition_dirs, tool_definitions, tool_schemas)
-from .executor import ABANDON_ON_CANCEL, ToolRunner, execute_tool
-
+                       resolve_tool_alias, tool_aliases, tool_definition_dirs,
+                       tool_definitions, tool_schemas)
+from .rules import (PATH_RULE_TOOLS, RULE_FLOOR_COMMANDS, RULE_KINDS,
+                    SHELL_INTERPRETERS, PolicyCheck, ToolRule,
+                    dangerous_command, matching_rule, policy_check, rule_label,
+                    rule_matches, suggest_rules)
+from .spec import (MAX_PDF_VISION_PAGES, TRUNCATE_TAIL, Decision,
+                   ToolCancelled, ToolContext, ToolError, ToolHandlerResult,
+                   ToolOutcome, ToolSpec, truncate_output)
+from .tts import find_tts_remote, run_tts_say, speech_hosts
+from .web_search import (DDGS, format_search_results, run_web_search,
+                         search_available)
 
 #: Public surface re-exported by `ollamarun_lib/__init__.py`, minus the
 #: submodules themselves.

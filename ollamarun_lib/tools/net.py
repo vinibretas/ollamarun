@@ -11,7 +11,6 @@ import requests
 
 from .html import extract_html_text
 
-
 FETCH_TIMEOUT = 30.0
 #: Browser-ish headers: the plain requests user-agent is a bot flag for many
 #: sites and gets served challenges or error pages instead of content.

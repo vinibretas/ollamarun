@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+
 from rich import box
 from rich.table import Table
+
 from ...constants import console
 
 if TYPE_CHECKING:

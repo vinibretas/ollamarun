@@ -16,12 +16,7 @@ from __future__ import annotations
 
 import types
 
-from .core import Repl
-from .completion import (SlashCompleter, completion_candidates,
-                         completion_fragment, tool_name_candidates)
-from .queue import MessageQueue, QueuedItem
-from .session import _switch_session
-from .view import ps_table
+from ..ui import _prompt_approval  # compatibility re-export
 from .commands.config import (cmd_math, cmd_pager, cmd_params, cmd_render,
                               cmd_set, cmd_show, cmd_system, cmd_think,
                               cmd_thinking, cmd_tps, cmd_tts, system_label)
@@ -38,8 +33,12 @@ from .commands.stats import cmd_bye, cmd_queue, cmd_stats
 from .commands.tables import (COMMAND_INFO, TOOLS_HELP_ROWS, TOOLS_POLICIES,
                               TOOLS_SUBCOMMANDS, TOOLS_TOOL_ACTIONS)
 from .commands.tools import cmd_tools
-from ..ui import _prompt_approval  # compatibility re-export
-
+from .completion import (SlashCompleter, completion_candidates,
+                         completion_fragment, tool_name_candidates)
+from .core import Repl
+from .queue import MessageQueue, QueuedItem
+from .session import _switch_session
+from .view import ps_table
 
 #: Public surface re-exported by `ollamarun_lib/__init__.py`, minus the
 #: submodules themselves.

@@ -20,7 +20,6 @@ from ..helpers import canonical_model_name
 from .html import _normalize_text
 from .spec import MAX_PDF_VISION_PAGES, ToolError
 
-
 MAX_PDF_CHARS = 40_000
 MAX_PDF_PAGES = 50
 #: Rasterization resolution: small print stays legible, and a page still fits

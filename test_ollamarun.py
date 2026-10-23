@@ -2650,9 +2650,9 @@ class _CtxFitClient(_FakeClient):
 
 def test_ctxfit() -> int:
     failures = 0
-    old_calibration_path = orun.ctxfit.CTXFIT_CALIBRATION_PATH
+    old_calibration_path = orun.ctxfit.defaults.CTXFIT_CALIBRATION_PATH
     calibration_tmp = tempfile.TemporaryDirectory()
-    orun.ctxfit.CTXFIT_CALIBRATION_PATH = Path(calibration_tmp.name) / "ctxfit.json"
+    orun.ctxfit.defaults.CTXFIT_CALIBRATION_PATH = Path(calibration_tmp.name) / "ctxfit.json"
 
     devices = orun.parse_gpu_memory("4096, 3100\n24576, 12000\nnot-a-device\n")
     failures += _fit_check("parse_gpu_memory reads nvidia-smi CSV", devices == [(4096, 3100), (24576, 12000)],
@@ -2712,9 +2712,9 @@ def test_ctxfit() -> int:
                        orun.trained_context_length(CTX_SHOW) == 262144
                        and orun.model_total_layers(CTX_SHOW) == 25)
     failures += _fit_check("_kv_fraction_on_gpu follows the attention blocks in the tail",
-                        orun.ctxfit._kv_fraction_on_gpu(CTX_SHOW, 13) == 0.5
-                        and orun.ctxfit._kv_fraction_on_gpu(CTX_SHOW, 25) == 1.0,
-                        f"{orun.ctxfit._kv_fraction_on_gpu(CTX_SHOW, 13)}")
+                        orun.ctxfit.calibration._kv_fraction_on_gpu(CTX_SHOW, 13) == 0.5
+                        and orun.ctxfit.calibration._kv_fraction_on_gpu(CTX_SHOW, 25) == 1.0,
+                        f"{orun.ctxfit.calibration._kv_fraction_on_gpu(CTX_SHOW, 13)}")
 
     with tempfile.TemporaryDirectory() as tmp:
         store = orun.CtxCalibrationStore(Path(tmp) / "calibration.json")
@@ -2722,7 +2722,7 @@ def test_ctxfit() -> int:
         store.add("scope", 8192, 2_000_000)
         store.add("scope", 4096, 1_100_000)  # replace, don't duplicate a context
         samples = store.points("scope")
-        line = orun.ctxfit._measured_memory_line(samples, 100, 200_000)
+        line = orun.ctxfit.calibration._measured_memory_line(samples, 100, 200_000)
         failures += _fit_check("context calibration persists bounded measured points",
                                samples == [(4096, 1_100_000), (8192, 2_000_000)]
                                and line is not None and line[0] == 220
@@ -2777,7 +2777,7 @@ def test_ctxfit() -> int:
         cached_req = orun.FitRequest(client=cached_client, model="m1",
                                      machine=cached_machine,
                                      calibration_path=str(cache_path))
-        cache_key = orun.ctxfit._calibration_scope(
+        cache_key = orun.ctxfit.calibration._calibration_scope(
             cached_req, mode="gpu", model_digest="", weight_bytes=cached_client.weights,
             show_data=cached_client.show_data, machine=cached_machine,
             pinned_layers=None)
@@ -2865,9 +2865,9 @@ def test_ctxfit() -> int:
 
     # ── probe loop ──────────────────────────────────────────────────────────
     def run_probe(client, free_mb=3500, **request_kwargs):
-        previous_path = orun.ctxfit.CTXFIT_CALIBRATION_PATH
+        previous_path = orun.ctxfit.defaults.CTXFIT_CALIBRATION_PATH
         probe_tmp = tempfile.TemporaryDirectory()
-        orun.ctxfit.CTXFIT_CALIBRATION_PATH = Path(probe_tmp.name) / "ctxfit.json"
+        orun.ctxfit.defaults.CTXFIT_CALIBRATION_PATH = Path(probe_tmp.name) / "ctxfit.json"
         req_machine = orun.MachineGpu(devices=[(4096, free_mb)], env={}, source="local")
         request = orun.FitRequest(client=client, model="m1",
                                   config={"max_gpu_probes": 10}, machine=req_machine,
@@ -2877,7 +2877,7 @@ def test_ctxfit() -> int:
                 chosen = orun.max_gpu_context(request, probe=True)
             return chosen, _plain(cap.get())
         finally:
-            orun.ctxfit.CTXFIT_CALIBRATION_PATH = previous_path
+            orun.ctxfit.defaults.CTXFIT_CALIBRATION_PATH = previous_path
             probe_tmp.cleanup()
 
     client = _CtxFitClient()
@@ -3023,7 +3023,7 @@ def test_ctxfit() -> int:
                        and orun.parse_num_ctx_arg("--MAX-GPU") == ("max-gpu", None)
                        and orun.parse_num_ctx_arg("8192") == ("value", 8192)
                        and orun.parse_num_ctx_arg("nope") == ("error", None))
-    orun.ctxfit.CTXFIT_CALIBRATION_PATH = old_calibration_path
+    orun.ctxfit.defaults.CTXFIT_CALIBRATION_PATH = old_calibration_path
     calibration_tmp.cleanup()
     return failures
 
@@ -3284,9 +3284,9 @@ def test_fit_service() -> int:
 def test_model_profile() -> int:
     """First-principles modelling: GGUF geometry, quant/params and tags facts."""
     failures = 0
-    old_path = orun.ctxfit.CTXFIT_CALIBRATION_PATH
+    old_path = orun.ctxfit.defaults.CTXFIT_CALIBRATION_PATH
     calibration_tmp = tempfile.TemporaryDirectory()
-    orun.ctxfit.CTXFIT_CALIBRATION_PATH = Path(calibration_tmp.name) / "ctxfit.json"
+    orun.ctxfit.defaults.CTXFIT_CALIBRATION_PATH = Path(calibration_tmp.name) / "ctxfit.json"
     try:
         profile = orun.model_profile(SWA_SHOW)
         failures += _fit_check("model_profile reads the GGUF facts and file-type quant",
@@ -3423,16 +3423,16 @@ def test_model_profile() -> int:
                                not bert.kv_layers and "causal" in bert.error,
                                f"layers={bert.kv_layers} error={bert.error}")
     finally:
-        orun.ctxfit.CTXFIT_CALIBRATION_PATH = old_path
+        orun.ctxfit.defaults.CTXFIT_CALIBRATION_PATH = old_path
         calibration_tmp.cleanup()
     return failures
 
 
 def test_cmd_num_ctx_max_gpu() -> int:
     failures = 0
-    old_calibration_path = orun.ctxfit.CTXFIT_CALIBRATION_PATH
+    old_calibration_path = orun.ctxfit.defaults.CTXFIT_CALIBRATION_PATH
     calibration_tmp = tempfile.TemporaryDirectory()
-    orun.ctxfit.CTXFIT_CALIBRATION_PATH = Path(calibration_tmp.name) / "ctxfit.json"
+    orun.ctxfit.defaults.CTXFIT_CALIBRATION_PATH = Path(calibration_tmp.name) / "ctxfit.json"
     with tempfile.TemporaryDirectory() as tmp:
         store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
         args = orun.build_parser().parse_args(["m1", "--render", "plain"])
@@ -3440,8 +3440,8 @@ def test_cmd_num_ctx_max_gpu() -> int:
         client = _CtxFitClient()
         repl = orun.Repl(args, config, client, store, orun.Session.create("m1", client.base))
 
-        original = orun.ctxfit.probe_machine_gpu
-        orun.ctxfit.probe_machine_gpu = lambda **kwargs: orun.MachineGpu(
+        original = orun.ctxfit.machine.probe_machine_gpu
+        orun.ctxfit.machine.probe_machine_gpu = lambda **kwargs: orun.MachineGpu(
             devices=[(4096, 3500)], env={}, source="local")
         try:
             with orun.console.capture() as cap:
@@ -3477,8 +3477,8 @@ def test_cmd_num_ctx_max_gpu() -> int:
             failures += _fit_check("/num-ctx status hints at --max-gpu",
                                "--max-gpu" in cap.get())
         finally:
-            orun.ctxfit.probe_machine_gpu = original
-            orun.ctxfit.CTXFIT_CALIBRATION_PATH = old_calibration_path
+            orun.ctxfit.machine.probe_machine_gpu = original
+            orun.ctxfit.defaults.CTXFIT_CALIBRATION_PATH = old_calibration_path
             calibration_tmp.cleanup()
     return failures
 
@@ -3584,9 +3584,9 @@ class _CpuFitClient(_FakeClient):
 
 def test_cpu_fit() -> int:
     failures = 0
-    old_calibration_path = orun.ctxfit.CTXFIT_CALIBRATION_PATH
+    old_calibration_path = orun.ctxfit.defaults.CTXFIT_CALIBRATION_PATH
     calibration_tmp = tempfile.TemporaryDirectory()
-    orun.ctxfit.CTXFIT_CALIBRATION_PATH = Path(calibration_tmp.name) / "ctxfit.json"
+    orun.ctxfit.defaults.CTXFIT_CALIBRATION_PATH = Path(calibration_tmp.name) / "ctxfit.json"
     GIB = 2 ** 30
     weights = 4_000_000_000
     ram = orun.MachineRam(total_bytes=16 * GIB, available_bytes=16 * GIB, source="local")
@@ -3643,7 +3643,7 @@ def test_cpu_fit() -> int:
         cached_req = orun.FitRequest(client=cached_client, model="m1", config={},
                                      machine=cached_machine, ram=cached_ram,
                                      calibration_path=str(cache_path))
-        cache_key = orun.ctxfit._calibration_scope(
+        cache_key = orun.ctxfit.calibration._calibration_scope(
             cached_req, mode="cpu", model_digest="", weight_bytes=cached_client.weights,
             show_data=cached_client.show_data, machine=cached_machine,
             pinned_layers=None, gpu_layers=base_cpu.gpu_layers)
@@ -3681,9 +3681,9 @@ def test_cpu_fit() -> int:
 
     # ── probe loop ──────────────────────────────────────────────────────────
     def run_cpu_probe(client, *, available=16 * GIB, percent=30, **request_kwargs):
-        previous_path = orun.ctxfit.CTXFIT_CALIBRATION_PATH
+        previous_path = orun.ctxfit.defaults.CTXFIT_CALIBRATION_PATH
         probe_tmp = tempfile.TemporaryDirectory()
-        orun.ctxfit.CTXFIT_CALIBRATION_PATH = Path(probe_tmp.name) / "ctxfit.json"
+        orun.ctxfit.defaults.CTXFIT_CALIBRATION_PATH = Path(probe_tmp.name) / "ctxfit.json"
         request = orun.FitRequest(
             client=client, model="m1", config={"max_cpu_probes": 10},
             ram=orun.MachineRam(total_bytes=16 * GIB, available_bytes=available,
@@ -3695,7 +3695,7 @@ def test_cpu_fit() -> int:
                 chosen = orun.max_cpu_context(request, percent=percent, probe=True)
             return chosen, _plain(cap.get())
         finally:
-            orun.ctxfit.CTXFIT_CALIBRATION_PATH = previous_path
+            orun.ctxfit.defaults.CTXFIT_CALIBRATION_PATH = previous_path
             probe_tmp.cleanup()
 
     target = 16 * GIB * 30 // 100
@@ -3723,7 +3723,7 @@ def test_cpu_fit() -> int:
             client=cached_client, model="m1", config={"max_cpu_probes": 8},
             ram=cached_ram, machine=cached_machine, num_gpu=baseline.gpu_layers,
             calibration_path=str(cache_path))
-        cache_key = orun.ctxfit._calibration_scope(
+        cache_key = orun.ctxfit.calibration._calibration_scope(
             cached_req, mode="cpu", model_digest="", weight_bytes=cached_client.weights,
             show_data=cached_client.show_data, machine=cached_machine,
             pinned_layers=baseline.gpu_layers, gpu_layers=baseline.gpu_layers)
@@ -3827,16 +3827,16 @@ def test_cpu_fit() -> int:
             percent=30)
     failures += _fit_check("max_cpu_context needs the model in /api/tags",
                            chosen is None and "/api/tags" in cap.get())
-    orun.ctxfit.CTXFIT_CALIBRATION_PATH = old_calibration_path
+    orun.ctxfit.defaults.CTXFIT_CALIBRATION_PATH = old_calibration_path
     calibration_tmp.cleanup()
     return failures
 
 
 def test_cmd_num_ctx_max_cpu() -> int:
     failures = 0
-    old_calibration_path = orun.ctxfit.CTXFIT_CALIBRATION_PATH
+    old_calibration_path = orun.ctxfit.defaults.CTXFIT_CALIBRATION_PATH
     calibration_tmp = tempfile.TemporaryDirectory()
-    orun.ctxfit.CTXFIT_CALIBRATION_PATH = Path(calibration_tmp.name) / "ctxfit.json"
+    orun.ctxfit.defaults.CTXFIT_CALIBRATION_PATH = Path(calibration_tmp.name) / "ctxfit.json"
     with tempfile.TemporaryDirectory() as tmp:
         store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
         args = orun.build_parser().parse_args(["m1", "--render", "plain"])
@@ -3844,11 +3844,11 @@ def test_cmd_num_ctx_max_cpu() -> int:
         client = _CpuFitClient()
         repl = orun.Repl(args, config, client, store, orun.Session.create("m1", client.base))
 
-        original_gpu = orun.ctxfit.probe_machine_gpu
-        original_ram = orun.ctxfit.probe_machine_ram
-        orun.ctxfit.probe_machine_gpu = lambda **kwargs: orun.MachineGpu(
+        original_gpu = orun.ctxfit.machine.probe_machine_gpu
+        original_ram = orun.ctxfit.machine.probe_machine_ram
+        orun.ctxfit.machine.probe_machine_gpu = lambda **kwargs: orun.MachineGpu(
             devices=[(4096, 3300)], env={}, source="local")
-        orun.ctxfit.probe_machine_ram = lambda **kwargs: orun.MachineRam(
+        orun.ctxfit.machine.probe_machine_ram = lambda **kwargs: orun.MachineRam(
             total_bytes=16 * 2 ** 30, available_bytes=16 * 2 ** 30, source="local")
         try:
             with orun.console.capture() as cap:
@@ -3901,9 +3901,9 @@ def test_cmd_num_ctx_max_cpu() -> int:
             failures += _fit_check("/num-ctx status hints at --max-cpu",
                                    "--max-cpu" in cap.get())
         finally:
-            orun.ctxfit.probe_machine_gpu = original_gpu
-            orun.ctxfit.probe_machine_ram = original_ram
-            orun.ctxfit.CTXFIT_CALIBRATION_PATH = old_calibration_path
+            orun.ctxfit.machine.probe_machine_gpu = original_gpu
+            orun.ctxfit.machine.probe_machine_ram = original_ram
+            orun.ctxfit.defaults.CTXFIT_CALIBRATION_PATH = old_calibration_path
             calibration_tmp.cleanup()
     return failures
 

@@ -12,84 +12,45 @@ import subprocess
 import threading
 import time
 from typing import Any, Callable, Optional
+
 from rich.markup import escape
 from rich.panel import Panel
+
 from ..client import OllamaClient, OllamaError, build_chat_payload
-from ..constants import (
-    DEFAULT_TIMEOUT,
-    HAS_PROMPT_TOOLKIT,
-    HISTORY_PATH,
-    THINKING_MODES,
-    FileHistory,
-    KeyBindings,
-    PromptSession,
-    console,
-    err_console,
-    patch_stdout,
-    tool_color,
-)
+from ..constants import (DEFAULT_TIMEOUT, HAS_PROMPT_TOOLKIT, HISTORY_PATH,
+                         THINKING_MODES, FileHistory, KeyBindings,
+                         PromptSession, console, err_console, patch_stdout,
+                         tool_color)
+from ..events import (ROUND_STARTED, TOOL_CALL, TOOL_RESULT, TURN_ERROR,
+                      RuntimeEvent)
 from ..files import expand_file_mentions
-from ..helpers import (
-    CancelToken,
-    naive_title,
-    now_iso,
-    remote_node,
-    resolve_show_stats,
-    shortcut,
-)
-from ..prompts import default_system_prompt, load_prompt, summarize_prompt, title_prompt
-from ..interactive import (
-    gpu_layers_label,
-    model_block_count,
-    open_in_editor,
-    parse_model_sort,
-    resolve_gpu_layers,
-)
-from ..events import ROUND_STARTED, TOOL_CALL, TOOL_RESULT, TURN_ERROR, RuntimeEvent
-from ..renderer import (
-    GenerationResult,
-    HeadlessRenderer,
-    Renderer,
-    StreamSink,
-    tool_result_panel,
-    user_message_box,
-)
-from ..runtime import (
-    AgentRuntime,
-    ApprovalDecision,
-    ApprovalRequest,
-    TurnHooks,
-    TurnSettings,
-    approval_notice,
-    build_payload,
-    context_length as resolve_context_length,
-    context_report as build_context_report,
-    context_used as session_context_used,
-    model_show as read_model_show,
-    resident_context_length,
-    session_report as build_session_report,
-)
+from ..helpers import (CancelToken, naive_title, now_iso, remote_node,
+                       resolve_show_stats, shortcut)
+from ..interactive import (gpu_layers_label, model_block_count, open_in_editor,
+                           parse_model_sort, resolve_gpu_layers)
+from ..prompts import (default_system_prompt, load_prompt, summarize_prompt,
+                       title_prompt)
+from ..renderer import (GenerationResult, HeadlessRenderer, Renderer,
+                        StreamSink, tool_result_panel, user_message_box)
+from ..runtime import (AgentRuntime, ApprovalDecision, ApprovalRequest,
+                       TurnHooks, TurnSettings, approval_notice, build_payload)
+from ..runtime import context_length as resolve_context_length
+from ..runtime import context_report as build_context_report
+from ..runtime import context_used as session_context_used
+from ..runtime import model_show as read_model_show
+from ..runtime import resident_context_length
+from ..runtime import session_report as build_session_report
 from ..session import Session, SessionStore
-from ..tools import (
-    DEFAULT_SHELL_ALLOW,
-    MAX_PDF_VISION_PAGES,
-    ToolContext,
-    ToolRule,
-    call_detail,
-    default_registry,
-    find_tts_remote,
-    policy_check,
-    rule_label,
-    run_tts_say,
-    speech_hosts,
-    suggest_rules,
-    tool_schemas as build_tool_schemas,
-)
+from ..tools import (DEFAULT_SHELL_ALLOW, MAX_PDF_VISION_PAGES, ToolContext,
+                     ToolRule, call_detail, default_registry, find_tts_remote,
+                     policy_check, rule_label, run_tts_say, speech_hosts,
+                     suggest_rules)
+from ..tools import tool_schemas as build_tool_schemas
 from ..ui import ConsoleUi, StatusSnapshot, Ui
+from .commands.registry import COMMAND_HANDLERS
 from .completion import SlashCompleter
 from .queue import MessageQueue
 from .view import ps_table
-from .commands.registry import COMMAND_HANDLERS
 
 
 class Repl:

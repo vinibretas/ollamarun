@@ -421,7 +421,6 @@ def test_pyflakes_clean() -> int:
 MODULE_SIZE_BUDGET = 800
 SIZE_BUDGET_ALLOWLIST = {
     "ollamarun_lib/repl/core.py",
-    "ollamarun_lib/ctxfit.py",
     "ollamarun_lib/agent_api.py",
     "ollamarun_lib/session_host.py",
     "ollamarun_lib/cli.py",
@@ -6444,9 +6443,9 @@ def test_fit_estimate_api() -> int:
     """POST /v1/agent/fit: estimate, apply, validation and policy gates."""
     failures = 0
     machine = orun.MachineGpu(devices=[(16384, 12000)], env={}, source="local")
-    old_probe = orun.ctxfit.machine_state_for
+    old_probe = orun.ctxfit.api.machine_state_for
     old_refresh = orun.agent_api.machine_state_for
-    orun.ctxfit.machine_state_for = lambda *a, **k: machine
+    orun.ctxfit.api.machine_state_for = lambda *a, **k: machine
     orun.agent_api.machine_state_for = lambda *a, **k: machine
     try:
         with tempfile.TemporaryDirectory() as tmp:
@@ -6555,7 +6554,7 @@ def test_fit_estimate_api() -> int:
             finally:
                 _stop_api(server, thread)
     finally:
-        orun.ctxfit.machine_state_for = old_probe
+        orun.ctxfit.api.machine_state_for = old_probe
         orun.agent_api.machine_state_for = old_refresh
     return failures
 
@@ -6566,10 +6565,10 @@ def test_fit_job_api() -> int:
     """Async fit jobs: 202 + warnings, status/progress, cancel, gates."""
     failures = 0
     machine = orun.MachineGpu(devices=[(16384, 12000)], env={}, source="local")
-    old_probe = orun.ctxfit.machine_state_for
+    old_probe = orun.ctxfit.api.machine_state_for
     old_refresh = orun.agent_api.machine_state_for
     old_fit = orun.fits.fit_context
-    orun.ctxfit.machine_state_for = lambda *a, **k: machine
+    orun.ctxfit.api.machine_state_for = lambda *a, **k: machine
     orun.agent_api.machine_state_for = lambda *a, **k: machine
     gate = threading.Event()
     gate.set()
@@ -6756,7 +6755,7 @@ def test_fit_job_api() -> int:
                 _stop_api(server, thread)
     finally:
         gate.set()
-        orun.ctxfit.machine_state_for = old_probe
+        orun.ctxfit.api.machine_state_for = old_probe
         orun.agent_api.machine_state_for = old_refresh
         orun.fits.fit_context = old_fit
     return failures
@@ -6768,9 +6767,9 @@ def test_turn_start_fit() -> int:
     """settings.num_ctx "max-gpu" estimates before round one and reports it."""
     failures = 0
     machine = orun.MachineGpu(devices=[(16384, 12000)], env={}, source="local")
-    old_probe = orun.ctxfit.machine_state_for
+    old_probe = orun.ctxfit.api.machine_state_for
     old_refresh = orun.agent_api.machine_state_for
-    orun.ctxfit.machine_state_for = lambda *a, **k: machine
+    orun.ctxfit.api.machine_state_for = lambda *a, **k: machine
     orun.agent_api.machine_state_for = lambda *a, **k: machine
     try:
         with tempfile.TemporaryDirectory() as tmp:
@@ -6863,7 +6862,7 @@ def test_turn_start_fit() -> int:
             finally:
                 _stop_api(server, thread)
     finally:
-        orun.ctxfit.machine_state_for = old_probe
+        orun.ctxfit.api.machine_state_for = old_probe
         orun.agent_api.machine_state_for = old_refresh
     return failures
 

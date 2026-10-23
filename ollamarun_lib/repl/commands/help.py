@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+
 from rich import box
 from rich.markup import escape
 from rich.table import Table
+
 from ...constants import console
 from .tables import COMMAND_INFO
 
 if TYPE_CHECKING:
     from ..core import Repl
+
 from .tools import _cmd_tools_help_table
 
 

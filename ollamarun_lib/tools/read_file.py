@@ -6,7 +6,6 @@ from typing import Any
 from .spec import ToolContext, ToolError
 from .workspace import _resolve_in_workspace
 
-
 #: Most characters one call reads before the offset/limit window applies.
 MAX_READ_CHARS = 200_000
 

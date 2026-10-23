@@ -6,7 +6,6 @@ import urllib.parse
 from html.parser import HTMLParser
 from typing import Optional
 
-
 #: How many links one page reports back to the model.
 MAX_PAGE_LINKS = 25
 

@@ -13,11 +13,10 @@ from .config import (cmd_math, cmd_pager, cmd_params, cmd_render, cmd_set,
 from .context import cmd_context, cmd_summarize
 from .help import cmd_help
 from .media import cmd_copy, cmd_export, cmd_image
-from .model import (cmd_gpu_layers, cmd_model, cmd_num_ctx, cmd_ps,
-                    cmd_pull)
+from .model import cmd_gpu_layers, cmd_model, cmd_num_ctx, cmd_ps, cmd_pull
 from .sessions import (cmd_branch, cmd_clear, cmd_edit, cmd_load, cmd_new,
-                       cmd_retry, cmd_save, cmd_sessions, cmd_tag,
-                       cmd_title, cmd_undo)
+                       cmd_retry, cmd_save, cmd_sessions, cmd_tag, cmd_title,
+                       cmd_undo)
 from .stats import cmd_bye, cmd_queue, cmd_stats
 from .tools import cmd_tools
 

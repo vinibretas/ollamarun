@@ -1,34 +1,26 @@
 """The `/tools` command: the table, per-tool control, help pages, `call` and the stored approval rules."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 import json
 import os
 import shlex
 import time
 from difflib import get_close_matches
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
 from rich import box
 from rich.markup import escape
 from rich.table import Table
+
 from ...constants import console, tool_color
 from ...helpers import coerce_value, now_iso, shortcut
 from ...renderer import tool_call_panel, tool_result_panel
-from ...tools import (
-    REQUIREMENT_HINTS,
-    ToolDefinition,
-    ToolRule,
-    ToolSpec,
-    call_detail,
-    call_fingerprint,
-    execute_tool,
-    resolve_tool_alias,
-    rule_label,
-    tool_definitions,
-)
-from .tables import TOOLS_HELP_ROWS, TOOLS_SUBCOMMANDS
+from ...tools import (REQUIREMENT_HINTS, ToolDefinition, ToolRule, ToolSpec,
+                      call_detail, call_fingerprint, execute_tool,
+                      resolve_tool_alias, rule_label, tool_definitions)
 from ..completion import tool_name_candidates
+from .tables import TOOLS_HELP_ROWS, TOOLS_SUBCOMMANDS
 
 if TYPE_CHECKING:
     from ..core import Repl

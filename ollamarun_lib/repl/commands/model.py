@@ -1,37 +1,23 @@
 """Model commands: `/model(s)`, `/show`, `/ps`, `/pull`, `/num-ctx` and `/gpu-layers`."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 import shlex
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
 from rich.markup import escape
+
 from ...client import OllamaClient, OllamaError
 from ...constants import console
+from ...ctxfit import (NUM_CTX_HELP, FitRequest, machine_state_for,
+                       max_cpu_context, max_gpu_context, parse_fill_percent,
+                       parse_num_ctx_arg)
 from ...helpers import is_local_host, remote_node
-from ...ctxfit import (
-    FitRequest,
-    NUM_CTX_HELP,
-    machine_state_for,
-    max_cpu_context,
-    max_gpu_context,
-    parse_fill_percent,
-    parse_num_ctx_arg,
-)
-from ...interactive import (
-    GPU_LAYERS_USAGE,
-    MODEL_SORT_KEYS,
-    disk_free_line,
-    ensure_model,
-    fetch_context_lengths,
-    model_context_length,
-    model_table,
-    parse_gpu_layers_spec,
-    parse_model_sort,
-    pick_model,
-    pull_with_progress,
-    resolve_gpu_layers,
-    sort_models,
-)
+from ...interactive import (GPU_LAYERS_USAGE, MODEL_SORT_KEYS, disk_free_line,
+                            ensure_model, fetch_context_lengths,
+                            model_context_length, model_table,
+                            parse_gpu_layers_spec, parse_model_sort,
+                            pick_model, pull_with_progress, resolve_gpu_layers,
+                            sort_models)
 from ..view import ps_table
 
 if TYPE_CHECKING:

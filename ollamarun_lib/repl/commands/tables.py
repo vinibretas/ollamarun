@@ -5,7 +5,6 @@ it must not import a command module (that would close an import cycle).
 """
 from __future__ import annotations
 
-
 COMMAND_INFO: dict[str, tuple[str, str]] = {
     "/help, /?": ("[topic]", "show commands (topic: shortcuts)"),
     "/set": ("parameter NAME VALUE | system TEXT", "session parameters / system prompt"),

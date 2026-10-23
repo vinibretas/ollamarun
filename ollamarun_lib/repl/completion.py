@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING
 from ..constants import Completer, Completion
 from ..interactive import MODEL_SORT_KEYS
 from ..tools import resolve_tool_alias
-from .commands.tables import (COMMAND_INFO, TOOLS_POLICIES,
-                                TOOLS_SUBCOMMANDS, TOOLS_TOOL_ACTIONS)
+from .commands.tables import (COMMAND_INFO, TOOLS_POLICIES, TOOLS_SUBCOMMANDS,
+                              TOOLS_TOOL_ACTIONS)
 
 if TYPE_CHECKING:
     from .core import Repl

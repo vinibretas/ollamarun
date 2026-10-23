@@ -1,22 +1,26 @@
 """Session settings: `/set`, `/system`, `/think(ing)`, `/render`, `/math`, `/pager`, `/tps`, `/tts` and `/show`."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 import json
 import shlex
+from typing import TYPE_CHECKING
+
 from rich import box
 from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
+
 from ...client import OllamaError
 from ...constants import console
-from ...helpers import coerce_value, human_chars, parse_bool, parse_think, shortcut
+from ...helpers import (coerce_value, human_chars, parse_bool, parse_think,
+                        shortcut)
 from ...interactive import model_context_length
 from ...renderer import thinking_panel
 from ...tools import execute_tool, find_tts_remote
 
 if TYPE_CHECKING:
     from ..core import Repl
+
 from ..view import _last_assistant
 
 

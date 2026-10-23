@@ -1,13 +1,14 @@
 """Attachments and the transcript: `/image`, `/copy`, `/export`."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 import os
 import re
 import shlex
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
 from rich.markup import escape
+
 from ...constants import console
 from ...helpers import human_bytes
 from ...images import encode_image
@@ -16,6 +17,7 @@ from ...session import export_html, export_json, export_markdown
 
 if TYPE_CHECKING:
     from ..core import Repl
+
 from ..view import _last_assistant
 
 
