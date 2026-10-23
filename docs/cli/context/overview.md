@@ -11,6 +11,7 @@ the machine can actually afford.
 | Knob | Command / flag | What it sets |
 | --- | --- | --- |
 | Window size | `/num-ctx N`, `--num-ctx N` | The session's `num_ctx`, capped to the model's trained maximum. |
+| Window adjustment | `/num-ctx +N`/`-N`/`+P%`/`-P%`, `--num-ctx …` | Add or remove tokens, or a share, from the window in force. |
 | Largest GPU window | `/num-ctx --max-gpu`, `--num-ctx max-gpu` | Estimates the largest context that keeps the model fully on the GPU. |
 | DRAM fill | `/num-ctx --max-cpu N`, `--num-ctx --max-cpu N` | Raises the window until the model's host RAM fills N% of available DRAM. |
 | Verification | `--probe` on either | Loads the model at candidate contexts and reads the real split back. |

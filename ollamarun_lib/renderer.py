@@ -425,8 +425,11 @@ class Renderer:
 
         `ctx` counts what the next request will carry (the last round's
         prompt + completion) plus this round's streamed chunks, so the
-        percentage moves with every token; it appears from the second
-        round on, when there is a base to count from.
+        percentage moves with every token. The share only needs the
+        denominator -- the effective window, known before the runner reports
+        -- so it shows from the first streamed token of the first round; the
+        base is 0 until this round's own `prompt_eval_count` lands on the
+        final chunk.
         """
         if not self.tps_footer:
             return None
@@ -439,8 +442,14 @@ class Renderer:
         if average:
             bits.append(f"(avg {average:.1f})")
         bits.append(f"{estimator.tokens} tok")
-        if self.context_used is not None:
-            bits.append(format_context(self.context_used + estimator.tokens,
+        if self.context_total is not None:
+            # The last round's totals are the base; on the first round there
+            # is none yet, so count this round's chunks alone until its own
+            # prompt count arrives on the final chunk.
+            base = self.context_used
+            if base is None:
+                base = (self.result.stats or {}).get("prompt_tokens")
+            bits.append(format_context((base or 0) + estimator.tokens,
                                        self.context_total))
         return Text(" · ".join(bits), style="dim")
 

@@ -2,6 +2,24 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 2.18
+
+Summary of changes in this version:
+  - `/num-ctx` (and `--num-ctx`) accepts relative amounts: `+1000`/`-1000`
+    add or remove that many tokens from the window in force, and `+50%`/
+    `-50%` grow or shrink it by a share of itself (decreases cap at 100%,
+    increases are unlimited). The baseline is the effective window -- a
+    session `num_ctx`, else the loaded runner, else the model's own default,
+    else the ollama service environment's `OLLAMA_CONTEXT_LENGTH` -- resolved
+    to an absolute number at once so the model-max cap, the reload and the
+    stored value all behave exactly as an absolute `/num-ctx N`. The CLI
+    mirrors it (`--num-ctx +1000`, `--num-ctx=-50%`).
+  - The streaming footer's `ctx` share appears on the *first* generation
+    instead of only the second: the share only needs the effective window
+    (known before `/api/ps` reports), so the counter starts from the first
+    streamed token and folds the round's own `prompt_eval_count` in when the
+    final chunk lands.
+
 Version: 2.17
 
 Summary of changes in this version:

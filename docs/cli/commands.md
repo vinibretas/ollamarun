@@ -184,9 +184,10 @@ llama3.2:3b › /ps
 
 ## Context and placement
 
-### `/num-ctx [N | --max-gpu [--probe] | --max-cpu N [--probe]]`
-The window size, the GPU fit or the DRAM fill — [num-ctx](context/num-ctx.md)
-and the [context overview](context/overview.md).
+### `/num-ctx [N | +N | -N | +P% | -P% | --max-gpu [--probe] | --max-cpu N [--probe]]`
+The window size, a relative adjustment, the GPU fit or the DRAM fill —
+[num-ctx](context/num-ctx.md) and the
+[context overview](context/overview.md).
 
 ```text
 qwen3:0.6b › /num-ctx 8192
@@ -194,6 +195,9 @@ num_ctx set to 8192
 unloaded qwen3:0.6b
 loading qwen3:0.6b at 8,192 ctx…
 loaded at 8192 (loaded runner)
+qwen3:0.6b › /num-ctx +50%
+8192 +50% → 12288
+num_ctx set to 12288
 qwen3:0.6b › /num-ctx 99999999
 99999999 exceeds qwen3:0.6b's max context (40960) — capped to 40960
 ```

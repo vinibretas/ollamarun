@@ -818,6 +818,14 @@ def test_normalize_argv() -> int:
              ["--sort", "size", "m1"]),
             ("--sort fuzzy without a query is left for the parser",
              ["--sort", "fuzzy"], ["--sort", "fuzzy"]),
+            ("--num-ctx -50% folds into the = form",
+             ["--num-ctx", "-50%", "m1"], ["--num-ctx=-50%", "m1"]),
+            ("--num-ctx +1000 folds too",
+             ["--num-ctx", "+1000", "m1"], ["--num-ctx=+1000", "m1"]),
+            ("--num-ctx with an absolute value is untouched",
+             ["--num-ctx", "8192", "m1"], ["--num-ctx", "8192", "m1"]),
+            ("--num-ctx max-gpu is untouched",
+             ["--num-ctx", "max-gpu", "m1"], ["--num-ctx", "max-gpu", "m1"]),
         ]
         parser = orun.build_parser()
         for name, argv, expected in cases:
@@ -2874,6 +2882,119 @@ def test_cmd_num_ctx() -> int:
     return failures
 
 
+def test_num_ctx_relative() -> int:
+    """`/num-ctx +N | -N | +P% | -P%` adjusts the window in force."""
+    failures = 0
+    failures = _check(failures, "parse_num_ctx_arg reads the relative forms",
+                      orun.parse_num_ctx_arg("+1000") == ("delta", 1000)
+                      and orun.parse_num_ctx_arg("-1000") == ("delta", -1000)
+                      and orun.parse_num_ctx_arg("+50%") == ("pct", 50)
+                      and orun.parse_num_ctx_arg("-50%") == ("pct", -50)
+                      and orun.parse_num_ctx_arg("50%") == ("error", None),
+                      str(orun.parse_num_ctx_arg("+50%")))
+    failures = _check(failures, "resolve_num_ctx_delta adds and removes tokens",
+                      orun.resolve_num_ctx_delta(8192, "delta", 1000) == 9192
+                      and orun.resolve_num_ctx_delta(8192, "delta", -1000) == 7192)
+    failures = _check(failures, "resolve_num_ctx_delta applies a signed percentage",
+                      orun.resolve_num_ctx_delta(8192, "pct", 50) == 12288
+                      and orun.resolve_num_ctx_delta(8192, "pct", -50) == 4096)
+    failures = _check(failures, "a relative decrease floors at one token",
+                      orun.resolve_num_ctx_delta(8192, "pct", -100) == 1
+                      and orun.resolve_num_ctx_delta(100, "delta", -9999) == 1)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        args = orun.build_parser().parse_args(["m1", "--render", "plain"])
+        config = dict(orun.DEFAULT_CONFIG)
+        show = {"model_info": {"llama.context_length": 32768,
+                               "llama.block_count": 32}}
+        client = _FakeClient(models=["m1"], show_data=show)
+        session = orun.Session.create("m1", client.base)
+        session.parameters["num_ctx"] = 8192
+        repl = orun.Repl(args, config, client, store, session)
+
+        with orun.console.capture() as cap:
+            orun.cmd_num_ctx(repl, "+1000")
+        out = _plain(cap.get())
+        failures = _check(failures, "/num-ctx +N adds to the current window",
+                          session.parameters.get("num_ctx") == 9192
+                          and "8192 +1000 → 9192" in out
+                          and client.load_options == [{"num_ctx": 9192}], out)
+
+        client.load_options.clear()
+        with orun.console.capture() as cap:
+            orun.cmd_num_ctx(repl, "+50%")
+        out = _plain(cap.get())
+        failures = _check(failures, "/num-ctx +P% grows the window by that share",
+                          session.parameters.get("num_ctx") == 13788
+                          and "9192 +50% → 13788" in out
+                          and client.load_options == [{"num_ctx": 13788}], out)
+
+        client.load_options.clear()
+        with orun.console.capture() as cap:
+            orun.cmd_num_ctx(repl, "-50%")
+        out = _plain(cap.get())
+        failures = _check(failures, "/num-ctx -P% shrinks the window",
+                          session.parameters.get("num_ctx") == 6894, out)
+
+        # A relative overshoot still runs through the model-max cap.
+        client.load_options.clear()
+        session.parameters["num_ctx"] = 32768
+        with orun.console.capture() as cap:
+            orun.cmd_num_ctx(repl, "+1000")
+        out = _plain(cap.get())
+        failures = _check(failures, "/num-ctx +N caps to the model max",
+                          session.parameters.get("num_ctx") == 32768
+                          and "capped to 32768" in out, out)
+
+        # Bad relative amounts are refused before touching the session.
+        session.parameters["num_ctx"] = 4096
+        with orun.console.capture() as cap:
+            orun.cmd_num_ctx(repl, "+0")
+        failures = _check(failures, "/num-ctx rejects a zero change",
+                          "non-zero amount" in _plain(cap.get())
+                          and session.parameters.get("num_ctx") == 4096)
+        with orun.console.capture() as cap:
+            orun.cmd_num_ctx(repl, "-150%")
+        failures = _check(failures, "/num-ctx rejects a decrease over 100%",
+                          "cannot exceed 100%" in _plain(cap.get())
+                          and session.parameters.get("num_ctx") == 4096)
+
+        # With no session num_ctx the baseline is the model's own default,
+        # so the first generation has a window to grow from.
+        default_show = {"parameters": "num_ctx 4096",
+                        "model_info": {"llama.context_length": 32768}}
+        default_client = _FakeClient(models=["m1"], show_data=default_show)
+        default_repl = orun.Repl(args, config, default_client, store,
+                                 orun.Session.create("m1", default_client.base))
+        with orun.console.capture() as cap:
+            orun.cmd_num_ctx(default_repl, "+1000")
+        failures = _check(failures, "/num-ctx falls back to the model's default",
+                          default_repl.session.parameters.get("num_ctx") == 5096
+                          and "4096 +1000 → 5096" in _plain(cap.get()),
+                          _plain(cap.get()))
+
+        with orun.console.capture() as cap:
+            orun.cmd_num_ctx(default_repl, "--help")
+        help_out = _plain(cap.get())
+        failures = _check(failures, "/num-ctx --help documents the relative forms",
+                          "+N / -N" in help_out and "+P% / -P%" in help_out,
+                          help_out)
+
+    # The CLI shares the same baseline resolution the footer uses.
+    base_client = _FakeClient(models=["m1"], show_data={"parameters": "num_ctx 4096"})
+    base_session = orun.Session.create("m1", base_client.base)
+    baseline = orun.effective_num_ctx_baseline(base_client, base_session,
+                                               dict(orun.DEFAULT_CONFIG), None)
+    failures = _check(failures, "the CLI baseline reads the model default",
+                      baseline == 4096, str(baseline))
+    parsed = orun.build_parser().parse_args(["m1", "--num-ctx", "+1000"])
+    failures = _check(failures, "the parser keeps a relative --num-ctx",
+                      parsed.num_ctx == "+1000", str(parsed.num_ctx))
+    return failures
+
+
 def _fit_check(name: str, ok: bool, detail: str = "") -> int:
     if ok:
         print(f"PASS  {name}")
@@ -4503,6 +4624,14 @@ def test_build_parser_flags() -> int:
         print("PASS  --num-ctx parses an integer")
     else:
         print(f"FAIL  --num-ctx: {args.num_ctx!r}")
+        failures += 1
+
+    rel_args = parser.parse_args(["m1", "--num-ctx", "+1000"])
+    if rel_args.num_ctx == "+1000" \
+            and orun.parse_num_ctx_arg(rel_args.num_ctx) == ("delta", 1000):
+        print("PASS  --num-ctx parses a relative amount")
+    else:
+        print(f"FAIL  --num-ctx relative: {rel_args.num_ctx!r}")
         failures += 1
 
     probe_args = parser.parse_args(["m1", "--num-ctx", "max-gpu", "--max-gpu-probe"])
@@ -7776,8 +7905,21 @@ def test_tps_footer() -> int:
     bare = orun.Renderer(console, mode="plain")
     bare.estimator.add(1, now=0.0)
     plain = bare._tps_text(now=0.5).plain
-    failures = _check(failures, "no ctx piece without a base to count from",
+    failures = _check(failures, "no ctx piece without a known window",
                       "ctx" not in plain, plain)
+
+    # The first generation shows the share from the known window alone; the
+    # base is 0 until the round's own prompt count lands on the final chunk.
+    first = orun.Renderer(console, mode="plain", context_total=4096)
+    for tick in range(10):
+        first.estimator.add(1, now=100.0 + tick)
+    first_text = first._tps_text(now=109.0).plain
+    failures = _check(failures, "the first generation counts against the window",
+                      "ctx 10/4.096k (0.244%)" in first_text, first_text)
+    first.result.stats = {"prompt_tokens": 500, "completion_tokens": 10}
+    done_text = first._tps_text(now=109.0).plain
+    failures = _check(failures, "the final frame folds in the round's prompt count",
+                      "ctx 510/4.096k (12.451%)" in done_text, done_text)
 
     quiet = orun.Renderer(console, mode="plain", tps_footer=False)
     quiet.estimator.add(1, now=0.0)
@@ -8975,7 +9117,7 @@ if __name__ == "__main__":
              + test_context_usage()
              + test_banner_and_resume()
              + test_num_ctx_reload()
-             + test_cmd_num_ctx() + test_ctxfit()
+             + test_cmd_num_ctx() + test_num_ctx_relative() + test_ctxfit()
              + test_ctxfit_outcome() + test_ctxfit_cancel_progress()
              + test_fit_service()
              + test_cmd_num_ctx_max_gpu()

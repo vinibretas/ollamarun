@@ -47,7 +47,7 @@ what the flags are for.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--num-ctx [N\|max-gpu]` | model/server default | Set the context window, or ask for the largest one that stays fully on the GPU. Capped to the model's trained maximum with a warning. |
+| `--num-ctx [N\|+N\|-N\|+P%\|-P%\|max-gpu]` | model/server default | Set the context window, adjust the window in force by tokens (`+1000`) or a share (`+50%`; `--num-ctx=-50%` for a decrease), or ask for the largest one that stays fully on the GPU. Capped to the model's trained maximum with a warning. |
 | `--max-cpu N` | — | With `--num-ctx`: raise the window until the model's host RAM fills N% (1-100) of the available DRAM. |
 | `--probe` | off | With `--num-ctx max-gpu`/`--max-cpu`: verify by loading the model and reading the split back from `/api/ps`. |
 | `--gpu-layers SPEC` | `auto` | `N` layers, `P%` of them, `+N`/`-N` adjustments, `all`, `cpu` or `auto`. |

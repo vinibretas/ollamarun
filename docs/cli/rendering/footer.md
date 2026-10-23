@@ -16,9 +16,11 @@ while it streams, and the `⏱` timings line under it when it finishes.
 | `48 tok` | Tokens streamed so far this response (thinking counts). |
 | `ctx 12.345k/32.768k (38.123%)` | Context the next request will carry over the effective window. |
 
-Counting rules: values read raw below 1k, 3-decimal `k` above. The ctx part
-appears from the second round on, when there is a base to count from — it
-adds the current round's chunks to the last request's totals.
+Counting rules: values read raw below 1k, 3-decimal `k` above. The share
+only needs a denominator, so it shows from the first streamed token of the
+**first** generation: it adds the current round's chunks to the last
+request's totals (0 on the first round), and folds the round's own
+`prompt_eval_count` in when the final chunk lands.
 
 The **denominator is the window the model will actually run with**, never the
 model's architectural maximum: a session `num_ctx` wins, then the loaded

@@ -291,8 +291,10 @@ the pager, `--render markdown|plain|raw` picks the mode.
   model's own Modelfile `num_ctx`, or the ollama service environment's
   `OLLAMA_CONTEXT_LENGTH` (read from the unit, locally or over ssh for
   `--remote`) — never the architectural maximum, which is reported
-  separately. Counts read raw below 1k / 3-decimal k above. The TUI status
-  bar shows the same rate, average and live ctx.
+  separately. The share shows from the first generation, since the window is
+  known before `/api/ps` reports, and folds the round's own prompt count in
+  when the final chunk lands. Counts read raw below 1k / 3-decimal k above.
+  The TUI status bar shows the same rate, average and live ctx.
 - **Timings.** `⏱ load … · prompt … · eval … · total …` prints under every
   answer on a terminal; `--verbose` is obsolete there and now only adds the
   line to piped/redirected output. `--raw`/`--json` never get it, and config
@@ -421,11 +423,19 @@ or `auto`. It is stored in the session, re-resolved per model, wins over
 unloaded and loaded again with the new split (a placement-only change
 reloads even when `num_ctx` did not move).
 
-`/num-ctx` sizes the window; any of the three forms applies the change to
-the runner at once (unload, load at the new context, verified from
-`/api/ps`) rather than at the next message:
+`/num-ctx` sizes the window; every form applies the change to the runner at
+once (unload, load at the new context, verified from `/api/ps`) rather than
+at the next message:
 
 - `N` sets it, capped to the model's max with a warning.
+- `+N`/`-N` add or remove that many tokens from the window in force, and
+  `+P%`/`-P%` grow or shrink it by a share of itself (so `+50%` on `8192`
+  gives `12288`). The baseline is the effective window — a session `num_ctx`,
+  else the loaded runner, else the model's default, else
+  `OLLAMA_CONTEXT_LENGTH` — so it works on the first turn; the result is
+  stored as an absolute number. Decreases cap at `100%` (floored at one
+  token), increases are unlimited but still capped to the model's max. The
+  CLI mirrors them (`--num-ctx +1000`, `--num-ctx=-50%`).
 - `--max-gpu` picks the largest context that still keeps the model fully on
   the GPU. The model is profiled first: `/api/show`'s GGUF metadata supplies
   the per-layer KV geometry (hybrid attention, sliding windows and their
@@ -462,7 +472,9 @@ the runner at once (unload, load at the new context, verified from
   calibrates future CPU estimates as well; automatic GPU placement is checked
   before a cached slope is applied.
 
-CLI forms: `--num-ctx N | max-gpu`, plus `--probe` and `--max-cpu N`. Config
+CLI forms: `--num-ctx N | +N | -N | +P% | -P% | max-gpu`, plus `--probe` and
+`--max-cpu N`. A leading-minus percentage needs the `=` form
+(`--num-ctx=-50%`); the `+`/`-` token forms parse as-is. Config
 knobs: `max_gpu_margin_mb` (1 GiB), `max_gpu_overhead_mb` (0; the fit margin
 already covers llama.cpp's projected buffers), `max_gpu_probes` (10),
 `max_cpu_overhead_mb` (256 MiB) and `max_cpu_probes` (10).
@@ -1016,7 +1028,7 @@ saved history.
 ```console
 $ ollamarun MODEL [PROMPT] [--host HOST | --remote NAME] [--ui MODE]
                   [--pull] [--sort KEY|TEXT] [--gpu-layers SPEC]
-                  [--num-ctx [N | max-gpu | --max-cpu N] [--probe]]
+                  [--num-ctx [N | +N | -N | +P% | -P% | max-gpu | --max-cpu N] [--probe]]
                   [--think [STR]] [--render MODE] [--option K=V]
                   [--image PATH] [--system TEXT | --system-file FILE | --no-system]
                   [-c [ID] | --session NAME | -r] [--new] [--title TEXT] [--tag TAG]
@@ -1050,7 +1062,7 @@ Dispatched in the REPL and the TUI; `/help` also lists the shortcuts (`/?`).
 | `/tag [list\|add TAG…\|rm TAG]` | Session tags |
 | `/model, /models [NAME\|--list\|--sort KEY\|fuzzy TEXT]` | Switch model, list or sort the installed models |
 | `/ps` | Show resident models (ollama ps) |
-| `/num-ctx [N \| --max-gpu [--probe] \| --max-cpu N [--probe]]` | Context window: N, the largest that keeps the GPU, or N% of DRAM |
+| `/num-ctx [N \| +N \| -N \| +P% \| -P% \| --max-gpu [--probe] \| --max-cpu N [--probe]]` | Context window: N, a relative change, the largest that keeps the GPU, or N% of DRAM |
 | `/gpu-layers [N\|N%\|+N\|-N\|all\|cpu\|auto]` | GPU layers for this model |
 | `/params` | Show session parameters |
 | `/tools [on\|off\|policy MODE\|enable\|disable NAME…\|NAME on\|off\|NAME help\|NAME call ARGS\|allow\|rules\|help]` | Tool harness, per-tool control (aliases resolve), generated help pages and direct calls |

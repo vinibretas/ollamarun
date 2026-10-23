@@ -68,8 +68,13 @@ def quantization_bytes_per_param(label: str) -> Optional[float]:
     return None
 
 
-NUM_CTX_HELP = """usage: /num-ctx N | --max-gpu [--probe] | --max-cpu N [--probe]
+NUM_CTX_HELP = """usage: /num-ctx N | +N | -N | +P% | -P% | --max-gpu [--probe] | --max-cpu N [--probe]
   N          set the context window (capped to the model's max)
+  +N / -N    add or remove N tokens from the window in force
+  +P% / -P%  grow or shrink the window by P percent of itself (a decrease
+             cannot exceed 100%). The baseline is the session num_ctx, else
+             the loaded runner's window, else the model's own default, else
+             the ollama service environment's OLLAMA_CONTEXT_LENGTH
   --max-gpu  use the largest context that still runs the model on the GPU:
              per-layer KV geometry from /api/show (hybrid layers, sliding
              windows, MLA compression and recurrent state included), the

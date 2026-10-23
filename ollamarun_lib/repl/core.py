@@ -783,9 +783,17 @@ class Repl:
         return service_context_length(env)
 
     def _context_total(self) -> Optional[int]:
-        """The cached window size for the current model/num_ctx, if known."""
-        return self._context_totals.get(
-            (self.session.model, self.session.parameters.get("num_ctx")))
+        """The window size for the current model/num_ctx, if known.
+
+        The streaming renderer has usually resolved it already; when it has
+        not (the turn's first status, before the footer renders), resolve on
+        demand so the status bar carries the share on the first generation
+        too instead of waiting for `/api/ps`.
+        """
+        key = (self.session.model, self.session.parameters.get("num_ctx"))
+        if key not in self._context_totals:
+            self.context_length()
+        return self._context_totals.get(key)
 
     def context_report(self) -> dict[str, Any]:
         """Plain data for the `context_status` tool (window + usage)."""
@@ -811,13 +819,15 @@ class Repl:
 
         The status bar (and the footer, through the renderer) count the live
         stream on top of the last round's totals, so the ctx counter moves
-        with every token instead of stepping once per turn.
+        with every token instead of stepping once per turn. Before the first
+        round has totals (the first generation) the base is 0, so the counter
+        still ticks against the known window.
         """
         used = self.context_used()
         renderer = self.current_renderer
-        if used is None or renderer is None:
+        if renderer is None:
             return used
-        return used + renderer.estimator.tokens
+        return (used or 0) + renderer.estimator.tokens
 
     def status_snapshot(self) -> StatusSnapshot:
         tools = "off" if not self.tools_active() else (

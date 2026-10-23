@@ -2,6 +2,7 @@
 the estimate/probe paths and their structured outcomes."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -24,15 +25,44 @@ from .report import (print_cpu_fit_report, print_cpu_probe_report,
 
 # ── orchestration used by the REPL command and the CLI flag ────────────────
 
+_REL_NUM_CTX_RE = re.compile(r"^(?P<sign>[+-])(?P<number>\d+)(?P<percent>%)?$")
+
+
 def parse_num_ctx_arg(text: str) -> tuple[str, Optional[int]]:
-    """('value', N) | ('max-gpu', None) | ('error', None) for a --num-ctx argument."""
+    """Parse a `--num-ctx`/`/num-ctx` argument into (kind, number).
+
+    `('value', N)` is an absolute window; `('delta', ±N)` a relative one
+    (`+1000`/`-1000`); `('pct', ±P)` a relative percentage (`+50%`/`-50%`);
+    `('max-gpu', None)` the fit form; `('error', None)` anything else.
+    """
     token = (text or "").strip().lower()
     if token in {"max-gpu", "--max-gpu", "maxgpu"}:
         return "max-gpu", None
+    match = _REL_NUM_CTX_RE.match(token)
+    if match:
+        number = int(match.group("number"))
+        signed = -number if match.group("sign") == "-" else number
+        return ("pct" if match.group("percent") else "delta"), signed
     try:
         return "value", int(token)
     except ValueError:
         return "error", None
+
+
+def resolve_num_ctx_delta(baseline: int, kind: str, number: int) -> int:
+    """The target window for a relative spec, before the model's max is applied.
+
+    `delta` adds `number` tokens; `pct` adds `number` percent of `baseline`
+    (so `+50%` grows by half, `-50%` shrinks by half). The result never drops
+    below one token.
+    """
+    if kind == "delta":
+        target = baseline + number
+    elif kind == "pct":
+        target = baseline + round(baseline * number / 100)
+    else:
+        raise ValueError(f"not a relative num-ctx kind: {kind!r}")
+    return max(1, target)
 
 
 @dataclass

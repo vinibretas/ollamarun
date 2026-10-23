@@ -39,6 +39,7 @@ from .helpers import (
     ModelTracker,
     is_local_host,
     load_config,
+    local_service_env,
     parse_bool,
     parse_format,
     parse_options,
@@ -46,8 +47,10 @@ from .helpers import (
     remote_node,
     resolve_remote,
     serve_settings,
+    service_context_length,
     setup_logging,
     shortcut,
+    ssh_service_env,
     tailscale_peer_state,
 )
 from .images import encode_image
@@ -62,6 +65,7 @@ from .ctxfit import (
     max_gpu_context,
     parse_fill_percent,
     parse_num_ctx_arg,
+    resolve_num_ctx_delta,
 )
 from .interactive import (
     MODEL_SORT_KEYS,
@@ -76,6 +80,7 @@ from .interactive import (
 )
 from .repl import Repl, resolve_num_ctx
 from .run import run_embed, run_once
+from .runtime import resolve_window
 from .session import Session, SessionStore
 from .session_host import (
     HOST_PROTOCOL,
@@ -140,10 +145,11 @@ interactive commands:
   /thinking [MODE]      thinking display: show|collapse|hide|toggle|full
   /tps [on|off]         live tokens/s footer
   /ps                   resident models (ollama ps)
-  /num-ctx [N | --max-gpu [--probe] | --max-cpu N [--probe]]
-                        context window: N, the largest that keeps the GPU
-                        placement, or fill N% of the available DRAM
-                        (--probe verifies by loading the model)
+  /num-ctx [N | +N | -N | +P% | -P% | --max-gpu [--probe] | --max-cpu N [--probe]]
+                        context window: N; +N/-N and +P%/-P% adjust the current
+                        window; --max-gpu keeps the GPU placement; --max-cpu N
+                        fills N% of the available DRAM (--probe verifies by
+                        loading the model)
   /gpu-layers [SPEC]    GPU layers: N, P%, +N/-N, all, cpu or auto
   /image PATH           attach an image to the next message
   /export [FILE]        export mid-session as md/json/html
@@ -266,13 +272,16 @@ sessions live in ~/etc/data/ollamarun; config in ~/etc/config_files/ollamarun.js
     wrapper.add_argument("--option", action="append", metavar="KEY=VALUE",
                          help="model option, repeatable (e.g. -o temperature=0.7)")
     wrapper.add_argument("--num-ctx", nargs="?", const="", default=None,
-                         metavar="N|max-gpu",
+                         metavar="N|+N|-N|+PCT|-PCT|max-gpu",
                          help="context window size; capped to the model's max "
-                              "(from /api/show) with a warning. 'max-gpu' picks "
-                              "the largest context that still keeps the model on "
-                              "the GPU; with --max-cpu N the context is raised "
-                              "until the model's host RAM fills N%% of the "
-                              "available DRAM (see /num-ctx --help)")
+                              "(from /api/show) with a warning. +N/-N add or "
+                              "remove tokens from the current window, +P%%/-P%% "
+                              "by a share of it (use --num-ctx=-50%% for a "
+                              "decrease). 'max-gpu' picks the largest context "
+                              "that still keeps the model on the GPU; with "
+                              "--max-cpu N the context is raised until the "
+                              "model's host RAM fills N%% of the available DRAM "
+                              "(see /num-ctx --help)")
     wrapper.add_argument("--max-cpu", metavar="N",
                          help="with --num-ctx: fill N%% (1-100) of the DRAM "
                               "available to the model")
@@ -779,6 +788,14 @@ def normalize_argv(argv: Optional[list[str]], store: SessionStore,
             out.append("--sort=fuzzy:" + argv[index + 1])
             index += 2
             continue
+        # A relative --num-ctx (`--num-ctx -50%`) reads as a stray option to
+        # argparse; fold it into the `=` form. `+N`, `-N` and `+P%` survive
+        # anyway, but this keeps every spelling uniform.
+        if token == "--num-ctx" and index + 1 < len(argv) \
+                and re.fullmatch(r"[+-]\d+%?", argv[index + 1]):
+            out.append("--num-ctx=" + argv[index + 1])
+            index += 2
+            continue
         if token in {"-c", "--continue"} and index + 1 < len(argv) \
                 and not argv[index + 1].startswith("-"):
             candidate = argv[index + 1]
@@ -795,6 +812,29 @@ def normalize_argv(argv: Optional[list[str]], store: SessionStore,
         out.append(token)
         index += 1
     return out
+
+
+def effective_num_ctx_baseline(client: OllamaClient, session: Session,
+                               config: dict[str, Any],
+                               ssh_target: Optional[str]) -> Optional[int]:
+    """The window in force for a session, for a relative `--num-ctx`.
+
+    The same resolution order the REPL footer and `/context` use: the
+    session's `num_ctx`, the loaded runner's `/api/ps` window, the model's own
+    Modelfile `num_ctx`, then the ollama service environment's
+    `OLLAMA_CONTEXT_LENGTH` (one unit probe, locally or over ssh for
+    `--remote`). None only when nothing measurable answers.
+    """
+    def server_default() -> Optional[tuple[int, str]]:
+        if ssh_target:
+            env = ssh_service_env(ssh_target, user=config.get("remote_ssh_user"))
+        else:
+            env = local_service_env()
+        return service_context_length(env)
+
+    window, _ = resolve_window(client, session, {}, {}, {}, set(),
+                               server_default=server_default)
+    return window
 
 
 def remote_preflight(client: OllamaClient, label: str, config: dict[str, Any],
@@ -1142,8 +1182,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     elif args.num_ctx is not None:
         kind, value = parse_num_ctx_arg(args.num_ctx)
         if kind == "error":
-            console.print("[err]--num-ctx must be a positive integer, max-gpu, "
-                          "or --max-cpu N[/err]")
+            console.print("[err]--num-ctx must be a positive integer, +N/-N, "
+                          "+P%/-P%, max-gpu, or --max-cpu N[/err]")
             return 2
         if kind == "max-gpu":
             request = FitRequest(
@@ -1165,6 +1205,31 @@ def main(argv: Optional[list[str]] = None) -> int:
             session.parameters["num_ctx"] = ctx
             note = " [dim]· model is loaded at that context[/dim]" if args.probe else ""
             console.print(f"[ok]num_ctx set to {ctx}[/ok]{note}")
+        elif kind in {"delta", "pct"}:
+            number = int(value or 0)
+            if number == 0:
+                console.print("[err]--num-ctx needs a non-zero amount "
+                              "(e.g. +1000 or -50%)[/err]")
+                return 2
+            if kind == "pct" and number < -100:
+                console.print("[err]a percentage decrease cannot exceed 100%[/err]")
+                return 2
+            baseline = effective_num_ctx_baseline(client, session, config,
+                                                  ssh_target)
+            if baseline is None:
+                console.print("[err]no context window is known yet — set an "
+                              "absolute value first[/err]")
+                return 2
+            target = resolve_num_ctx_delta(baseline, kind, number)
+            applied, max_ctx = resolve_num_ctx(client, model, target)
+            if max_ctx and target > max_ctx:
+                console.print(f"[warn]--num-ctx {args.num_ctx} exceeds {escape(model)}'s "
+                              f"max context ({max_ctx}) — capped to {max_ctx}[/warn]")
+            session.parameters["num_ctx"] = applied
+            if not quiet:
+                share = "%" if kind == "pct" else ""
+                console.print(f"[ok]num_ctx set to {applied}[/ok] "
+                              f"[dim]({baseline} {number:+d}{share})[/dim]")
         else:
             if int(value or 0) <= 0:
                 console.print("[err]--num-ctx must be a positive integer[/err]")

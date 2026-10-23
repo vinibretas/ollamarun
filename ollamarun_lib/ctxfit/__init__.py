@@ -39,7 +39,8 @@ from __future__ import annotations
 import types
 
 from .api import (FitOutcome, fit_context, max_cpu_context, max_gpu_context,
-                  parse_fill_percent, parse_num_ctx_arg)
+                  parse_fill_percent, parse_num_ctx_arg,
+                  resolve_num_ctx_delta)
 from .calibration import CtxCalibrationStore
 from .defaults import (CALIBRATION_MAX_AGE, CALIBRATION_MAX_ENTRIES,
                        CALIBRATION_MAX_SAMPLES, CTX_STEP,

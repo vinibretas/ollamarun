@@ -10,7 +10,7 @@ from ...client import OllamaClient, OllamaError
 from ...constants import console
 from ...ctxfit import (NUM_CTX_HELP, FitRequest, machine_state_for,
                        max_cpu_context, max_gpu_context, parse_fill_percent,
-                       parse_num_ctx_arg)
+                       parse_num_ctx_arg, resolve_num_ctx_delta)
 from ...helpers import is_local_host, remote_node
 from ...interactive import (GPU_LAYERS_USAGE, MODEL_SORT_KEYS, disk_free_line,
                             ensure_model, fetch_context_lengths,
@@ -53,7 +53,8 @@ def resolve_num_ctx(client: OllamaClient, model: str, requested: int) -> tuple[i
 
 
 def cmd_num_ctx(repl: Repl, argument: str) -> None:
-    usage = "usage: /num-ctx N | --max-gpu [--probe] | --max-cpu N [--probe]"
+    usage = ("usage: /num-ctx N | +N | -N | +P% | -P% | --max-gpu [--probe] "
+             "| --max-cpu N [--probe]")
     argument = argument.strip()
     if not argument:
         current = repl.session.parameters.get("num_ctx")
@@ -65,6 +66,8 @@ def cmd_num_ctx(repl: Repl, argument: str) -> None:
         if max_ctx:
             bits.append(f"model max {max_ctx}")
         console.print("[key]context size[/key] " + " · ".join(bits))
+        console.print("[dim]+N/-N adjust by tokens, +P%/-P% by a share of the "
+                      "current window[/dim]")
         console.print("[dim]--max-gpu picks the largest context that still fits 100% "
                       "on the GPU; --max-cpu N fills N% of the DRAM available to the "
                       "model (--probe verifies by loading)[/dim]")
@@ -152,6 +155,36 @@ def cmd_num_ctx(repl: Repl, argument: str) -> None:
         return
     if kind == "error":
         console.print(f"[err]{usage}[/err]")
+        return
+    if kind in {"delta", "pct"}:
+        number = int(value or 0)
+        if number == 0:
+            console.print("[err]a relative change needs a non-zero amount "
+                          "(e.g. +1000 or -50%)[/err]")
+            return
+        if kind == "pct" and number < -100:
+            console.print("[err]a percentage decrease cannot exceed 100%[/err]")
+            return
+        # The baseline is the window actually in force: a session num_ctx, else
+        # the loaded runner, else the model's own default, else the ollama
+        # service environment's OLLAMA_CONTEXT_LENGTH.
+        baseline = repl.context_length()
+        if baseline is None:
+            console.print("[err]no context window is known yet — set an absolute "
+                          "value first, e.g. /num-ctx 8192[/err]")
+            return
+        delta = number if kind == "delta" else round(baseline * number / 100)
+        target = resolve_num_ctx_delta(baseline, kind, number)
+        rendered = (f"{baseline} {number:+d}" if kind == "delta"
+                    else f"{baseline} {number:+d}%")
+        console.print(f"[dim]{rendered} → {target}[/dim]")
+        if baseline + delta < 1:
+            console.print("[warn]a relative decrease cannot go below 1 token[/warn]")
+        applied, max_ctx = resolve_num_ctx(repl.client, repl.session.model, target)
+        if max_ctx and target > max_ctx:
+            console.print(f"[warn]{target} exceeds {escape(repl.session.model)}'s max "
+                          f"context ({max_ctx}) — capped to {max_ctx}[/warn]")
+        apply(applied)
         return
     requested = int(value or 0)
     if requested <= 0:
