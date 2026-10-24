@@ -419,13 +419,12 @@ mirror ollama's REPL; `/undo`, `/retry`, `/edit`, `/branch`, `/context`,
 `P%` of the model's layers (`block_count` from `/api/show`), `+N`/`-N`
 adjustments (baseline: the current value, else a full offload), `all`, `cpu`
 or `auto`. It is stored in the session, re-resolved per model, wins over
-`/set parameter num_gpu`, and applies immediately: a resident model is
-unloaded and loaded again with the new split (a placement-only change
-reloads even when `num_ctx` did not move).
+`/set parameter num_gpu`, and reaches the runner with the next message: the
+request carries `num_gpu`, so Ollama reloads the model at the new split then.
 
-`/num-ctx` sizes the window; every form applies the change to the runner at
-once (unload, load at the new context, verified from `/api/ps`) rather than
-at the next message:
+`/num-ctx` sizes the window. The value is stored on the session and applied
+by the next message, whose request carries the new `num_ctx` (Ollama reloads
+the runner at it):
 
 - `N` sets it, capped to the model's max with a warning.
 - `+N`/`-N` add or remove that many tokens from the window in force, and
@@ -900,7 +899,8 @@ session never deletes artifacts early).
 first-class fields: `PATCH /v1/sessions/{id}` (and the turn `settings`)
 accept `num_ctx` (a positive integer, refused past the model's trained
 maximum) and `gpu_layers` (`N`, `P%`, `+N`/`-N`, `all`, `cpu` or `auto`; a
-change unloads the resident model, exactly like `/gpu-layers`).
+placement change unloads the resident model so the next request reloads it
+at the new split).
 
 ```console
 $ curl -s http://127.0.0.1:11440/v1/sessions \

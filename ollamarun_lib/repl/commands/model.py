@@ -96,18 +96,16 @@ def cmd_num_ctx(repl: Repl, argument: str) -> None:
         )
 
     def apply(ctx: Optional[int]) -> None:
-        """Store the window and put it on the runner now.
+        """Store the window; the next request reloads the runner at it.
 
-        The window is a load-time property, so this unloads a resident model
-        and loads it again at the new context (printing what happened), rather
-        than leaving the change to the next message.
+        `num_ctx` is a load-time property, so the value rides in the session
+        and the next message's payload makes Ollama reload the runner at it.
         """
         if ctx is None:
             return
         repl.session.parameters["num_ctx"] = ctx
         repl.session.touch()
         console.print(f"[ok]num_ctx set to {ctx}[/ok]")
-        repl.reload_model()
 
     head = tokens[0].lower()
     rest = tokens[1:]
@@ -230,9 +228,8 @@ def cmd_gpu_layers(repl: Repl, argument: str) -> None:
     repl.session.gpu_layers = new_spec
     repl.session.touch()
     console.print(f"[ok]gpu layers[/ok] {escape(repl.gpu_layers_summary())}")
-    # The placement is a load-time property too, so apply it now: `force`
-    # because an unchanged num_ctx must not skip a placement-only change.
-    repl.reload_model(force=True)
+    # The placement is a load-time property: the next request's num_gpu
+    # makes Ollama reload the runner at the new split.
 
 
 

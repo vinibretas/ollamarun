@@ -192,9 +192,6 @@ The window size, a relative adjustment, the GPU fit or the DRAM fill —
 ```text
 qwen3:0.6b › /num-ctx 8192
 num_ctx set to 8192
-unloaded qwen3:0.6b
-loading qwen3:0.6b at 8,192 ctx…
-loaded at 8192 (loaded runner)
 qwen3:0.6b › /num-ctx +50%
 8192 +50% → 12288
 num_ctx set to 12288
@@ -211,9 +208,6 @@ Pin the GPU/CPU layer split — [GPU layers](context/gpu-layers.md).
 ```text
 qwen3:0.6b › /gpu-layers 50%
 gpu layers 50% → 15 of 29 layers
-unloaded qwen3:0.6b
-loading qwen3:0.6b…
-loaded at 8192 (loaded runner)
 ```
 
 ### `/context`

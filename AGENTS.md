@@ -68,8 +68,9 @@ progress display.
 (`N`, `P%`, `+N`/`-N`, `all`, `cpu`, `auto`). The spec lives in the session
 (`session.gpu_layers`), resolves per model against `/api/show`'s
 `<arch>.block_count` (via `interactive.py`'s `resolve_gpu_layers()`), wins over
-`session.parameters["num_gpu"]` in `Repl._payload()`, and a change unloads a
-resident model so the next request reloads with the new placement.
+`session.parameters["num_gpu"]` in `Repl._payload()`, and a change rides in
+the session — the next request carries it, so Ollama reloads the model at the
+new placement then.
 
 The `ollamarun` file at the repo root is a thin, shebang-pinned entry point
 (`#! /bin/python3.10`); the implementation lives in the `ollamarun_lib/`
@@ -733,14 +734,15 @@ always resident) is cross-cutting logic that lives in the REPL commands
 (`cmd_model` in `repl/commands/model.py`, `cmd_load` in
 `repl/commands/sessions.py`) and `main()`'s exit path
 (`cli.py`), coordinated through `/api/ps` lookups in `OllamaClient` — not a
-separate module. Applying a *load-time* setting is `Repl.reload_model()` in
-`repl/core.py`: `/num-ctx` and `/gpu-layers` call it so a change reaches the
-runner immediately (unload, `client.load(options=load_options())`, wait for
-`/api/ps` via `ctxfit.wait_for_ps`, then `_reset_window_cache()`), a cold
-model is loaded outright, an unchanged `num_ctx` is left alone unless
-`force=True` (a placement-only change), and `_preload_model()` passes the
-same `load_options()` so `--num-ctx`/`--gpu-layers` are in force from the
-first load. The model picker those commands (and a model-less
+separate module. `num_ctx`/`num_gpu` changes are load-time properties that
+ride in the session: `/num-ctx` and `/gpu-layers` only store them, and the
+next request's `options` make Ollama reload the runner at the new window or
+split. `Repl.reload_model()` in `repl/core.py` stays available for a forced
+immediate reload (unload, `client.load(options=load_options())`, wait for
+`/api/ps` via `ctxfit.wait_for_ps`, then `_reset_window_cache()`) but the
+commands no longer call it, and `_preload_model()` passes the same
+`load_options()` so `--num-ctx`/`--gpu-layers` are in force from the first
+load. The model picker those commands (and a model-less
 `ollamarun` run) open is ordered by the session's `model_sort`, seeded from
 `--sort` (a key or a `fuzzy:TEXT` ranking) and updated whenever a sort is
 chosen at the prompt.

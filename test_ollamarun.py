@@ -1395,13 +1395,12 @@ def test_banner_and_resume() -> int:
     return failures
 
 
-def test_num_ctx_reload() -> int:
-    """`/num-ctx` and `/gpu-layers` reach the runner immediately.
+def test_context_settings_deferred() -> int:
+    """`/num-ctx` and `/gpu-layers` store the setting; they touch no runner.
 
-    The window and the placement are load-time properties, so a change
-    unloads a resident model and loads it again with the new settings (a cold
-    model is loaded outright), then verifies the window from `/api/ps` and
-    refreshes the cached one."""
+    Both are load-time properties, so the change rides in the session and the
+    next request's options make Ollama reload the runner at them. The commands
+    themselves neither unload nor load a model."""
     failures = 0
     with tempfile.TemporaryDirectory() as tmp:
         store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
@@ -1418,56 +1417,42 @@ def test_num_ctx_reload() -> int:
         with orun.console.capture() as cap:
             orun.cmd_num_ctx(repl, "8192")
         out = _plain(cap.get())
-        failures = _check(failures, "/num-ctx unloads and reloads at the new window",
-                          client.unloaded == ["m1"]
-                          and client.loaded == ["m1"]
-                          and client.load_options == [{"num_ctx": 8192}]
-                          and "unloaded m1" in out and "loaded at 8192" in out,
+        failures = _check(failures, "/num-ctx stores the window without reloading",
+                          repl.session.parameters.get("num_ctx") == 8192
+                          and client.unloaded == [] and client.loaded == []
+                          and "num_ctx set to 8192" in out
+                          and "loading" not in out,
                           f"{out!r} unloaded={client.unloaded} "
                           f"loads={client.load_options}")
         report = repl.context_report()
-        failures = _check(failures, "the window is re-resolved after the reload",
+        failures = _check(failures, "the window is reported from the setting",
                           report["window"] == 8192
                           and report["source"] == "num_ctx=8192", str(report))
-
-        client.unloaded.clear()
-        client.loaded.clear()
-        client.load_options.clear()
-        with orun.console.capture() as cap:
-            orun.cmd_num_ctx(repl, "8192")
-        failures = _check(failures, "an unchanged window is left alone",
-                          client.unloaded == [] and client.loaded == []
-                          and "already loaded at 8192" in _plain(cap.get()),
-                          f"{_plain(cap.get())!r} {client.unloaded} {client.loaded}")
 
         cold = _FakeClient(models=["m1"], show_data=show)
         cold_repl = orun.Repl(args, config, cold, store,
                               orun.Session.create("m1", cold.base))
         with orun.console.capture() as cap:
             orun.cmd_num_ctx(cold_repl, "16384")
-        failures = _check(failures, "a cold model is loaded now, not on the message",
-                          cold.loaded == ["m1"]
-                          and cold.load_options == [{"num_ctx": 16384}]
-                          and cold.ps_entries
-                          and cold.ps_entries[0]["context_length"] == 16384
-                          and cold_repl.context_report()["window"] == 16384,
+        failures = _check(failures, "a cold model stays cold until the message",
+                          cold_repl.session.parameters.get("num_ctx") == 16384
+                          and cold.loaded == [] and cold.load_options == []
+                          and cold.ps_entries == [],
                           f"loads={cold.load_options} ps={cold.ps_entries}")
 
-        # A placement change reloads even though num_ctx is unchanged, and the
-        # resolved /gpu-layers spec rides along in the load options.
+        # A placement change is stored the same way: the next request's
+        # num_gpu reloads the runner at the new split.
         expected_gpu = orun.resolve_gpu_layers("25%", 32)
-        client.unloaded.clear()
-        client.loaded.clear()
-        client.load_options.clear()
         with orun.console.capture() as cap:
             orun.cmd_gpu_layers(repl, "25%")
-        failures = _check(failures, "/gpu-layers applies the placement by reloading",
+        out = _plain(cap.get())
+        failures = _check(failures, "/gpu-layers stores the split without reloading",
                           repl.session.gpu_layers == "25%"
-                          and client.unloaded == ["m1"]
-                          and client.load_options == [{"num_ctx": 8192,
-                                                       "num_gpu": expected_gpu}],
-                          f"options={client.load_options} "
-                          f"unloaded={client.unloaded} out={_plain(cap.get())!r}")
+                          and client.unloaded == [] and client.loaded == []
+                          and repl._payload([])["options"]["num_gpu"] == expected_gpu
+                          and orun.gpu_layers_label("25%", 32) in out,
+                          f"options={client.load_options} unloaded={client.unloaded} "
+                          f"out={out!r}")
         repl.session.gpu_layers = None
 
         # The launch preload carries the session's settings, so --num-ctx and
@@ -1803,7 +1788,7 @@ class _FakeClient:
         self.loaded.append(model)
         self.load_options.append(dict(options or {}))
         # A real load replaces the /api/ps entry, window included, so tests
-        # that read the runner back (the /num-ctx reload) see the new state.
+        # that read the runner back see the new state.
         self.ps_entries = [entry for entry in self.ps_entries
                            if (entry.get("name") or entry.get("model")) != model]
         self.ps_entries.append({"name": model, "model": model,
@@ -2919,19 +2904,15 @@ def test_num_ctx_relative() -> int:
         out = _plain(cap.get())
         failures = _check(failures, "/num-ctx +N adds to the current window",
                           session.parameters.get("num_ctx") == 9192
-                          and "8192 +1000 → 9192" in out
-                          and client.load_options == [{"num_ctx": 9192}], out)
+                          and "8192 +1000 → 9192" in out, out)
 
-        client.load_options.clear()
         with orun.console.capture() as cap:
             orun.cmd_num_ctx(repl, "+50%")
         out = _plain(cap.get())
         failures = _check(failures, "/num-ctx +P% grows the window by that share",
                           session.parameters.get("num_ctx") == 13788
-                          and "9192 +50% → 13788" in out
-                          and client.load_options == [{"num_ctx": 13788}], out)
+                          and "9192 +50% → 13788" in out, out)
 
-        client.load_options.clear()
         with orun.console.capture() as cap:
             orun.cmd_num_ctx(repl, "-50%")
         out = _plain(cap.get())
@@ -2939,7 +2920,6 @@ def test_num_ctx_relative() -> int:
                           session.parameters.get("num_ctx") == 6894, out)
 
         # A relative overshoot still runs through the model-max cap.
-        client.load_options.clear()
         session.parameters["num_ctx"] = 32768
         with orun.console.capture() as cap:
             orun.cmd_num_ctx(repl, "+1000")
@@ -3923,11 +3903,10 @@ def test_cmd_num_ctx_max_gpu() -> int:
             with orun.console.capture() as cap:
                 orun.cmd_num_ctx(repl, "--max-gpu")
             out = _plain(cap.get())
-            failures += _fit_check("/num-ctx --max-gpu estimates, sets and loads",
+            failures += _fit_check("/num-ctx --max-gpu estimates and sets the window",
                                repl.session.parameters.get("num_ctx") == 48128
                                and "estimate only" in out
-                               and client.load_ctxs == [48128]
-                               and "loaded at 48128" in out,
+                               and client.load_ctxs == [],
                                f"params={repl.session.parameters} "
                                f"loads={client.load_ctxs} out={out[-160:]}")
 
@@ -3937,7 +3916,6 @@ def test_cmd_num_ctx_max_gpu() -> int:
             failures += _fit_check("/num-ctx --max-gpu --probe verifies by loading",
                                repl.session.parameters.get("num_ctx") == client.truth()
                                and "100% GPU" in out
-                               and "loaded at" in out
                                and client.load_ctxs[-1] == client.truth(),
                                f"params={repl.session.parameters} probes={client.load_ctxs}")
 
@@ -4336,17 +4314,15 @@ def test_cmd_num_ctx_max_cpu() -> int:
                 orun.cmd_num_ctx(repl, "--max-cpu 30")
             out = _plain(cap.get())
             chosen = repl.session.parameters.get("num_ctx")
-            failures += _fit_check("/num-ctx --max-cpu estimates, sets and loads",
+            failures += _fit_check("/num-ctx --max-cpu estimates and sets the window",
                                    chosen is not None
                                    and "estimate only" in out
-                                   and client.load_ctxs == [chosen]
-                                   and f"loaded at {chosen}" in out,
+                                   and client.load_ctxs == [],
                                    f"params={repl.session.parameters} "
                                    f"loads={client.load_ctxs} out={out[-160:]}")
 
             # The probe is its own operation and measures the machine: start
-            # from an unloaded one, since the estimate above now leaves the
-            # model resident at its chosen window (as a real /num-ctx does).
+            # from an unloaded one.
             client.current = None
             client.ps_entries = []
             client.loaded.clear()
@@ -4359,8 +4335,7 @@ def test_cmd_num_ctx_max_cpu() -> int:
             failures += _fit_check("/num-ctx --max-cpu N --probe lands on the boundary",
                                    repl.session.parameters.get("num_ctx") == client.truth(target)
                                    and "host RAM" in out
-                                   and "loaded at" in out
-                                   and client.load_ctxs[-1] == client.truth(target),
+                                   and client.truth(target) in client.load_ctxs,
                                    f"params={repl.session.parameters} "
                                    f"truth={client.truth(target)} probes={client.load_ctxs}")
 
@@ -9116,7 +9091,7 @@ if __name__ == "__main__":
              + test_maybe_show_ps() + test_resolve_num_ctx()
              + test_context_usage()
              + test_banner_and_resume()
-             + test_num_ctx_reload()
+             + test_context_settings_deferred()
              + test_cmd_num_ctx() + test_num_ctx_relative() + test_ctxfit()
              + test_ctxfit_outcome() + test_ctxfit_cancel_progress()
              + test_fit_service()

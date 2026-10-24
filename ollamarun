@@ -2,6 +2,15 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 2.19
+
+Summary of changes in this version:
+  - `/num-ctx` and `/gpu-layers` no longer touch the runner. Both are
+    load-time properties, so the change is stored on the session and the next
+    message's request options make Ollama reload the model at the new window
+    or layer split; the commands neither unload nor load anything themselves,
+    so they return immediately instead of blocking on a reload.
+
 Version: 2.18
 
 Summary of changes in this version:

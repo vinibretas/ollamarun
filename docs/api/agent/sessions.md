@@ -54,7 +54,7 @@ The `parameters` object is **merged** over the existing options (and
 validated like a turn's settings); `num_ctx` is a positive integer (refused
 past the model's trained maximum) and `gpu_layers` takes the CLI spec
 (`N`, `P%`, `+N`/`-N`, `all`, `cpu`, `auto`) — a placement change unloads
-the resident model exactly like `/gpu-layers`.
+the resident model so the next request reloads it at the new split.
 
 ## Read
 

@@ -19,9 +19,9 @@ the machine can actually afford.
 
 Everything is stored **on the session**, so `/load` restores it, and it wins
 over the equivalent raw options (`/set parameter num_ctx` / `num_gpu`). Both
-knobs are load-time properties, so a change is applied to the runner
-immediately — a resident model is unloaded and loaded again with the new
-settings — instead of waiting for the next message.
+knobs are load-time properties, so the change reaches the runner with the
+next message: the request carries the new `num_ctx`/`num_gpu` and Ollama
+reloads the model at them.
 
 ## Seeing where you stand
 
