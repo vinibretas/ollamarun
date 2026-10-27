@@ -6992,6 +6992,64 @@ def test_session_host_protocol() -> int:
     return failures
 
 
+def test_session_host_live_settings() -> int:
+    """A stage pushed while the terminal sits at the prompt must land at once.
+
+    The main loop is parked inside prompt_toolkit, so a settings message that
+    were merely queued would only be applied after the next submitted line --
+    exactly when the waiting line has stopped being useful.
+    """
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _FakeClient(models=["m1"], capabilities=["completion"])
+        server, spec, paths, store, session, _root = _host_fixture(tmp, client)
+        try:
+            term, inp, out, buf = _attach_client(spec, paths)
+            failures = _check(failures, "the client reaches the host's prompt",
+                              _wait_until(lambda: term._current_prompt, 15.0))
+            repl = server.repl
+            repl.stop_wait_stage()
+            repl.wait_stage = None
+            repl.load_pending = {"kind": "ctx", "from": 4096, "to": 8192}
+            server.send_settings()
+            note = "resident at 4,096 · reloads at 8,192 on send"
+            failures = _check(
+                failures, "an idle note reaches the open prompt",
+                _wait_until(lambda: term.settings.get("stage") == note, 5.0),
+                repr(term.settings.get("stage")))
+            failures = _check(failures, "the idle note is not an active wait",
+                              term.settings.get("stage_active") is False,
+                              repr(term.settings.get("stage_active")))
+
+            class _StageStub:
+                def text(self):
+                    return "loading m1 · 3s"
+
+                def is_running(self):
+                    return True
+
+                def stop(self, *, join=True):
+                    return None
+
+            repl.wait_stage = _StageStub()
+            server.send_settings()
+            failures = _check(
+                failures, "a running stage reaches the open prompt",
+                _wait_until(lambda: term.settings.get("stage")
+                            == "loading m1 · 3s", 5.0),
+                repr(term.settings.get("stage")))
+            failures = _check(failures, "the running stage is marked active",
+                              term.settings.get("stage_active") is True,
+                              repr(term.settings.get("stage_active")))
+            repl.wait_stage = None
+            inp.push("/bye")
+            failures = _check(failures, "/bye closes the host",
+                              _wait_until(lambda: term.done, 20.0))
+        finally:
+            server._finish()
+    return failures
+
+
 class _SlowFakeClient(_FakeClient):
     def __init__(self):
         super().__init__(models=["m1"], capabilities=["completion"])
@@ -7445,6 +7503,7 @@ def run_all(*, live: bool = False) -> int:
         + test_turn_start_fit()
         + test_interrupt_guard()
         + test_session_host_protocol()
+        + test_session_host_live_settings()
         + test_session_host_thinking_toggle()
         + test_session_host_detach_reattach()
         + test_session_host_approval()

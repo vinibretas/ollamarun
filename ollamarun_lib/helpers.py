@@ -19,6 +19,7 @@ import threading
 import time
 import urllib.parse
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -687,6 +688,323 @@ def ssh_ram_probe(target: str, *, user: Optional[str] = None, timeout: float = 8
     if proc.returncode != 0:
         return None
     return _ram_from_fields(parse_meminfo(proc.stdout or ""))
+
+
+# ── hardware / runner probes for the waiting-stage indicator ────────────────
+#
+# The "waiting for model" line tells a load, a waiting-for-room stall, an
+# eviction and a prefill apart. System-wide VRAM deltas are too transient to
+# sample (allocation happens in one burst), so the primary signal is the
+# **runner process**: ollama spawns `llama-server` for the model and that
+# process holds the weights, its own VRAM and its RSS. Matching a runner to
+# *our* model uses the blob paths `/api/show` reports in the generated
+# Modelfile (`FROM …/blobs/sha256-…`), which also appear on the runner's
+# command line.
+#
+# Everything here is best-effort and injectable, and only sampled while a
+# wait is active (see `waitstage.py`): a missing nvidia-smi, a machine with
+# no GPU, an unreadable /proc or a broken ssh all degrade to "unknown".
+
+
+@dataclass
+class HardwareSample:
+    """One reading of the machine answering the request."""
+
+    gpu: list[tuple[int, int, float]] = field(default_factory=list)  # total, free (MiB), util %
+    ram: Optional[tuple[int, int]] = None          # (total_bytes, available_bytes)
+    cpu: Optional[tuple[int, int]] = None          # (busy_ticks, total_ticks)
+    apps: dict[int, int] = field(default_factory=dict)  # pid -> VRAM MiB
+    error: str = ""
+
+
+@dataclass
+class RunnerProcess:
+    """A `llama-server` process: one model being loaded or served."""
+
+    pid: int
+    age_s: float = 0.0
+    rss_bytes: int = 0
+    cmdline: str = ""
+
+    def holds(self, blob_names: "list[str] | tuple[str, ...]") -> bool:
+        """True when this runner was started for one of `blob_names`."""
+        return any(name and name in self.cmdline for name in blob_names)
+
+
+def parse_gpu_util(text: str) -> list[tuple[int, int, float]]:
+    """[(total_mib, free_mib, util_pct)] from nvidia-smi CSV; junk is skipped."""
+    devices: list[tuple[int, int, float]] = []
+    for line in (text or "").splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 3:
+            continue
+        try:
+            total, free = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        try:
+            util = float(parts[2])
+        except ValueError:
+            util = 0.0  # "[N/A]"/"[Not Supported]" on older drivers
+        devices.append((total, free, util))
+    return devices
+
+
+def parse_compute_apps(text: str) -> dict[int, int]:
+    """{pid: VRAM MiB} from `nvidia-smi --query-compute-apps=pid,used_memory`."""
+    apps: dict[int, int] = {}
+    for line in (text or "").splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 2:
+            continue
+        try:
+            apps[int(parts[0])] = int(parts[1])
+        except ValueError:
+            continue
+    return apps
+
+
+def parse_cpu_line(text: str) -> Optional[tuple[int, int]]:
+    """`/proc/stat`'s first line -> (busy_ticks, total_ticks)."""
+    for line in (text or "").splitlines():
+        if not line.startswith("cpu "):
+            continue
+        values = line.split()[1:]
+        try:
+            ticks = [int(value) for value in values]
+        except ValueError:
+            return None
+        if len(ticks) < 5:
+            return None
+        total = sum(ticks)
+        idle = ticks[3] + ticks[4]  # idle + iowait
+        return total - idle, total
+    return None
+
+
+def cpu_busy_fraction(prev: Optional[tuple[int, int]],
+                      now: Optional[tuple[int, int]]) -> Optional[float]:
+    """Busy share in [0, 1] between two `/proc/stat` samples."""
+    if prev is None or now is None:
+        return None
+    busy = now[0] - prev[0]
+    total = now[1] - prev[1]
+    if total <= 0:
+        return None
+    return max(0.0, min(1.0, busy / total))
+
+
+def _is_runner_cmdline(cmdline: str) -> bool:
+    return "llama-server" in cmdline or "ollama_llama_server" in cmdline
+
+
+def parse_runner_table(text: str) -> list[RunnerProcess]:
+    """`ps -eo pid=,etimes=,rss=,args=` output -> runner processes.
+
+    `rss` is in KiB in `ps` output; the age is in seconds.
+    """
+    runners: list[RunnerProcess] = []
+    for line in (text or "").splitlines():
+        parts = line.split(None, 3)
+        if len(parts) < 4:
+            continue
+        try:
+            pid, age = int(parts[0]), float(parts[1])
+            rss = int(parts[2]) * 1024
+        except ValueError:
+            continue
+        if not _is_runner_cmdline(parts[3]):
+            continue
+        runners.append(RunnerProcess(pid=pid, age_s=age, rss_bytes=rss,
+                                     cmdline=parts[3].strip()))
+    return runners
+
+
+def _process_rss(entry: Any) -> int:
+    """Resident bytes of one process, from `/proc/<pid>/status` VmRSS."""
+    try:
+        text = (entry / "status").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    for line in text.splitlines():
+        if line.startswith("VmRSS:"):
+            bits = line.split()
+            if len(bits) >= 2:
+                try:
+                    return int(bits[1]) * 1024
+                except ValueError:
+                    return 0
+    return 0
+
+
+def _process_age(entry: Any, uptime: Optional[float] = None) -> float:
+    """Seconds since the process started, from /proc/<pid>/stat + /proc/uptime."""
+    if uptime is None:
+        try:
+            uptime = float(Path("/proc/uptime").read_text().split()[0])
+        except (OSError, ValueError, IndexError):
+            return 0.0
+    try:
+        stat = (entry / "stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0.0
+    # The comm field is parenthesized and may contain spaces: cut after the
+    # last ')', where the fields resume at index 0 == field 3 (state).
+    _, _, rest = stat.rpartition(")")
+    fields = rest.split()
+    try:
+        starttime = float(fields[19])  # field 22 overall
+    except (IndexError, ValueError):
+        return 0.0
+    hertz = 100.0
+    try:
+        hertz = float(os.sysconf("SC_CLK_TCK")) or 100.0
+    except (ValueError, OSError):
+        pass
+    return max(0.0, uptime - starttime / hertz)
+
+
+def local_runner_processes(root: Any = None) -> list[RunnerProcess]:
+    """Runner (`llama-server`) processes on this machine, from /proc."""
+    proc = Path(root or "/proc")
+    try:
+        entries = sorted(proc.iterdir(), key=lambda item: item.name)
+    except OSError:
+        return []
+    try:
+        uptime = float((proc / "uptime").read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        uptime = None
+    runners: list[RunnerProcess] = []
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        cmdline = raw.replace(b"\0", b" ").decode("utf-8", "replace").strip()
+        if not cmdline or not _is_runner_cmdline(cmdline):
+            continue
+        runners.append(RunnerProcess(
+            pid=int(entry.name),
+            age_s=_process_age(entry, uptime),
+            rss_bytes=_process_rss(entry),
+            cmdline=cmdline))
+    return runners
+
+
+GPU_PROBE_MARKER = "@@GPU"
+APPS_PROBE_MARKER = "@@APPS"
+MEM_PROBE_MARKER = "@@MEM"
+CPU_PROBE_MARKER = "@@CPU"
+RUNNERS_PROBE_MARKER = "@@RUNNERS"
+
+
+def _hardware_command(with_apps: bool) -> str:
+    """The one-shot shell probe both the local and the ssh samplers parse."""
+    parts = [
+        f"echo {GPU_PROBE_MARKER}; "
+        "nvidia-smi --query-gpu=memory.total,memory.free,utilization.gpu "
+        "--format=csv,noheader,nounits 2>/dev/null",
+    ]
+    if with_apps:
+        parts.append(
+            f"echo {APPS_PROBE_MARKER}; "
+            "nvidia-smi --query-compute-apps=pid,used_memory "
+            "--format=csv,noheader,nounits 2>/dev/null")
+    parts.append(
+        f"echo {MEM_PROBE_MARKER}; "
+        "grep -E '^(MemTotal|MemAvailable):' /proc/meminfo 2>/dev/null")
+    parts.append(f"echo {CPU_PROBE_MARKER}; head -n 1 /proc/stat 2>/dev/null")
+    parts.append(
+        f"echo {RUNNERS_PROBE_MARKER}; "
+        "ps -eo pid=,etimes=,rss=,args= 2>/dev/null "
+        "| grep -E 'llama-server|ollama_llama_server' | grep -v grep")
+    return "; ".join(parts) + "; true"
+
+
+def parse_hardware_text(text: str) -> tuple[HardwareSample, list[RunnerProcess]]:
+    """Parse the marked probe output into (sample, runner processes)."""
+    sample = HardwareSample()
+    runners: list[RunnerProcess] = []
+    section = ""
+    buckets: dict[str, list[str]] = {}
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if stripped in {GPU_PROBE_MARKER, APPS_PROBE_MARKER, MEM_PROBE_MARKER,
+                        CPU_PROBE_MARKER, RUNNERS_PROBE_MARKER}:
+            section = stripped
+            buckets.setdefault(section, [])
+            continue
+        if section:
+            buckets[section].append(line)
+    sample.gpu = parse_gpu_util("\n".join(buckets.get(GPU_PROBE_MARKER, [])))
+    sample.apps = parse_compute_apps("\n".join(buckets.get(APPS_PROBE_MARKER, [])))
+    meminfo = parse_meminfo("\n".join(buckets.get(MEM_PROBE_MARKER, [])))
+    sample.ram = _ram_from_fields(meminfo)
+    sample.cpu = parse_cpu_line("\n".join(buckets.get(CPU_PROBE_MARKER, [])))
+    runners = parse_runner_table("\n".join(buckets.get(RUNNERS_PROBE_MARKER, [])))
+    return sample, runners
+
+
+def local_hardware_sample(*, with_apps: bool = False, runner: Any = None,
+                          reader: Any = None) -> HardwareSample:
+    """This machine's GPU/DRAM/CPU reading (never raises).
+
+    `with_apps` adds the per-process VRAM query (one more nvidia-smi call),
+    which only matters while a model is loading; `runner` and `reader` are
+    injectable for tests.
+    """
+    run = runner or subprocess.run
+    sample = HardwareSample()
+    if shutil.which("nvidia-smi"):
+        try:
+            proc = run(["nvidia-smi", "--query-gpu=memory.total,memory.free,"
+                        "utilization.gpu", "--format=csv,noheader,nounits"],
+                       capture_output=True, text=True, timeout=8)
+            if proc.returncode == 0:
+                sample.gpu = parse_gpu_util(proc.stdout or "")
+        except (OSError, subprocess.SubprocessError):
+            pass
+        if with_apps:
+            try:
+                proc = run(["nvidia-smi", "--query-compute-apps=pid,used_memory",
+                            "--format=csv,noheader,nounits"],
+                           capture_output=True, text=True, timeout=8)
+                if proc.returncode == 0:
+                    sample.apps = parse_compute_apps(proc.stdout or "")
+            except (OSError, subprocess.SubprocessError):
+                pass
+    sample.ram = local_ram_probe()
+    try:
+        text = (reader or (lambda: Path("/proc/stat").read_text()))()
+    except OSError:
+        text = ""
+    sample.cpu = parse_cpu_line(text)
+    return sample
+
+
+def ssh_hardware_sample(target: str, *, user: Optional[str] = None,
+                        timeout: float = 8.0, runner: Any = None,
+                        cancel: Optional[Any] = None, with_apps: bool = False
+                        ) -> Optional[tuple[HardwareSample, list[RunnerProcess]]]:
+    """GPU/DRAM/CPU + runner processes on a remote machine, or None.
+
+    One ssh round trip, best-effort exactly like the other probes.
+    """
+    if not target or shutil.which("ssh") is None:
+        return None
+    dest = f"{user}@{target}" if user else target
+    run = _probe_runner(cancel, runner)
+    try:
+        proc = run(["ssh", *SSH_OPTS, dest, _hardware_command(with_apps)],
+                   capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return parse_hardware_text(proc.stdout or "")
 
 
 def _first_existing_path(path: str) -> str:

@@ -106,6 +106,9 @@ def cmd_num_ctx(repl: Repl, argument: str) -> None:
         repl.session.parameters["num_ctx"] = ctx
         repl.session.touch()
         console.print(f"[ok]num_ctx set to {ctx}[/ok]")
+        # The runner still answers with the old window until this goes out;
+        # note the mismatch so /ps and the waiting line can say so.
+        repl.mark_load_pending("ctx")
 
     head = tokens[0].lower()
     rest = tokens[1:]
@@ -230,6 +233,7 @@ def cmd_gpu_layers(repl: Repl, argument: str) -> None:
     console.print(f"[ok]gpu layers[/ok] {escape(repl.gpu_layers_summary())}")
     # The placement is a load-time property: the next request's num_gpu
     # makes Ollama reload the runner at the new split.
+    repl.mark_load_pending("gpu")
 
 
 

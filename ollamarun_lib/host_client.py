@@ -365,8 +365,16 @@ class SessionClient:
                     self._cancelled_questions.add(question_id)
                 if self.question_active.is_set():
                     self._wake()
+            elif op == "settings":
+                # Apply immediately instead of queueing it: the main loop is
+                # parked inside prompt_toolkit while the user types, so a
+                # queued update would not reach the rprompt until the next
+                # line -- exactly when the waiting line is most useful.
+                self.settings = {**self.settings,
+                                 **(message.get("settings") or {})}
+                self._sync_identity()
             elif op in {"prompt", "question", "turn.event", "replay_done",
-                        "settings", "warning", "error"}:
+                        "warning", "error"}:
                 try:
                     self.queue.put((op, message))
                 except queue.Full:
@@ -636,10 +644,19 @@ class SessionClient:
         return self._prompt_session
 
     def _rprompt(self) -> Optional[str]:
-        if not self.settings.get("preloading"):
-            return None
+        # The host samples what the wait is actually doing (loading, waiting
+        # for room, reloading at a new window, prefilling) and ships the line
+        # in `settings`; `stage_active` says whether a wait is running, so an
+        # idle note like "reloads ... on send" does not animate a spinner.
+        text = self.settings.get("stage")
         frames = "⠋⠙⠹⠸⠴⠦⠧⠇"
         frame = frames[int(time.monotonic() * 10) % len(frames)]
+        if text:
+            if self.settings.get("stage_active"):
+                return f"{frame} {text} "
+            return f"{text} "
+        if not self.settings.get("preloading"):
+            return None
         return f"{frame} waiting for {self.model}… "
 
     def _read_prompt(self, prompt: str) -> str:
@@ -913,7 +930,10 @@ class SessionClient:
             max_render_chars=int(s.get("max_render_chars") or 12000),
             pager=bool(s.get("pager", False)), model=model,
             after_tools=bool(data.get("after_tools")),
-            on_thinking_toggle=self._thinking_changed)
+            on_thinking_toggle=self._thinking_changed,
+            # The host samples the wait (loading/waiting/reloading/prefill)
+            # and ships the line in `settings`; the spinner reads it live.
+            stage_provider=lambda: self.settings.get("stage"))
         self.renderer = renderer
         self.render_after_tools = bool(data.get("after_tools"))
         if renderer.mode != "raw" and not renderer.render_frames:

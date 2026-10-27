@@ -1,7 +1,9 @@
 # Footer
 
 Two lines of live feedback sit around an answer: the tok/s + context footer
-while it streams, and the `⏱` timings line under it when it finishes.
+while it streams, and the `⏱` timings line under it when it finishes. (What
+the spinner says *before* the first token is its own page:
+[Waiting for the model](waiting.md).)
 
 ## Live tok/s and context
 

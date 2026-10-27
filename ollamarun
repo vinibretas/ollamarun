@@ -2,6 +2,58 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 2.21
+
+Summary of changes in this version:
+  - The "waiting for model" line now appears at startup, while the background
+    preload runs, instead of leaving the prompt blank. The REPL started that
+    load itself, so `loading MODEL` is seeded before the first hardware
+    sample (which used to take about a second, the exact window the prompt
+    appears in) and needs no inference from memory movement; the elapsed
+    suffix is the progress signal when VRAM is allocated in one burst. A
+    background session's attached terminal now applies `settings` in its
+    reader thread, so stage updates reach the prompt you are sitting at
+    instead of waiting in a queue until the next submitted line, and the
+    preload handle is cleared before its final settings push so the fallback
+    spinner goes away when the load lands.
+  - The idle `resident at 4,096 · reloads at 8,192 on send` note no longer
+    survives the message it describes. The note is cleared when the request
+    is sent -- the sampler snapshots it first, so the wait still says
+    `reloading MODEL · 4,096 → 8,192` -- and the attached terminal animates
+    a spinner only for a wait that is actually running (`stage_active`), not
+    for an idle note. Sampling also stops at the first token in host turns
+    (the headless renderer reports it), instead of probing the machine
+    through the whole generation.
+
+Version: 2.20
+
+Summary of changes in this version:
+  - The "waiting for model" line names the stage instead of showing one
+    generic string. Before the first token it can now say `loading MODEL ·
+    GPU 2.0 GiB + RAM 1.1 GiB of ~5.2 GiB` (weights being read, with
+    progress against the model's size), `waiting for room · OTHER resident`
+    (our runner has not even started because another model holds the
+    machine), `making room · unloaded OTHER` (a resident vanished for us),
+    `reloading MODEL · 4,096 → 8,192` (window or placement changed),
+    `prefill · ~1,234 tok` (warm runner processing the prompt) or
+    `host did not answer` (`/api/ps` failed). The evidence is `/api/ps`
+    (residency and the loaded window) first, the model's own `llama-server`
+    process (matched through the blob paths `/api/show` prints, with
+    per-process VRAM from nvidia-smi and RSS from `/proc`) second, and the
+    machine's VRAM/RAM/CPU movement only as a tiebreaker. Sampling runs on a
+    daemon thread while a wait is active -- locally from `/proc` and
+    nvidia-smi once a second, on `--remote` hosts by one ssh round trip every
+    5s -- and never in headless `serve` turns; config `wait_stages`,
+    `wait_stage_sample_seconds` and `wait_stage_remote_seconds` tune it
+    (all on by default). The same string drives the stream spinner, the
+    prompt's right-side hint (relayed to an attached background session via
+    a new `stage` setting) and the TUI status row.
+  - `/num-ctx` and `/gpu-layers` now say what they changed: when the model is
+    resident, the command prints `resident at 4,096 · reloads at 8,192 on
+    send` (or the placement equivalent) and the prompt keeps showing it
+    until the next message actually reloads the runner, so the deferred
+    reload from 2.19 is visible instead of implicit.
+
 Version: 2.19
 
 Summary of changes in this version:

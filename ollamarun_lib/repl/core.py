@@ -25,10 +25,12 @@ from ..ctxfit import wait_for_ps
 from ..events import (ROUND_STARTED, TOOL_CALL, TOOL_RESULT, TURN_ERROR,
                       RuntimeEvent)
 from ..files import expand_file_mentions
-from ..helpers import (CancelToken, human_tokens, local_service_env, naive_title,
+from ..helpers import (CancelToken, HardwareSample, canonical_model_name,
+                       human_tokens, local_hardware_sample,
+                       local_runner_processes, local_service_env, naive_title,
                        now_iso, remote_node, resolve_show_stats,
                        service_context_length, shortcut, source_color,
-                       ssh_service_env, usage_color)
+                       ssh_hardware_sample, ssh_service_env, usage_color)
 from ..interactive import (gpu_layers_label, model_block_count, open_in_editor,
                            parse_model_sort, resolve_gpu_layers)
 from ..prompts import (default_system_prompt, load_prompt, summarize_prompt,
@@ -51,6 +53,7 @@ from ..tools import (DEFAULT_SHELL_ALLOW, MAX_PDF_VISION_PAGES, ToolContext,
                      suggest_rules)
 from ..tools import tool_schemas as build_tool_schemas
 from ..ui import ConsoleUi, StatusSnapshot, Ui
+from ..waitstage import (StageTracker, load_pending_line, parse_show_blobs)
 from .commands.registry import COMMAND_HANDLERS
 from .completion import SlashCompleter
 from .queue import MessageQueue
@@ -198,6 +201,18 @@ class Repl:
         self._pt_session: Optional[Any] = None
         self._ps_shown_for: set[str] = set()
         self._preload_thread: Optional[threading.Thread] = None
+        # The waiting-stage sampler behind the "waiting for model" line
+        # (waitstage.py), and the loaded config the next request will change:
+        # `/num-ctx` and `/gpu-layers` only store the new value, so this is
+        # what tells "resident at 4,096, reloads at 8,192 on send" apart from
+        # a plain prefill.
+        self.wait_stage: Optional[StageTracker] = None
+        self.load_pending: Optional[dict[str, Any]] = None
+        # The pending reload is snapshotted when a wait starts: the idle hint
+        # is cleared as soon as the request is sent, but the sampler still
+        # needs the from -> to transition to name the reload.
+        self._stage_pending: Optional[dict[str, Any]] = None
+        self._stage_model_size: Any = _UNSET
         self._block_counts: dict[str, Optional[int]] = {}
         # Front end (console prompts by default; the Textual app swaps this),
         # the queue of things typed while a turn runs, and the status-bar state.
@@ -292,20 +307,214 @@ class Repl:
 
     _SPINNER_FRAMES = "⠋⠙⠹⠸⠴⠦⠧⠇"
 
+    # ── waiting-stage sampler ───────────────────────────────────────────────
+
+    def wait_stage_enabled(self) -> bool:
+        """Whether the "waiting" line may sample the machine.
+
+        Headless *server* turns (`ollamarun serve`) never do: a turn behind
+        the HTTP API must not spawn probes. The background session host is
+        headless too, but it is an interactive front end, so it keeps them.
+        """
+        if not self.config.get("wait_stages", True):
+            return False
+        if not (self.tui_mode or self.host_mode or console.is_terminal):
+            return False  # nobody is watching the line: no probes
+        return self.host_mode or not self.headless
+
+    def _stage_interval(self) -> float:
+        """Sampling cadence: cheap locally, one ssh per sample remotely."""
+        key = "wait_stage_remote_seconds" if self.tool_ctx.ssh_target \
+            else "wait_stage_sample_seconds"
+        try:
+            return float(self.config.get(key, 1.0) or 1.0)
+        except (TypeError, ValueError):
+            return 1.0
+
+    def _stage_probe(self, with_apps: bool) -> tuple[HardwareSample, list[Any]]:
+        """One hardware + runner-table reading, from the machine answering.
+
+        Remote hosts pay one ssh round trip (the same one for both halves);
+        locally it is `/proc` reads plus nvidia-smi.
+        """
+        remote = self.tool_ctx.ssh_target
+        if remote:
+            got = ssh_hardware_sample(remote, user=self.tool_ctx.ssh_user,
+                                      with_apps=with_apps)
+            return got if got is not None else (HardwareSample(), [])
+        return (local_hardware_sample(with_apps=with_apps),
+                local_runner_processes())
+
+    def _stage_blobs(self) -> list[str]:
+        """Blob names this model's runner is started with (for matching it)."""
+        model = self.session.model
+        if not model:
+            return []
+        try:
+            show = self.model_show(model)
+        except OllamaError:
+            return []
+        return parse_show_blobs(str(show.get("modelfile") or ""))
+
+    def _stage_requested_ctx(self) -> Optional[int]:
+        value = self.session.parameters.get("num_ctx")
+        return int(value) if isinstance(value, int) else None
+
+    def _stage_model_size_value(self) -> Optional[int]:
+        if self._stage_model_size is not _UNSET:
+            return self._stage_model_size
+        model = self.session.model
+        wanted = canonical_model_name(model)
+        total: Optional[int] = None
+        try:
+            entries = self.client.tags()
+        except OllamaError:
+            entries = []
+        for entry in entries or []:
+            name = str(entry.get("name") or entry.get("model") or "")
+            if name and canonical_model_name(name) == wanted:
+                size = entry.get("size")
+                total = int(size) if isinstance(size, int) else None
+                break
+        self._stage_model_size = total
+        return total
+
+    def _stage_changed(self) -> None:
+        if self.settings_changed is not None:
+            try:
+                self.settings_changed()
+            except Exception:
+                pass
+
+    def start_wait_stage(self, *, inflight: bool = False,
+                         warming: bool = False) -> None:
+        """Start (or re-target) the waiting-stage sampler for this wait."""
+        if not self.wait_stage_enabled():
+            return
+        tracker = self.wait_stage
+        if tracker is not None and tracker.is_running():
+            if inflight:
+                tracker.set_inflight(True)
+            return
+        # Snapshot the reload note before `_present_round` clears it: the
+        # sampler keeps saying "reloading ... 4,096 -> 8,192" after the idle
+        # hint has served its purpose.
+        self._stage_pending = (dict(self.load_pending)
+                               if self.load_pending else None)
+        tracker = StageTracker(
+            self.session.model,
+            ps=self.client.ps,
+            probe=self._stage_probe,
+            blobs=self._stage_blobs,
+            pending=lambda: self._stage_pending,
+            requested_ctx=self._stage_requested_ctx,
+            context_used=self.context_used,
+            model_size=self._stage_model_size_value,
+            interval=self._stage_interval(),
+            on_change=self._stage_changed)
+        self.wait_stage = tracker
+        tracker.start(inflight=inflight, warming=warming)
+
+    def stop_wait_stage(self, *, wait: bool = True) -> None:
+        """Stop sampling (safe to call twice, or when nothing started)."""
+        tracker = self.wait_stage
+        if tracker is not None:
+            tracker.stop(join=wait)
+        self._stage_pending = None
+
+    def wait_stage_text(self) -> Optional[str]:
+        """The one line describing what the wait is actually doing."""
+        tracker = self.wait_stage
+        if tracker is not None:
+            text = tracker.text()
+            if text:
+                return text
+        return load_pending_line(self.load_pending or {})
+
+    def wait_stage_active(self) -> bool:
+        """Whether a wait is running (an idle pending note is not one)."""
+        tracker = self.wait_stage
+        return bool(tracker is not None and tracker.text())
+
+    def mark_load_pending(self, kind: str) -> None:
+        """Note that the resident runner's config differs from the session's.
+
+        `/num-ctx` and `/gpu-layers` only store their value — the runner keeps
+        serving the old one until the next message — so this is what makes
+        that visible ("resident at 4,096 · reloads at 8,192 on send") and what
+        lets a reload be told apart from a cold load once that message is
+        sent. Nothing here touches the runner.
+        """
+        entry = None
+        model = self.session.model
+        try:
+            for item in self.client.ps():
+                name = str(item.get("name") or item.get("model") or "")
+                if name and canonical_model_name(name) == canonical_model_name(model):
+                    entry = item
+                    break
+        except OllamaError:
+            entry = None
+        if entry is None:
+            self.load_pending = None
+            return
+        requested = self._stage_requested_ctx()
+        if kind == "ctx":
+            loaded = entry.get("context_length")
+            if requested is None or loaded == requested:
+                self.load_pending = None
+            else:
+                self.load_pending = {"kind": "ctx", "from": loaded,
+                                     "to": requested}
+            self._announce_pending()
+            return
+        if (self.load_pending or {}).get("kind") == "ctx":
+            return  # the window mismatch is the more informative one
+        self.load_pending = {"kind": "gpu", "from": None, "to": None}
+        self._announce_pending()
+
+    def _announce_pending(self) -> None:
+        """Say what the next request will reload, right where it was decided."""
+        note = load_pending_line(self.load_pending or {})
+        if note:
+            console.print(f"[dim]{note}[/dim]")
+            self._stage_changed()
+
     def _loading_rprompt(self) -> Optional[str]:
-        """Right-side prompt text (same line as the input, right-aligned):
-        an animated "waiting for model" spinner for as long as the
-        background preload is still running, driven by the prompt
-        session's own refresh_interval -- this is what makes it show up
-        without blocking the prompt, unlike a separate rich.Live view
-        fighting prompt_toolkit for the terminal. `rprompt` (not
-        `bottom_toolbar`, which anchors to the terminal's last row and
-        leaves a large blank gap) keeps this on the prompt's own line."""
+        """Right-side prompt text (same line as the input, right-aligned).
+
+        The animated "waiting for model" line, driven by the prompt session's
+        own `refresh_interval` -- this is what makes it show up without
+        blocking the prompt, unlike a separate rich.Live view fighting
+        prompt_toolkit for the terminal. `rprompt` (not `bottom_toolbar`,
+        which anchors to the terminal's last row and leaves a large blank
+        gap) keeps this on the prompt's own line.
+
+        The text comes from the wait-stage sampler, so it says *what* is
+        happening (loading, waiting for room, reloading at a new window)
+        instead of only that something is. `rprompt` is refreshed at 10 Hz
+        while the sampler's own cadence is one sample per second. With no
+        wait running, a pending reload still shows here -- a resident runner
+        that the next message will reload -- without the spinner, since
+        nothing is in flight yet.
+        """
+        tracker = self.wait_stage
+        text = tracker.text() if tracker is not None else None
+        if text:
+            frame = self._SPINNER_FRAMES[
+                int(time.monotonic() * 10) % len(self._SPINNER_FRAMES)]
+            return f"{frame} {text} "
         thread = self._preload_thread
-        if thread is None or not thread.is_alive():
-            return None
-        frame = self._SPINNER_FRAMES[int(time.monotonic() * 10) % len(self._SPINNER_FRAMES)]
-        return f"{frame} waiting for {self.session.model}… "
+        if thread is not None and thread.is_alive():
+            # Sampling off (or not sampled yet): still show that the preload
+            # this REPL started is running.
+            frame = self._SPINNER_FRAMES[
+                int(time.monotonic() * 10) % len(self._SPINNER_FRAMES)]
+            return f"{frame} waiting for {self.session.model}… "
+        pending = load_pending_line(self.load_pending or {})
+        if pending:
+            return f"{pending} "
+        return None
 
     def _read_line(self, message: str) -> str:
         if self.prompt_provider is not None:
@@ -323,7 +532,8 @@ class Repl:
         if self.headless:
             renderer = HeadlessRenderer(on_event=self.event_sink,
                                         thinking_mode=self.thinking_mode,
-                                        after_tools=after_tools)
+                                        after_tools=after_tools,
+                                        on_first_token=self._on_first_token)
             renderer.context_used = self.context_used()
             return renderer
         mode = self.render_mode
@@ -340,7 +550,9 @@ class Repl:
                             max_render_chars=self.max_render_chars,
                             pager=self.pager and not self.tui_mode,
                             model=self.session.model, after_tools=after_tools,
-                            on_thinking_toggle=self._renderer_thinking_toggled)
+                            on_thinking_toggle=self._renderer_thinking_toggled,
+                            stage_provider=self.wait_stage_text,
+                            on_first_token=self._on_first_token)
         renderer = renderer.with_sink(self.stream_sink)
         if renderer.tps_footer and (renderer.live_render or renderer.sink_render):
             # The footer's ctx share needs the window size: one cached
@@ -495,6 +707,7 @@ class Repl:
         if not model:
             return
         keepalive = self.session.keepalive or self.args.keepalive
+        self.start_wait_stage(warming=True)
 
         def _load() -> None:
             try:
@@ -503,9 +716,18 @@ class Repl:
                                      options=self.load_options())
                 except OllamaError:
                     return
+                # The load just applied the session's options, so a pending
+                # window/placement change is no longer pending.
+                self.load_pending = None
                 if console.is_terminal:
                     self._maybe_show_ps()
             finally:
+                # This push runs inside the load thread, where `is_alive()`
+                # is still true; clear the handle first so the snapshot says
+                # the preload is over instead of leaving the fallback spinner
+                # up until the next turn.
+                self._preload_thread = None
+                self.stop_wait_stage()
                 if self.settings_changed is not None:
                     try:
                         self.settings_changed()
@@ -832,9 +1054,15 @@ class Repl:
     def status_snapshot(self) -> StatusSnapshot:
         tools = "off" if not self.tools_active() else (
             "auto" if self.auto_approve else self.tools_policy)
+        detail = self.state_detail
+        if self.state in {"loading", "generating"}:
+            # The TUI's "loading"/"generating" row says what the wait is
+            # doing (loading, waiting for room, prefill), and empties again
+            # once the first token arrives.
+            detail = self.wait_stage_text() or detail
         return StatusSnapshot(
             state=self.state,
-            detail=self.state_detail,
+            detail=detail,
             model=self.session.model,
             remote=self.session.remote,
             thinking=self.thinking_mode,
@@ -897,8 +1125,9 @@ class Repl:
             # right as the preload thread finishes -- shows up immediately
             # instead of only after this response is fully generated.
             if console.is_terminal and not self.headless:
-                console.print(f"[dim]waiting for {escape(self.session.model)} "
-                              f"to finish loading…[/dim]")
+                detail = (self.wait_stage_text()
+                          or f"waiting for {self.session.model} to finish loading")
+                console.print(f"[dim]{escape(detail)}[/dim]")
             self._preload_thread.join()
             if console.is_terminal and not self.headless:
                 self._maybe_show_ps()
@@ -935,6 +1164,16 @@ class Repl:
         marker = f"[ai]{escape(self.session.model)} ›[/ai]"
         if not self.headless and renderer.mode != "raw" and not renderer.render_frames:
             console.print(marker)
+        # The spinner before the first token covers a load and a prefill;
+        # sample so it can say which one it is. A round is "inflight" from
+        # here: the request is about to be sent.
+        self.start_wait_stage(inflight=True)
+        if self.load_pending is not None:
+            # The note promised the reload "on send" -- this is the send, and
+            # the sampler snapshotted it, so it keeps naming the transition
+            # while the idle hint must not survive into the next prompt.
+            self.load_pending = None
+            self._stage_changed()
         try:
             result = renderer.stream(
                 self.client.chat(payload, timeout=self.timeout, cancel=cancel),
@@ -942,9 +1181,20 @@ class Repl:
         except OllamaError as exc:
             result = GenerationResult(error=str(exc))
         finally:
+            self.stop_wait_stage()
             self._last_tps = renderer.estimator.rate() or self._last_tps
             self.current_renderer = None
         return result
+
+    def _on_first_token(self) -> None:
+        """The runner answered: the wait is over and its config is in force.
+
+        Called from the streaming thread, so it never joins the sampler (a
+        probe in flight may be an ssh round trip); the sampler discards its
+        own stale reading.
+        """
+        self.load_pending = None
+        self.stop_wait_stage(wait=False)
 
     # ── runtime seam ────────────────────────────────────────────────────────
 

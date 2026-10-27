@@ -133,7 +133,7 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"2.17"` — keep this
+  constant in `ollamarun_lib/constants.py`, currently `"2.21"` — keep this
   line current when you bump it) and prepend a new bullet list under
   `Summary of changes in this version:` in the top-level `ollamarun` entry
   script's module docstring — read the existing entries there before adding
@@ -201,6 +201,10 @@ a module's own docstring for what lives there before editing:
    via `runner=`, and `service_context_length`, which reads
    `OLLAMA_CONTEXT_LENGTH` by name and never invents a value — these are
    read-only: nothing writes the unit),
+   the hardware/runner probes the waiting-stage line rides on
+   (`HardwareSample`/`RunnerProcess`, `parse_hardware_text`,
+   `local_hardware_sample`, `ssh_hardware_sample` -- one ssh round trip
+   remotely, `/proc` + nvidia-smi locally, best-effort),
    `run_cancellable()`/`CommandCancelled` (the
    process-group-killing subprocess runner every tool shares), config load
    (`load_config`) and the response-timings policy (`resolve_show_stats`),
@@ -212,7 +216,30 @@ a module's own docstring for what lives there before editing:
    by `serve_main`), `model_allowed()` (the `serve_models` tag-aware
    fnmatch allowlist) and `ModelTracker` (the models a serve process
    used, for unload-on-exit).
-3. **`mathrender.py`** — LaTeX → Unicode, combined in one module because the
+3. **`waitstage.py`** — the "waiting for model" line's stage classifier.
+   A request that has not produced a token may be reading weights, waiting
+   for another resident to make room, evicting one, reloading at a new
+   window/placement, or prefilling a warm runner; `classify_stage()` turns a
+   `StageFacts` snapshot into one of `STAGE_LOADING`/`WAITING`/`EVICTING`/
+   `RELOADING`/`RELOAD`/`PREFILL`/`READY`/`UNREACHABLE` plus a detail line,
+   and `StageTracker` samples `/api/ps`, the runner processes and the
+   machine on one daemon thread while a wait is active (injectable ps/
+   probe/blobs/pending/clock, so it is unit-testable). The evidence order is
+   `/api/ps` residency and `context_length` first, then the model's
+   `llama-server` process (matched through the blob names
+   `parse_show_blobs()` reads from `/api/show`'s Modelfile, with per-pid
+   VRAM from nvidia-smi and per-pid RSS), then system VRAM/RAM/CPU movement
+   as a tiebreaker only. A preload is not inferred at all: `_preload_model()`
+   called `load()`, so `start(warming=True)` seeds `loading MODEL` before
+   the first probe answers (the elapsed suffix is the progress signal when
+   VRAM fills in one burst), and `warming` classifies as `loading` even with
+   no runner visible. `render_stage_line()` is the one-line form the prompt,
+   spinner and status bar share; `load_pending_line()` spells out a stored
+   `/num-ctx`/`/gpu-layers` change that only lands on the next request.
+   Sampling stops at the first token and is off in headless serve turns
+   (`wait_stages`, `wait_stage_sample_seconds`,
+   `wait_stage_remote_seconds`).
+4. **`mathrender.py`** — LaTeX → Unicode, combined in one module because the
    two halves call into each other: regex-level conversion for inline math
    (`convert_math`, `latex_to_unicode`) falls through to the 2D layout
    engine's `render_inline_math` for inline math, and the layout engine
@@ -229,11 +256,11 @@ a module's own docstring for what lives there before editing:
    (markdown + centered display math, used by the renderer and REPL).
    Changes here need care: the layout is hand-rolled string-grid arithmetic,
    not a real typesetting library.
-4. **`files.py`** — `@file` mentions: `expand_file_mentions()` inlines file
+5. **`files.py`** — `@file` mentions: `expand_file_mentions()` inlines file
    contents into a prompt.
-5. **`images.py`** — `encode_image`/`image_payload`, base64 embedding with
+6. **`images.py`** — `encode_image`/`image_payload`, base64 embedding with
    `max_file_kb` truncation.
-6. **`renderer.py`** — `Renderer` class drives a `rich.Live` view:
+7. **`renderer.py`** — `Renderer` class drives a `rich.Live` view:
    incremental markdown re-render while tokens stream, the collapsible
    thinking panel (`render_thinking`, Ctrl+T expand/collapse in place, the
    choice kept in the Repl so later rounds/turns start that way;
@@ -247,7 +274,11 @@ a module's own docstring for what lives there before editing:
    `show_stats: false` as the off-switch). `StreamSink` is the seam the
    TUI uses: with a sink, `stream()` pushes the same frames to a widget
    instead of a `rich.Live`, so both front ends share one streaming loop
-   (and `stream(cancel=…)` honors a `CancelToken`). Also has the chat-bubble
+   (and `stream(cancel=…)` honors a `CancelToken`).
+   `stage_provider`/`on_first_token` feed the pre-token
+   `StageSpinner` -- the label is read at paint time, so it keeps
+   changing while no chunk arrives -- and tell the REPL the wait is
+   over. Also has the chat-bubble
    helpers (`user_message_box`, small right-aligned box for a user turn;
    `model_message_panel`, full-width titled box for a model turn) and the
    tool panels -- `tool_call_panel()`/`tool_result_panel()`, both coloured
@@ -261,12 +292,12 @@ a module's own docstring for what lives there before editing:
    the shared per-chunk accumulator and `HeadlessRenderer` is the
    terminal-free presenter (it emits `message.delta` events instead of
    printing), used by the runtime's headless turns.
-7. **`client.py`** — `OllamaClient` wraps `/api/chat`, `/api/generate`,
+8. **`client.py`** — `OllamaClient` wraps `/api/chat`, `/api/generate`,
    `/api/embed`, `/api/ps`, `/api/pull`, `/api/create` etc. over raw
    `requests`, streaming response bodies line-by-line (including pull
    progress events). `build_chat_payload()` assembles
    the request body from CLI args + session history.
-8. **`tools/`** — the tool harness, one module per concern. `spec.py` holds
+9. **`tools/`** — the tool harness, one module per concern. `spec.py` holds
    `ToolSpec`/`ToolContext`/`ToolOutcome`/`ToolHandlerResult` and output
    truncation; `policy.py` the allowlists and `shell_safety`,
    `python_safety`, `approval_decision`; `rules.py` the approval-rule engine
@@ -335,20 +366,20 @@ a module's own docstring for what lives there before editing:
    through `helpers.run_cancellable()`, and `ToolRunner` abandons network
    tools (`fetch_url`, `web_search`) on cancel so the result is discarded
    instead of waited on.
-9. **`prompts.py`** — the prompt files: `load_prompt()` (override layer first,
+10. **`prompts.py`** — the prompt files: `load_prompt()` (override layer first,
    shipped default after, cached per process; missing/unreadable warns and
    reads as None), `default_system_prompt()` (composes `system.md` +
    `system_tools.md` when tools are on), `title_prompt()`/`summarize_prompt()`
    (both expand `{{content}}`) and `render_prompt()`. Defaults live in
    `defs/prompts/`.
-10. **`events.py`** — the runtime event vocabulary: `RuntimeEvent` plus
+11. **`events.py`** — the runtime event vocabulary: `RuntimeEvent` plus
    the `turn.*`/`message.*`/`tool.*`/`approval.*` type constants,
    `artifact.created` and `session.fit`, and `TERMINAL_EVENTS`. A leaf
    module (no imports from the package) shared
    by `renderer.py`, `runtime.py` and the HTTP layer; envelopes, sequence
    numbers and replay are added on top of the same types, so nothing
    here depends on transport.
-11. **`session.py`** — `Session` (in-memory conversation model: messages,
+12. **`session.py`** — `Session` (in-memory conversation model: messages,
    model, system prompt, options; `artifacts` accumulates the refs the
    conversation saw, `add_artifacts()` dedupes by id) and `SessionStore`
    (atomic read/write of the JSON files + `index.json`, list/search/export/delete; its index
@@ -357,10 +388,10 @@ a module's own docstring for what lives there before editing:
    and its temp files are named per writer.
    `export_markdown`/`export_json`/`export_html` are the three export
    formats.
-12. **`emit.py`** — `emit()` plus the `cli_list`/`cli_search`/`cli_show`/
+13. **`emit.py`** — `emit()` plus the `cli_list`/`cli_search`/`cli_show`/
    `cli_export`/`cli_delete` functions that implement the non-interactive
    inspection flags.
-13. **`ui.py`** — the front-end seam: `Ui` (the interactive hooks `repl/core.py`
+14. **`ui.py`** — the front-end seam: `Ui` (the interactive hooks `repl/core.py`
    and `interactive.py` call: `ask`, `confirm`, `editor`, `approval`,
    `notify`, and `interactive` — whether the front end can actually ask),
    `ConsoleUi` (the inline implementation — the same rich prompts as
@@ -372,7 +403,7 @@ a module's own docstring for what lives there before editing:
    `format_status()`, `spinner_frame()`): plain data plus a pure formatter
    (context text via `format_context`, tps + `tps_avg`), unit-testable
    without a terminal.
-14. **`interactive.py`** — `open_in_editor` (`$OLLAMA_EDITOR`),
+15. **`interactive.py`** — `open_in_editor` (`$OLLAMA_EDITOR`),
    `pick_model`/`pick_session` (fuzzy pickers; `ui=` routes the question to
    the TUI front end), `model_context_length`
    (reads context window from `/api/show`), `model_default_num_ctx` (the
@@ -395,7 +426,7 @@ a module's own docstring for what lives there before editing:
    Also
    the GPU-layer spec logic: `model_block_count()`,
    `parse_gpu_layers_spec()`, `resolve_gpu_layers()`, `gpu_layers_label()`.
-15. **`ctxfit/`** — the context fits behind `/num-ctx --max-gpu` and
+16. **`ctxfit/`** — the context fits behind `/num-ctx --max-gpu` and
    `/num-ctx --max-cpu N`, one module per stage: `defaults.py` (shared
    numbers and the calibration path), `quantization.py` (labels and bytes per
    parameter), `machine.py` (`machine_state_for()`/`probe_machine_gpu()` —
@@ -428,7 +459,7 @@ a module's own docstring for what lives there before editing:
    `ProbeResult`). The package hub re-exports the public surface. The probes
    themselves live in `helpers.py` (`local_gpu_probe`, `ssh_gpu_probe`,
    `local_ram_probe`, `ssh_ram_probe`, `host_is_self`).
-16. **`runtime.py`** — the agent turn runtime: `AgentRuntime` (the loop
+17. **`runtime.py`** — the agent turn runtime: `AgentRuntime` (the loop
    and tool execution that used to live in `Repl._generate`/
    `Repl._execute_tool_calls`), `TurnSettings`, `TurnHooks` (the host
    seam: payload builder, presenter, approver, event sink, boundary
@@ -444,7 +475,7 @@ a module's own docstring for what lives there before editing:
    approval decision and `tool.result` (which references the ids), stores
    the refs on the tool session message and accumulates them onto
    `TurnResult.artifacts`.
-17. **`turns.py`** — the turn manager: `TurnEvent` envelopes (turn id,
+18. **`turns.py`** — the turn manager: `TurnEvent` envelopes (turn id,
    1-based `seq`, ISO timestamp, deterministic `id`), `TurnManager`
    (a worker thread per turn, one active turn per session, a global
    cap, per-turn buffers, replay with `stream.gap`, TTL retention swept
@@ -460,7 +491,7 @@ a module's own docstring for what lives there before editing:
    returns a `TurnResult`; `wait()` joins a worker for tests and
    shutdown, and a subscriber that falls behind is closed, never
    stalling the turn.
-18. **`repl/`** — the interactive front end, one module per concern.
+19. **`repl/`** — the interactive front end, one module per concern.
    `core.py` is the `Repl` class (the CLI adapter over
    `runtime.AgentRuntime`:
    `_generate` and `_execute_tool_calls` are thin wrappers that build the
@@ -496,7 +527,18 @@ a module's own docstring for what lives there before editing:
    the run-long `/api/show` cache the length/block-count/awareness readers
    share, and `context_report()`/`session_report()` assemble the plain
    dicts the `context_status`/`session_info` tools format (window + usage,
-   identity + settings + tool round).
+   identity + settings + tool round). The waiting line comes from a
+   `StageTracker` (`waitstage.py`) the REPL owns for a preload or a turn --
+   `start_wait_stage()`/`stop_wait_stage()`/`wait_stage_text()`/
+   `wait_stage_active()` -- sampling `/api/ps`, the runner and the machine
+   through the Repl's own ssh seam for `--remote`; `mark_load_pending()`
+   records that a stored `/num-ctx`/`/gpu-layers` value only reaches the
+   runner with the next request and pushes it to an attached terminal, the
+   sampler snapshots it into `_stage_pending` when a wait starts (so
+   `_present_round` can clear the idle note at send and the wait still says
+   `reloading … 4,096 → 8,192`), and `_on_first_token`/the round end drop the
+   snapshot. `_preload_model` clears `_preload_thread` before its final
+   settings push so a finished preload is not still reported as running.
    `/system` semantics live in `_apply_system` (`clear`/`default` → built-in,
    `off` → disabled, text → custom) plus `_show_system`, shared with
    `/set system`.
@@ -538,7 +580,7 @@ a module's own docstring for what lives there before editing:
    `cmd_num_ctx` are their only callers (`resolve_num_ctx` is reused by
    `main()` in `cli.py` for `--num-ctx`). `ApprovalPicker` and its runners are
    re-exported from `ui.py` for compatibility.
-19. **`session_host.py`** — the background session host behind the inline
+20. **`session_host.py`** — the background session host behind the inline
    REPL. `HostSpec` is the launch contract (the resolved `Session`, the
    parent's argparse namespace, the Ollama base, cwd, pending `--image`
    payloads and the explicit launch overrides); `HostPaths` derives the
@@ -556,19 +598,28 @@ a module's own docstring for what lives there before editing:
    the prompt). It keeps an `unseen_turn` for a turn
    that finished with no terminal attached, rekeys the socket when
    `/clear`/`/new`/`/branch`/`/load` changes the session id, and applies
-   launch overrides only while idle. `LineConnection` is the JSONL framing;
+   launch overrides only while idle. `settings()` ships the current
+   wait-stage text (a null `stage` when nothing waits) plus `stage_active`
+   (whether a wait is actually running, as opposed to an idle reload note)
+   on every change, which is what the attached terminal's prompt hint
+   renders. `LineConnection` is the JSONL framing;
    `spawn_host`/`ensure_host`/`ping_host`/`stop_host`/`host_is_running` are
    the lifecycle helpers `cli.py` uses; `daemon_main` is the hidden
    `__session-host` entry point. The host is per session, local and
    same-user only; it ends on `/bye`, Ctrl+D (a `close` op),
    `--close-session`, `--delete` or SIGTERM — never on a terminal close.
-20. **`host_client.py`** — the terminal side of a background session.
+21. **`host_client.py`** — the terminal side of a background session.
    `SessionClient.attach()` sends the terminal size/overrides and consumes
    `hello`, then a reader thread frames output/questions/turn events while
    the main loop runs the prompt, `RemoteCompleter` (completion is answered
    by the host, so ids/models/files are never stale), the event-driven
    `Renderer.begin/feed/end` rendering, the question/approval prompts and
-   the `InterruptGuard` (double Ctrl+C in 10s detaches). Ctrl+Q sends the
+   the `InterruptGuard` (double Ctrl+C in 10s detaches). The reader thread
+   applies `settings` in place instead of queueing them (the main loop is
+   parked in prompt_toolkit while the user types, so a queued update would
+   not reach the prompt until the next line). The prompt's right-side hint
+   prefers the host's `settings["stage"]` text, animates it only when
+   `stage_active` says a wait is running, and falls back to `preloading`. Ctrl+Q sends the
    host's `cancel` op (whole turn: model, running tool or parked approval)
    and stays attached; Ctrl+D sends `close`, also while a response streams.
    The renderer's key listener sets `stop_requested`/`close_requested`
@@ -582,7 +633,7 @@ a module's own docstring for what lives there before editing:
    command output raw so the host's ANSI is not re-interpreted. `run_client()` ensures the host, attaches and returns the
    terminal exit code; `cli.py` falls back to the foreground REPL only when
    no host can be started.
-21. **`tui.py`** — the optional Textual front end (`--ui tui`), deprecated:
+22. **`tui.py`** — the optional Textual front end (`--ui tui`), deprecated:
    it will be rewritten as a pure `ollamarun serve` API client instead of
    reaching into the runtime in-process. Current code: the app
    (transcript pane / rule / status bar / always-on `PromptInput`),
@@ -594,11 +645,11 @@ a module's own docstring for what lives there before editing:
    workers that marshal widget updates back with `call_from_thread`;
    `run_tui()` is the entry point. Textual is optional — `cli.py`'s
    `wants_tui()` checks it and falls back to the inline REPL with a note.
-22. **`run.py`** — `run_once()` (non-REPL path, built on an
+23. **`run.py`** — `run_once()` (non-REPL path, built on an
    already-constructed `Repl`; its `--json` branch runs the tool loop
    through `AgentRuntime` directly) and `run_embed()` (routes
    embedding-capable models to `/api/embed` instead of chat).
-23. **`server.py`** — the generic HTTP plumbing behind `ollamarun serve`:
+24. **`server.py`** — the generic HTTP plumbing behind `ollamarun serve`:
    `Router` (method + `{param}` path patterns, with distinct 404/405),
    the `Request`/`Response`/`StreamResponse` model, `HttpServer` (a
    `ThreadingHTTPServer` wrapper with a body cap checked before the body
@@ -614,7 +665,7 @@ a module's own docstring for what lives there before editing:
    500 and its traceback goes only to the `--debug` log.
    `run_forever()` serves on a worker thread with SIGINT/SIGTERM mapped
    to a clean `shutdown()`. It knows nothing about OpenAI or Ollama.
-24. **`artifacts.py`** — the artifact subsystem behind the serve API's
+25. **`artifacts.py`** — the artifact subsystem behind the serve API's
    files/artifacts endpoints and the `file` content parts: `ArtifactStore`
    (immutable snapshots behind opaque `art_…` ids; `register()` reserves
    quota in the index under the `SessionStore` lock pattern — RLock +
@@ -638,7 +689,7 @@ a module's own docstring for what lives there before editing:
    `require_vision()` the one image capability check. It raises
    `server.ApiError` directly — it exists for the HTTP layer. Imports
    `constants`, `helpers`, `server`.
-25. **`fits.py`** — the context-fit jobs behind the native API's fit
+26. **`fits.py`** — the context-fit jobs behind the native API's fit
    surface: `FitService` (a worker thread per job; queued → running →
    completed/failed/cancelled; per-session exclusivity, a global
    `max_active_fits` cap, cancel via the job's token, TTL sweeping of
@@ -647,7 +698,7 @@ a module's own docstring for what lives there before editing:
    `FitsClosed`. Jobs run one `ctxfit.fit_context()` and report progress
    through the request's `on_progress`; the optional session write is the
    API's `on_success` hook, so this module never touches the store.
-26. **`openai_api.py`** — the OpenAI-compatible `/v1` surface
+27. **`openai_api.py`** — the OpenAI-compatible `/v1` surface
    (`build_router()` registers `GET /v1/models`, `GET /v1/models/{id}`,
    `POST /v1/embeddings`, `POST /v1/chat/completions`). Model turns only:
    `parse_chat_request()` validates the OpenAI schema (explicit 400s for
@@ -675,7 +726,7 @@ a module's own docstring for what lives there before editing:
    off unless asked. `translate_error()`/`stream_backend_error()` map
    upstream failures onto sanitized 404/502 envelopes with stable messages
    (raw backend detail goes to the `--debug` log).
-27. **`agent_api.py`** — the native agent endpoints
+28. **`agent_api.py`** — the native agent endpoints
    (`build_agent_api()` constructs the one `AgentApi`;
    `add_artifact_routes()` registers the shared `POST /v1/files` and
    `GET /v1/artifacts/*` routes — kept even when `serve_agent` disables
@@ -716,7 +767,7 @@ a module's own docstring for what lives there before editing:
    `fits.py`. `serve_fit` gates off/estimate/probe; a fitting session is
    held by `_fit_guard` (409 `session_busy` with `active_fit_id`, checked
    alongside active turns by every session route and turn submit).
-28. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
+29. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
    every `ollama run` flag), `resolve_model`/`resolve_session` (figuring out
    what model/session a given invocation means, including the `-c`/`-r`/
    `--session` disambiguation in `normalize_argv`), `ui_mode()`/`wants_tui()`
@@ -811,6 +862,14 @@ hint only, the way `renderer.py` does for `Session` (defined later, in
 - **Streaming/rendering UX**: `renderer.py` (the TUI consumes the same frames
   through `StreamSink`), and `ui.py`'s `StatusSnapshot`/`format_status()` when
   it shows up in the status bar.
+- **Waiting-stage line**: the classifier and sampler live in `waitstage.py`
+  (`classify_stage()` for a new state, `StageTracker` for new evidence); the
+  REPL wires it (`start_wait_stage`/`wait_stage_text`/`mark_load_pending` in
+  `repl/core.py`), and three surfaces read that one string -- the inline
+  prompt hint (`_loading_rprompt`), the stream spinner (`StageSpinner`) and
+  the TUI status row (`status_snapshot()`). Add a stage by returning a new
+  `STAGE_*` plus its detail from `classify_stage()`, a probe line if it
+  needs new evidence, and a `WAIT_STAGE_CASES` row.
 - **New docs page**: place it under its surface — `docs/cli/`, `docs/api/`,
   `docs/tui/`, `docs/web-ui/` — or the global `docs/getting-started/`/
   `docs/config/`; register it in `mkdocs.yml`'s `nav` and assemble it from
@@ -837,7 +896,10 @@ failure count, mirroring the pattern documented in `~/bin/AGENTS.md`
 functions are summed in the `if __name__ == "__main__":` block at the
 bottom. The math-rendering tests (`MATH_CASES`) are the largest block and
 the most likely place a change to the layout engine (`mathrender.py`) will
-need new coverage. `OllamaClient` is tested against a fake `requests.Session`
+need new coverage. The waiting-line tests (`test_wait_stage` over
+`WAIT_STAGE_CASES`) pin the classifier matrix, the tracker's scripted state
+machine, the probe parsers, the `/num-ctx` pending-reload bookkeeping and
+both front ends. `OllamaClient` is tested against a fake `requests.Session`
 (`_FakeSession`/`_FakeResponse`) rather than a real HTTP mock library;
 REPL/CLI-level tests use `_FakeClient` (a lighter double with the handful of
 methods those layers actually call) instead. Console output assertions that
@@ -867,7 +929,8 @@ and the destructive-tool refusal after a stop. The background-session
 tests (`test_interrupt_guard`, `test_session_host_protocol`,
 `test_session_host_detach_reattach`, `test_session_host_cancel`,
 `test_session_host_cancel_approval`, `test_session_host_takeover`,
-`test_session_host_rekey`, `test_interrupt_hint`, plus the renderer's
+`test_session_host_rekey`, `test_session_host_live_settings`,
+`test_interrupt_hint`, plus the renderer's
 `test_renderer_feed_parity` and `test_renderer_stop_keys`) pin the
 double-Ctrl+C window, the real Repl running in a host (banner, commands,
 turn, `/bye`), a detached turn finishing and being shown on reattach,

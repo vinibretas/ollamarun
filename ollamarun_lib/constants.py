@@ -124,7 +124,7 @@ except ImportError:  # pragma: no cover - fallback path
     TEXTUAL_VERSION = ""
     TextualApp = None
 
-VERSION = "2.19"
+VERSION = "2.21"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -325,6 +325,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "thinking": "collapsed",
     "ui": "inline",
     "show_stats": True,
+    # The "waiting for model" line distinguishes a cold load, a wait for
+    # room behind another resident, an eviction, a reload at a different
+    # window/placement and a prefill (waitstage.py). Sampling costs one
+    # `/api/ps` + one hardware probe per interval: locally `/proc` and
+    # nvidia-smi, remotely a single ssh round trip, so it is slower there.
+    "wait_stages": True,
+    "wait_stage_sample_seconds": 1.0,
+    "wait_stage_remote_seconds": 5.0,
     "auto_title": False,
     "auto_compact": "ask",
     "image_storage": "embed",

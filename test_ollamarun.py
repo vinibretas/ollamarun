@@ -8964,6 +8964,479 @@ def test_tts_auto_speak() -> int:
     return failures
 
 
+WAIT_STAGE_CASES = [
+    # (name, facts, expected key, substring of the rendered detail)
+    ("nothing known yet",
+     orun.StageFacts(model="m1", inflight=True),
+     orun.STAGE_WAITING, "waiting for m1 · starting runner"),
+    ("runner spawned but no footprint yet",
+     orun.StageFacts(model="m1", inflight=True,
+                     runner=orun.RunnerProcess(pid=7, age_s=0.4)),
+     orun.STAGE_LOADING, "starting m1 · runner spawned"),
+    ("runner without a footprint yet",
+     orun.StageFacts(model="m1", inflight=True,
+                     runner=orun.RunnerProcess(pid=7, age_s=4.0)),
+     orun.STAGE_LOADING, "loading m1"),
+    ("runner with VRAM and RSS progress",
+     orun.StageFacts(model="m1", inflight=True,
+                     runner=orun.RunnerProcess(pid=7, age_s=4.0),
+                     gpu_used_mib=2048, rss=1024 * 2 ** 20,
+                     model_size=5 * 2 ** 30),
+     orun.STAGE_LOADING, "GPU 2.0 GiB + RAM 1.0 GiB of ~5.0 GiB"),
+    ("hardware moving, runner not matched",
+     orun.StageFacts(model="m1", inflight=True, activity=True),
+     orun.STAGE_LOADING, "reading weights"),
+    ("a preload we started",
+     orun.StageFacts(model="m1", warming=True),
+     orun.STAGE_LOADING, "loading m1"),
+    ("a preload queued behind another model",
+     orun.StageFacts(model="m1", warming=True, others=("big:70b",)),
+     orun.STAGE_WAITING, "waiting for room · big:70b resident"),
+    ("a preload that has already landed",
+     orun.StageFacts(model="m1", warming=True, resident=True,
+                     resident_ctx=8192, requested_ctx=8192),
+     orun.STAGE_READY, ""),
+    ("another model vanished to make room",
+     orun.StageFacts(model="m1", inflight=True, evicted=("big:70b",)),
+     orun.STAGE_EVICTING, "unloaded big:70b"),
+    ("another model's runner just spawned",
+     orun.StageFacts(model="m1", inflight=True, other_runner=True),
+     orun.STAGE_WAITING, "another model is loading"),
+    ("another model merely resident",
+     orun.StageFacts(model="m1", inflight=True, others=("big:70b",)),
+     orun.STAGE_WAITING, "waiting for room · big:70b resident"),
+    ("resident with a matching window",
+     orun.StageFacts(model="m1", resident=True, resident_ctx=8192,
+                     requested_ctx=8192),
+     orun.STAGE_READY, ""),
+    ("resident and inflight is a prefill",
+     orun.StageFacts(model="m1", resident=True, resident_ctx=8192,
+                     inflight=True, context_used=1234),
+     orun.STAGE_PREFILL, "prefill · ~1,234 tok"),
+    ("resident, idle, window mismatch is a pending reload",
+     orun.StageFacts(model="m1", resident=True, resident_ctx=4096,
+                     requested_ctx=8192, reload_pending=True),
+     orun.STAGE_RELOAD, "resident at 4,096 · reloads at 8,192 on send"),
+    ("resident, inflight, window mismatch is reloading",
+     orun.StageFacts(model="m1", resident=True, resident_ctx=4096,
+                     requested_ctx=8192, inflight=True, reload_pending=True,
+                     pending_from=4096, pending_to=8192),
+     orun.STAGE_RELOADING, "reloading m1 · 4,096 → 8,192"),
+    ("placement change only",
+     orun.StageFacts(model="m1", resident=True, inflight=True,
+                     reload_pending=True),
+     orun.STAGE_RELOADING, "reloading m1"),
+    ("/api/ps did not answer",
+     orun.StageFacts(model="m1", inflight=True, ps_failed=True),
+     orun.STAGE_UNREACHABLE, "host did not answer"),
+]
+
+
+def test_wait_stage() -> int:
+    """The waiting line names the stage: loading, waiting for room, evicting,
+    reloading, or prefilling -- inferred from /api/ps, the runner process and
+    the machine, never guessed from a clock."""
+    failures = 0
+
+    for name, facts, key, needle in WAIT_STAGE_CASES:
+        got_key, detail = orun.classify_stage(facts)
+        failures = _check(failures, f"classify: {name}",
+                          got_key == key and needle in detail,
+                          f"({got_key!r}, {detail!r})")
+
+    # render_stage_line: no detail = no line; the elapsed suffix and the cap.
+    failures = _check(
+        failures, "no detail renders no line",
+        orun.render_stage_line(orun.Stage(orun.STAGE_READY, ""), 5.0) is None)
+    failures = _check(
+        failures, "elapsed suffix after a second",
+        orun.render_stage_line(orun.Stage(orun.STAGE_LOADING, "loading m1"), 3.4)
+        == "loading m1 · 3s")
+    long_line = orun.render_stage_line(
+        orun.Stage(orun.STAGE_LOADING, "x" * 200), 0.2, limit=20)
+    failures = _check(failures, "over-wide stage lines are capped",
+                      long_line is not None and len(long_line) == 20
+                      and long_line.endswith("…"), repr(long_line))
+
+    # ── the pure parsers the probes hand their output to ───────────────────
+    failures = _check(
+        failures, "parse_show_blobs keeps blob paths only",
+        orun.parse_show_blobs("FROM /x/models/blobs/sha256-aaa\n"
+                              "FROM /x/models/blobs/sha256-bbb\n"
+                              "FROM qwen3:8b\nPARAMETER temperature 0.7")
+        == ["sha256-aaa", "sha256-bbb"])
+    failures = _check(failures, "parse_show_blobs tolerates nothing",
+                      orun.parse_show_blobs("") == [])
+
+    failures = _check(
+        failures, "parse_gpu_util skips [N/A] utilisation",
+        orun.parse_gpu_util("6144, 4096, 37\n6144, 4000, [N/A]\njunk")
+        == [(6144, 4096, 37.0), (6144, 4000, 0.0)])
+    failures = _check(
+        failures, "parse_compute_apps maps pid -> MiB",
+        orun.parse_compute_apps("1234, 2048\n5678, 512\nNo running")
+        == {1234: 2048, 5678: 512})
+    first = orun.parse_cpu_line("cpu  100 0 100 700 100 0 0 0 0 0\ncpu0 1 2 3")
+    second = orun.parse_cpu_line("cpu  200 0 200 800 100 0 0 0 0 0\ncpu0 1 2 3")
+    failures = _check(failures, "parse_cpu_line reads busy/total ticks",
+                      first == (200, 1000) and second == (400, 1300),
+                      f"{first!r} {second!r}")
+    failures = _check(
+        failures, "cpu_busy_fraction is the delta share",
+        orun.cpu_busy_fraction(first, second) == 200 / 300)
+    failures = _check(failures, "cpu_busy_fraction without samples",
+                      orun.cpu_busy_fraction(None, second) is None)
+
+    runners = orun.parse_runner_table(
+        "  42     9  102400 llama-server --model /x/blobs/sha256-aaa -c 8192\n"
+        "  43     3   51200 /usr/bin/ollama runner --model foo\n"
+        "  44     3   51200 /usr/bin/ollama serve\n"
+        "  45     3   51200 ollama_llama_server --model bar\n")
+    failures = _check(failures, "parse_runner_table keeps runners only",
+                      [proc.pid for proc in runners] == [42, 45]
+                      and runners[0].rss_bytes == 102400 * 1024
+                      and runners[0].age_s == 9.0)
+    failures = _check(failures, "RunnerProcess.holds matches on the blob name",
+                      runners[0].holds(["sha256-aaa"])
+                      and not runners[0].holds(["sha256-zzz"]))
+
+    probe_text = (
+        "@@GPU\n6144, 4096, 37\n@@APPS\n42, 2048\n@@MEM\n"
+        "MemTotal:       32000000 kB\nMemAvailable:    8000000 kB\n"
+        "@@CPU\ncpu  100 0 100 700 100 0 0 0 0 0\n"
+        "@@RUNNERS\n  42  9  102400 llama-server --model /x/blobs/sha256-aaa\n")
+    sample, found = orun.parse_hardware_text(probe_text)
+    failures = _check(
+        failures, "parse_hardware_text splits every marked section",
+        sample.gpu == [(6144, 4096, 37.0)] and sample.apps == {42: 2048}
+        and sample.ram == (32000000 * 1024, 8000000 * 1024)
+        and sample.cpu == (200, 1000)
+        and [proc.pid for proc in found] == [42],
+        f"{sample!r} {found!r}")
+    empty_sample, empty_runners = orun.parse_hardware_text("")
+    failures = _check(failures, "parse_hardware_text tolerates no output",
+                      empty_sample.gpu == [] and empty_runners == [])
+
+    # ── the tracker state machine, scripted ────────────────────────────────
+    clock = [100.0]
+    state = {"entries": [], "runners": [],
+             "sample": orun.HardwareSample(), "pending": None,
+             "requested": 8192, "fail": False}
+    changes = []
+
+    def fake_ps():
+        if state["fail"]:
+            raise orun.OllamaError("down")
+        return list(state["entries"])
+
+    tracker = orun.StageTracker(
+        "m1", ps=fake_ps, probe=lambda with_apps: (state["sample"],
+                                                   list(state["runners"])),
+        blobs=lambda: ["sha256-aaa"], pending=lambda: state["pending"],
+        requested_ctx=lambda: state["requested"],
+        context_used=lambda: 1234, model_size=lambda: 5 * 2 ** 30,
+        interval=999, on_change=lambda: changes.append(1),
+        clock=lambda: clock[0])
+
+    def step(name, expected_key, needle):
+        nonlocal failures
+        clock[0] += 1.0
+        stage = tracker.sample_once()
+        text = tracker.text()
+        failures = _check(failures, f"tracker: {name}",
+                          stage.key == expected_key and text
+                          and needle in text, f"({stage.key!r}, {text!r})")
+        return text
+
+    step("nothing running yet", orun.STAGE_WAITING, "starting runner")
+    notifier_after_first = len(changes)
+    failures = _check(failures, "tracker: a changed stage notifies once",
+                      notifier_after_first == 1, f"{notifier_after_first}")
+
+    state["runners"] = [orun.RunnerProcess(
+        pid=42, age_s=3.0, rss_bytes=1024 * 2 ** 20,
+        cmdline="llama-server --model /x/blobs/sha256-aaa")]
+    state["sample"] = orun.HardwareSample(apps={42: 2048})
+    step("our runner shows up", orun.STAGE_LOADING, "GPU 2.0 GiB + RAM 1.0 GiB")
+
+    state["entries"] = [{"name": "m1", "context_length": 8192}]
+    stage = tracker.sample_once()
+    failures = _check(failures, "tracker: resident and idle is silent",
+                      stage.key == orun.STAGE_READY
+                      and tracker.text() is None, repr(stage))
+
+    tracker.set_inflight(True)
+    step("first token pending is a prefill", orun.STAGE_PREFILL, "~1,234 tok")
+
+    state["pending"] = {"kind": "ctx", "from": 8192, "to": 16384}
+    state["requested"] = 16384
+    step("window change while inflight", orun.STAGE_RELOADING,
+         "8,192 → 16,384")
+    state["pending"] = None
+    state["requested"] = 8192
+
+    # No runner of ours and someone else resident: room is the wait.
+    state["runners"] = []
+    state["sample"] = orun.HardwareSample()
+    state["entries"] = [{"name": "big:70b", "context_length": 2048}]
+    step("another model is resident", orun.STAGE_WAITING,
+         "waiting for room · big:70b resident")
+    state["entries"] = []
+    step("that other model is unloaded for us", orun.STAGE_EVICTING,
+         "unloaded big:70b")
+    step("the machine is empty again", orun.STAGE_WAITING, "starting runner")
+    state["entries"] = []
+    state["fail"] = True
+    step("/api/ps stops answering", orun.STAGE_UNREACHABLE, "did not answer")
+
+    tracker.stop()
+    failures = _check(failures, "tracker: stop clears the line",
+                      tracker.text() is None and not tracker.is_running())
+
+    # A probe in flight when the wait ends must not resurrect the line.
+    release = threading.Event()
+
+    def slow_probe(with_apps):
+        release.wait(2.0)
+        return orun.HardwareSample(), []
+
+    slow = orun.StageTracker("m1", ps=lambda: [], probe=slow_probe,
+                             blobs=lambda: [], interval=999)
+    slow.start(inflight=True)
+    time.sleep(0.05)
+    slow.stop(join=False)
+    release.set()
+    time.sleep(0.2)
+    failures = _check(failures, "a probe that outlives the wait leaves no stage",
+                      slow.text() is None, repr(slow.stage()))
+
+    # A preload is known before any probe answers: the REPL called load().
+    seeded = orun.StageTracker("m1", ps=lambda: [], interval=999,
+                               probe=lambda apps: (orun.HardwareSample(), []),
+                               blobs=lambda: [])
+    seeded.start(warming=True)
+    seeded_text = seeded.text()
+    failures = _check(failures, "a preload is named before the first probe",
+                      bool(seeded_text)
+                      and seeded_text.startswith("loading m1"),
+                      repr(seeded_text))
+    seeded.stop()
+
+    failures = _check(
+        failures, "load_pending_line spells out the window change",
+        orun.load_pending_line({"kind": "ctx", "from": 4096, "to": 8192})
+        == "resident at 4,096 · reloads at 8,192 on send"
+        and orun.load_pending_line({"kind": "gpu"})
+        == "resident with older settings · reloads on send"
+        and orun.load_pending_line({}) is None)
+
+    # ── the REPL seam: /num-ctx records the pending reload, the first token
+    #    clears it, and both the prompt hint and the status row read it ─────
+    def stage_repl(entries=(), show_data=None, **kwargs):
+        """A throwaway Repl whose /api/ps says exactly `entries`."""
+        built, fake_client, _tmp = _test_repl(**kwargs)
+        fake_client.ps_entries = list(entries)
+        if show_data is not None:
+            fake_client.show_data = show_data
+        return built
+
+    repl = stage_repl(
+        [{"name": "m1", "context_length": 4096}], resident=["m1"],
+        show_data={"model_info": {"llama.context_length": 8192}})
+    with orun.console.capture() as cap:
+        orun.cmd_num_ctx(repl, "8192")
+    out = _plain(cap.get())
+    failures = _check(failures, "cmd_num_ctx stores the window",
+                      repl.session.parameters.get("num_ctx") == 8192, out)
+    failures = _check(failures, "/num-ctx records the pending reload",
+                      (repl.load_pending or {}).get("kind") == "ctx"
+                      and repl.load_pending.get("to") == 8192,
+                      repr(repl.load_pending))
+    failures = _check(failures, "/num-ctx says the reload waits for the send",
+                      "reloads at 8,192 on send" in out, out)
+    hint = repl._loading_rprompt()
+    failures = _check(failures, "the idle prompt hint carries the pending reload",
+                      hint is not None and "reloads at 8,192" in hint,
+                      repr(hint))
+    repl.set_state("generating")
+    failures = _check(failures, "the status row shows the stage while waiting",
+                      (repl.status_snapshot().detail or "").endswith("on send"),
+                      repr(repl.status_snapshot().detail))
+    repl._on_first_token()
+    failures = _check(failures, "the first token clears the pending reload",
+                      repl.load_pending is None
+                      and repl._loading_rprompt() is None)
+
+    # Sending is what the note promised: the idle hint goes out with the
+    # request, and the sampler keeps the transition it snapshotted.
+    sent = stage_repl([{"name": "m1", "context_length": 4096}],
+                      resident=["m1"])
+    sent.session.parameters["num_ctx"] = 8192
+    sent.load_pending = {"kind": "ctx", "from": 4096, "to": 8192}
+    sent._stage_probe = lambda with_apps: (orun.HardwareSample(), [])
+    sent._stage_blobs = lambda: []
+    original_terminal = orun.console._force_terminal
+    orun.console._force_terminal = True
+    try:
+        sent.start_wait_stage(inflight=True)
+        failures = _check(failures, "the wait snapshots the reload it replaces",
+                          (sent._stage_pending or {}).get("to") == 8192,
+                          repr(sent._stage_pending))
+        sent.load_pending = None
+        stage = sent.wait_stage.sample_once()
+        failures = _check(failures, "the snapshot keeps the reload transition",
+                          stage.key == orun.STAGE_RELOADING
+                          and "4,096 → 8,192" in stage.detail,
+                          repr(stage))
+        with orun.console.capture():
+            sent._present_round({}, False, None)
+        failures = _check(failures, "a sent round clears the idle note",
+                          sent.load_pending is None
+                          and not sent.wait_stage_active())
+        failures = _check(failures, "the sent round drops the snapshot",
+                          sent._stage_pending is None)
+    finally:
+        orun.console._force_terminal = original_terminal
+
+    repl2 = stage_repl([{"name": "m1", "context_length": 4096}],
+                       resident=["m1"])
+    with orun.console.capture() as cap:
+        orun.cmd_gpu_layers(repl2, "cpu")
+    gpu_out = _plain(cap.get())
+    failures = _check(failures, "/gpu-layers records a pending placement reload",
+                      (repl2.load_pending or {}).get("kind") == "gpu"
+                      and "reloads on send" in gpu_out,
+                      f"{repl2.load_pending!r} {gpu_out!r}")
+
+    # A cold model has nothing to reload: /num-ctx must not invent a hint.
+    cold = stage_repl([])
+    with orun.console.capture():
+        orun.cmd_num_ctx(cold, "8192")
+    failures = _check(failures, "a cold model has no pending reload",
+                      cold.load_pending is None, repr(cold.load_pending))
+
+    # The tracker never runs where nobody watches (serve turns, piped output).
+    failures = _check(
+        failures, "stage sampling is on by default, off in headless serve turns",
+        orun.DEFAULT_CONFIG.get("wait_stages") is True
+        and orun.DEFAULT_CONFIG.get("wait_stage_sample_seconds") == 1.0
+        and orun.DEFAULT_CONFIG.get("wait_stage_remote_seconds") == 5.0)
+    headless = stage_repl()
+    headless.headless = True
+    failures = _check(failures, "headless serve turns never sample",
+                      headless.wait_stage_enabled() is False)
+    off = stage_repl(config_extra={"wait_stages": False})
+    failures = _check(failures, "wait_stages=false turns sampling off",
+                      off.wait_stage_enabled() is False)
+
+    # The tracker the REPL builds reads the machine, /api/ps and the request.
+    watcher = stage_repl([{"name": "m1", "context_length": 8192}],
+                         resident=["m1"])
+    watcher._stage_probe = lambda with_apps: (orun.HardwareSample(), [])
+    original_terminal = orun.console._force_terminal
+    orun.console._force_terminal = True
+    try:
+        watcher.start_wait_stage(inflight=True)
+        failures = _check(failures, "start_wait_stage builds and runs the tracker",
+                          watcher.wait_stage is not None
+                          and watcher.wait_stage.is_running())
+        watcher.wait_stage.sample_once()
+        line = watcher.wait_stage_text()
+        failures = _check(failures, "the tracker line names the wait",
+                          bool(line) and ("m1" in line or "prefill" in line),
+                          repr(line))
+        watcher.stop_wait_stage()
+        failures = _check(failures, "stop_wait_stage stops sampling",
+                          not watcher.wait_stage.is_running())
+    finally:
+        orun.console._force_terminal = original_terminal
+
+    # ── the two front ends that display it ─────────────────────────────────
+    spinner_view = orun.Renderer(
+        orun.console, mode="plain", thinking_mode="hidden", tps_footer=False,
+        stage_provider=lambda: "loading m1 · GPU 2.0 GiB")
+    with orun.console.capture() as cap:
+        orun.console.print(spinner_view._live_view(orun.GenerationResult()))
+    view_text = _plain(cap.get())
+    failures = _check(failures, "the stream spinner shows the stage",
+                      "loading m1 · GPU 2.0 GiB" in view_text, view_text)
+    plain_view = orun.Renderer(orun.console, mode="plain",
+                               thinking_mode="hidden", tps_footer=False,
+                               stage_provider=lambda: None)
+    with orun.console.capture() as cap:
+        orun.console.print(plain_view._live_view(orun.GenerationResult()))
+    failures = _check(failures, "no stage falls back to the old line",
+                      "waiting for model" in _plain(cap.get()))
+
+    token_calls = []
+    tokenizer = orun.Renderer(
+        orun.console, mode="plain", thinking_mode="hidden", tps_footer=False,
+        on_first_token=lambda: token_calls.append(1))
+    with orun.console.capture():
+        tokenizer.begin()
+        tokenizer.feed_chunk({"message": {"content": "hi"}})
+        tokenizer.feed_chunk({"message": {"content": " there"}})
+        tokenizer.end(content="hi there")
+    failures = _check(failures, "on_first_token fires exactly once per round",
+                      token_calls == [1], f"{token_calls}")
+
+    headless_calls = []
+    headless = orun.HeadlessRenderer(
+        on_first_token=lambda: headless_calls.append(1))
+    headless.stream(iter([{"message": {"content": "hi"}},
+                          {"message": {"content": " there"}}]))
+    failures = _check(failures,
+                      "the headless renderer reports the first token",
+                      headless_calls == [1], f"{headless_calls}")
+
+    class _HostStub:
+        pass
+
+    host = _HostStub()
+    host.repl = watcher
+    host.session = watcher.session
+    host.spec = _HostStub()
+    host.spec.base = watcher.client.base
+    host.spec.args = {"render": "markdown"}
+    watcher.load_pending = {"kind": "ctx", "from": 4096, "to": 8192}
+    settings = orun.SessionHostServer.settings(host)
+    failures = _check(failures, "the host ships the stage to its terminal",
+                      settings.get("stage")
+                      == "resident at 4,096 · reloads at 8,192 on send",
+                      repr(settings.get("stage")))
+    failures = _check(failures, "an idle note is not an active wait",
+                      settings.get("stage_active") is False,
+                      repr(settings.get("stage_active")))
+    host.repl = None
+    failures = _check(failures, "settings without a repl carry a null stage",
+                      "stage" in orun.SessionHostServer.settings(host)
+                      and orun.SessionHostServer.settings(host)["stage"] is None
+                      and orun.SessionHostServer.settings(host)["stage_active"]
+                      is False)
+
+    remote = object.__new__(orun.SessionClient)
+    remote.settings = {"stage": "loading m1 · reading weights",
+                       "stage_active": True}
+    remote.model = "m1"
+    failures = _check(failures, "the terminal's rprompt prefers the stage",
+                      "loading m1 · reading weights" in remote._rprompt())
+    remote.settings = {"stage": "resident at 4,096 · reloads at 8,192 on send",
+                       "stage_active": False}
+    idle_note = remote._rprompt()
+    failures = _check(
+        failures, "an idle note wears no spinner",
+        idle_note is not None and "reloads at 8,192" in idle_note
+        and not any(frame in idle_note for frame in "⠋⠙⠹⠸⠴⠦⠧⠇"),
+        repr(idle_note))
+    remote.settings = {"preloading": True}
+    failures = _check(failures, "without a stage the rprompt keeps the old text",
+                      "waiting for m1" in remote._rprompt())
+    remote.settings = {"preloading": False}
+    failures = _check(failures, "idle terminals show no rprompt",
+                      remote._rprompt() is None)
+    return failures
+
+
 def test_client_http() -> int:
     failures = 0
 
@@ -9118,6 +9591,7 @@ if __name__ == "__main__":
              + test_tool_payloads() + test_format_tools_veto() + test_tool_cli_flags()
              + test_tts_tools() + test_speech_hosts_note()
              + test_tts_command() + test_tts_auto_speak()
+             + test_wait_stage()
              + test_client_http() + test_cmd_image()
              + test_cli_image_errors()
              + test_message_queue() + test_status_format() + test_cancel_token()

@@ -283,6 +283,29 @@ the pager, `--render markdown|plain|raw` picks the mode.
   `thinking · N chars · /thinking full` hint, and `/thinking full` prints the
   whole stored reasoning on demand.
   `--show-thinking`/`--hidethinking` and config `thinking` set the start mode.
+- **Waiting stages, named.** Before the first token, the stream spinner (and
+  the prompt's right-side hint while a preload runs, and the TUI status row)
+  says which stage the wait is in: `loading qwen3:8b · GPU 2.0 GiB + RAM
+  1.1 GiB of ~5.2 GiB`, `waiting for room · llama3:8b resident`,
+  `making room · unloaded llama3:8b`, `reloading qwen3:8b · 4,096 → 8,192`,
+  `prefill · ~1,234 tok`. The startup preload is named from the first frame —
+  the REPL started that load itself, so `loading MODEL` does not wait for a
+  probe to see it (the elapsed suffix is the progress signal when VRAM fills
+  in one burst). The rest is inferred from `/api/ps` (residency and the
+  window a warm runner reports), the model's own `llama-server` process
+  (matched through the blob paths `/api/show` prints, with per-process VRAM
+  from nvidia-smi and per-process RSS) and — only as a tiebreaker — the
+  machine's VRAM/RAM/CPU movement. Sampling is one `/api/ps` plus one
+  hardware probe per second locally (`/proc` + nvidia-smi) and one ssh round
+  trip every 5s on `--remote` hosts; it stops at the first token, and
+  `wait_stages: false` or
+  `wait_stage_sample_seconds`/`wait_stage_remote_seconds` tune or disable it,
+  while headless `serve` turns never sample. Updates reach an attached
+  background session while its prompt is open. `/num-ctx` and `/gpu-layers`
+  also print that the resident runner reloads at the new window/placement
+  with the next message (`resident at 4,096 · reloads at 8,192 on send`); the
+  note clears when the message is sent, and the wait then says
+  `reloading … 4,096 → 8,192`.
 - **Live footer.** `~24.0 tok/s (avg 21.4) · 45 tok · ctx 12.345k/32.768k
   (38.123%)` — the 5s windowed rate, its cumulative average, the streamed
   token count and a context counter that ticks with every token. Its
@@ -1103,6 +1126,7 @@ line ends with the same `X → Y` as the tool's result box).
 | `~/etc/logs/ollamarun-session-host.log` | Background host stdout/stderr (startup errors land here) |
 
 Selected config keys: `render`, `math`, `thinking`, `ui`, `show_stats`,
+`wait_stages`, `wait_stage_sample_seconds`, `wait_stage_remote_seconds`,
 `tps_footer`, `max_render_chars`, `pager`, `auto_title`, `auto_compact`,
 `image_storage`, `max_file_kb`, `options`, `unload_on_exit`, `gpu_layers`,
 `background_*`, `tools*`, `tool_colors`, `tts*`, `chem_*`, `pdf_vision*`,

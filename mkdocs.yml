@@ -98,6 +98,7 @@ nav:
           - Streaming markdown: cli/rendering/markdown.md
           - 2D math: cli/rendering/math.md
           - Thinking panel: cli/rendering/thinking.md
+          - Waiting for the model: cli/rendering/waiting.md
           - Footer: cli/rendering/footer.md
           - Transcript replay: cli/rendering/transcript.md
       - Sessions:

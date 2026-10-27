@@ -302,6 +302,33 @@ class StreamSink:
         """The response ended; the last frame is the final one."""
 
 
+class StageSpinner:
+    """A spinner whose label is read at paint time, not when it was built.
+
+    `rich.Live` re-renders its stored renderable on every refresh tick, so a
+    label read here keeps ticking while no chunks arrive -- which is exactly
+    the model-load/prefill window this exists for: `chat()` does not yield
+    until the first token, so nothing else would repaint it.
+    """
+
+    frames = "⠋⠙⠹⠸⠴⠦⠧⠇"
+
+    def __init__(self, provider: Callable[[], Optional[str]],
+                 fallback: str = "waiting for model…"):
+        self.provider = provider
+        self.fallback = fallback
+
+    def _label(self) -> str:
+        try:
+            return self.provider() or self.fallback
+        except Exception:
+            return self.fallback
+
+    def __rich_console__(self, console: Console, options: Any) -> Any:
+        frame = self.frames[int(time.monotonic() * 10) % len(self.frames)]
+        yield Text(f"{frame} {self._label()}", style="dim")
+
+
 class Renderer:
     """Streams NDJSON chat events to the terminal and returns the transcript."""
 
@@ -312,7 +339,9 @@ class Renderer:
                  show_stats: bool = False,
                  max_render_chars: int = 12000, pager: bool = False, model: str = "",
                  after_tools: bool = False,
-                 on_thinking_toggle: Optional[Callable[[str], None]] = None):
+                 on_thinking_toggle: Optional[Callable[[str], None]] = None,
+                 stage_provider: Optional[Callable[[], Optional[str]]] = None,
+                 on_first_token: Optional[Callable[[], None]] = None):
         self.console = console
         self.mode = mode
         self.model = model
@@ -325,6 +354,12 @@ class Renderer:
         #: can keep its own display setting in sync (the next round/turn is
         #: built from that, not from this renderer's transient field).
         self.on_thinking_toggle = on_thinking_toggle
+        #: The waiting-stage line for the pre-first-token spinner (None keeps
+        #: the plain "waiting for model…" text) and the once-only callback
+        #: that says the wait is over.
+        self.stage_provider = stage_provider
+        self.on_first_token = on_first_token
+        self._first_token_seen = False
         self.tps_footer = tps_footer
         # Tokens the conversation already carried when this round started
         # (prompt + completion of the last turn) and the model's window; the
@@ -509,6 +544,7 @@ class Renderer:
         self._live = None
         self._last_refresh = 0.0
         self._printed_thinking_header = False
+        self._first_token_seen = False
         self._fd = None
         self._saved_term = None
         self.stop_requested = False
@@ -555,6 +591,13 @@ class Renderer:
             self._refresh(0.0, force=True)
 
     def _feed_text(self, thinking: str, content: str) -> None:
+        if (thinking or content) and not self._first_token_seen:
+            self._first_token_seen = True
+            if self.on_first_token is not None:
+                try:
+                    self.on_first_token()
+                except Exception:
+                    pass
         if thinking:
             if self._use_live or self._sink is not None:
                 self._refresh(0.10)
@@ -772,6 +815,12 @@ class Renderer:
                 style="dim italic")))
         elif has_thinking:
             parts.append(Spinner("dots", text=Text(" thinking…", style="dim")))
+        elif self.stage_provider is not None:
+            # The label is read at paint time: Live keeps refreshing this
+            # renderable while `chat()` waits for the first token, so the
+            # line can change stage (loading -> waiting for room -> prefill)
+            # without a chunk arriving.
+            parts.append(StageSpinner(self.stage_provider))
         else:
             parts.append(Spinner("dots", text=Text(" waiting for model…", style="dim")))
         tps = self._tps_text()
@@ -804,7 +853,8 @@ class HeadlessRenderer:
     """
 
     def __init__(self, *, on_event: Optional[Callable[[RuntimeEvent], None]] = None,
-                 thinking_mode: str = "hidden", after_tools: bool = False):
+                 thinking_mode: str = "hidden", after_tools: bool = False,
+                 on_first_token: Optional[Callable[[], None]] = None):
         self.estimator = TpsEstimator()
         self.on_event = on_event
         self.after_tools = after_tools
@@ -814,6 +864,8 @@ class HeadlessRenderer:
         self.tps_footer = False
         self.context_used: Optional[int] = None
         self.context_total: Optional[int] = None
+        self.on_first_token = on_first_token
+        self._first_token_seen = False
         self._committed_final = False
 
     def _emit(self, event_type: str, **data: Any) -> None:
@@ -824,6 +876,7 @@ class HeadlessRenderer:
                cancel: Optional[CancelToken] = None,
                sink: Optional[StreamSink] = None) -> GenerationResult:
         result = GenerationResult()
+        self._first_token_seen = False
         for event in events:
             if cancel is not None and cancel.cancelled:
                 result.cancelled = True
@@ -832,6 +885,15 @@ class HeadlessRenderer:
                 result.error = str(event["error"])
                 break
             thinking, content = consume_chunk(result, event, self.estimator)
+            if (thinking or content) and not self._first_token_seen:
+                # The wait is over: the runner answered with its loaded
+                # config, so the host can stop sampling the machine.
+                self._first_token_seen = True
+                if self.on_first_token is not None:
+                    try:
+                        self.on_first_token()
+                    except Exception:
+                        pass
             if thinking:
                 self._emit(MESSAGE_DELTA, channel="thinking", text=thinking)
             if content:

@@ -888,7 +888,7 @@ class SessionHostServer:
                 "math": True, "thinking": "collapsed", "tps": True,
                 "pager": False, "nowordwrap": False,
                 "max_render_chars": 12000, "show_stats": True,
-                "preloading": False,
+                "preloading": False, "stage": None, "stage_active": False,
             }
         try:
             return {
@@ -904,11 +904,14 @@ class SessionHostServer:
                 "show_stats": bool(r.show_stats),
                 "preloading": bool(r._preload_thread
                                    and r._preload_thread.is_alive()),
+                "stage": r.wait_stage_text(),
+                "stage_active": r.wait_stage_active(),
             }
         except Exception:
             logger.debug("settings snapshot failed", exc_info=True)
             return {"model": r.session.model, "session_id": r.session.id,
-                    "title": r.session.display_title()}
+                    "title": r.session.display_title(),
+                    "stage": None, "stage_active": False}
 
     def send_settings(self) -> None:
         with self.lock:
