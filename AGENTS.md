@@ -543,8 +543,9 @@ a module's own docstring for what lives there before editing:
    `off` → disabled, text → custom) plus `_show_system`, shared with
    `/set system`.
    The other modules: `completion.py` (`SlashCompleter`/`completion_candidates`
-   for `/commands`, session ids, models and `@files`, shared with the TUI
-   input), `queue.py` (`MessageQueue`, what was typed while a turn ran),
+   for `/commands`, session ids, models, `@files` and `/image` paths —
+   including the virtual `/` root over config `screenshots_dir` — shared with
+   the TUI input), `queue.py` (`MessageQueue`, what was typed while a turn ran),
    `session.py` (`_switch_session`), `view.py` (the `ollama ps` table and the
    last-response lookup) and `commands/` — one module per topic (`config`,
    `model`, `sessions`, `context`, `media`, `tools`, `help`, `stats`) with

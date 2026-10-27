@@ -50,6 +50,7 @@ Defaults are `DEFAULT_CONFIG` in `ollamarun_lib/constants.py`. `null` means
 | `auto_compact` | `"ask"` | `ask` = warn at 80% only; `auto` = also compact at 85%. |
 | `max_file_kb` | `256` | `@file` mention size cap. |
 | `image_storage` | `"embed"` | `embed` keeps image bytes in the session; other values keep the path for files over 8 MiB. |
+| `screenshots_dir` | `"~/Pictures/Screenshots"` | The virtual `/` root for `/image`: `/NAME` and Tab completion read it first; other paths keep their normal meaning (`~` expands). |
 
 ### Runtime
 

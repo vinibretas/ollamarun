@@ -1,9 +1,10 @@
 """Tab completion for the inline prompt and the TUI input box."""
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from ..constants import Completer, Completion
 from ..interactive import MODEL_SORT_KEYS
@@ -15,9 +16,19 @@ if TYPE_CHECKING:
     from .core import Repl
 
 
+#: `/image` takes a whole path as one argument, spaces included, so its
+#: completion replaces everything after this prefix rather than the last word.
+_IMAGE_PREFIX = "/image "
+
+
 def completion_fragment(text: str) -> str:
-    """The part of `text` a completion replaces: the last token, or an `@file`
-    mention (including its `@`). Shared with the TUI input box."""
+    """The part of `text` a completion replaces: the last token, an `@file`
+    mention (including its `@`), or `/image`'s whole path argument.
+
+    Shared with the TUI input box.
+    """
+    if text.startswith(_IMAGE_PREFIX):
+        return text[len(_IMAGE_PREFIX):]
     at_match = re.search(r"@([^\s@]*)$", text)
     if at_match:
         return at_match.group(0)
@@ -30,6 +41,8 @@ def completion_candidates(repl: "Repl", text: str) -> list[str]:
     Shared by the prompt_toolkit completer and the TUI input box so Tab
     suggests the same things in both front ends.
     """
+    if text.startswith(_IMAGE_PREFIX):
+        return _image_candidates(repl, text[len(_IMAGE_PREFIX):])
     at_match = re.search(r"@([^\s@]*)$", text)
     if at_match:
         fragment = at_match.group(1)
@@ -68,6 +81,93 @@ def completion_candidates(repl: "Repl", text: str) -> list[str]:
     if command == "/thinking":
         candidates += [word for word in ("show", "collapse", "hide", "toggle", "full")
                        if word.startswith(argument)]
+    return candidates
+
+
+def _image_candidates(repl: "Repl", argument: str) -> list[str]:
+    """Paths for `/image`: `/NAME` inside the screenshots root, else files.
+
+    A `/`-prefixed argument is the virtual root first -- the screenshots
+    directory (`repl.screenshots_dir`) -- and falls back to a real absolute
+    path when nothing there matches the prefix. Other arguments complete
+    relative to the cwd (`~` expands); a bare word also offers `list`/`clear`.
+    """
+    if argument.startswith("/"):
+        candidates = _screenshot_candidates(repl.screenshots_dir, argument)
+        return candidates or _path_candidates(argument)
+    if argument.startswith("~") or "/" in argument:
+        return _path_candidates(argument)
+    words = [word for word in ("list", "clear") if word.startswith(argument)]
+    if not argument:
+        return words
+    return words + _path_candidates(argument)
+
+
+def _screenshot_candidates(root: Optional[Path],
+                           fragment: str) -> list[str]:
+    """`/NAME` completion inside the screenshots root, newest first.
+
+    Screenshot filenames carry dates, so the latest entries are what a bare
+    `/` usually wants. Empty when the root is unset or missing, so the caller
+    falls back to a real absolute path.
+    """
+    if root is None:
+        return []
+    relative = fragment[1:]
+    head, _, name = relative.rpartition("/")
+    directory = root / head if head else root
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return []
+
+    def mtime(entry: Path) -> float:
+        try:
+            return entry.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    prefix = f"/{head}/" if head else "/"
+    candidates: list[str] = []
+    for entry in sorted(entries, key=lambda item: (-mtime(item), item.name)):
+        if entry.name.startswith(name):
+            candidates.append(prefix + entry.name
+                              + ("/" if entry.is_dir() else ""))
+    return candidates
+
+
+def _path_candidates(fragment: str) -> list[str]:
+    """Filesystem completion for one path fragment (quotes preserved).
+
+    A leading quote is stripped for the lookup and re-applied to every
+    candidate; an unquoted name with spaces is quoted too, because `/image`
+    still splits its argument with `shlex` outside the virtual root.
+    """
+    quote = fragment.startswith('"')
+    text = fragment[1:] if quote else fragment
+    if text.endswith('"'):
+        quote = True
+        text = text[:-1]
+    expanded = os.path.expanduser(text)
+    if expanded.endswith("/"):
+        parent = Path(expanded)
+        name = ""
+    else:
+        parent = Path(expanded).parent
+        name = Path(text).name
+    head = text[: len(text) - len(name)] if name else text
+    try:
+        entries = sorted(parent.iterdir())
+    except OSError:
+        return []
+    candidates: list[str] = []
+    for entry in entries:
+        if not entry.name.startswith(name):
+            continue
+        label = head + entry.name + ("/" if entry.is_dir() else "")
+        if quote or " " in entry.name:
+            label = f'"{label}"'
+        candidates.append(label)
     return candidates
 
 

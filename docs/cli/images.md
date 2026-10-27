@@ -10,6 +10,7 @@ Images ride along with a message as vision input. They are attached to the
 | --- | --- |
 | `--image PATH` (repeatable) | At launch, for a one-shot or the REPL's first message. |
 | `/image PATH…` | In the REPL, for the next message. |
+| `/image /NAME…` | The same, read from the screenshots folder (below). |
 | `/image clear` | Drop everything pending. |
 
 The command answers with what it queued:
@@ -20,6 +21,27 @@ attached red.png
 minicpm-v4.6:1b › What color fills the attached image? Answer with one word.
 red
 ```
+
+## The screenshots shortcut
+
+`/` is a virtual directory over the screenshots folder — config
+`screenshots_dir`, default `~/Pictures/Screenshots`. Tab complete it like a
+real path:
+
+```text
+llama3.2:3b › /image /          # lists the folder, newest first
+llama3.2:3b › /image /Screenshot from 2026-10-27 10-31-51.png
+attached Screenshot from 2026-10-27 10-31-51.png
+```
+
+- `/image /` lists the folder (subdirectories end in `/`); typing narrows
+  the menu, and the completed name is inserted whole, spaces included.
+- `/image /saved/x.png` resolves to `<screenshots_dir>/saved/x.png`.
+- A prefix with no entry in that folder — `/tmp/x`, `~`, `./x` — is an
+  ordinary path: absolute, home-relative or cwd-relative, completed as usual.
+- The whole argument is tried as one virtual path first, so a screenshot
+  name with spaces attaches unquoted. Several images at once still use
+  quotes. `--image` takes real paths only.
 
 The model must advertise **vision**. Asking a text-only model makes the
 backend refuse the request, and the harness surfaces that as an ordinary

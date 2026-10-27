@@ -124,7 +124,7 @@ except ImportError:  # pragma: no cover - fallback path
     TEXTUAL_VERSION = ""
     TextualApp = None
 
-VERSION = "2.21"
+VERSION = "2.22"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -135,6 +135,10 @@ INDEX_PATH = DATA_DIR / "index.json"
 HISTORY_PATH = DATA_DIR / "history"
 ARTIFACTS_DIR = DATA_DIR / "artifacts"
 LOG_PATH = HOME / "etc/logs/ollamarun.log"
+#: The virtual `/` root for `/image`: a `/`-prefixed argument resolves here
+#: first (`/image /shot.png` -> `<root>/shot.png`) and Tab completion lists
+#: it, while a prefix with no match there falls back to a real absolute path.
+DEFAULT_SCREENSHOTS_DIR = "~/Pictures/Screenshots"
 #: Background session hosts (`session_host.py`): one Unix socket + metadata
 #: file per session, under a per-user cache directory. The directory is
 #: created 0700 and the socket 0600; nothing here is durable (removing it
@@ -336,6 +340,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "auto_title": False,
     "auto_compact": "ask",
     "image_storage": "embed",
+    #: `/image`'s virtual root: `/NAME` arguments and their completion read
+    #: this directory (`~` expands); other paths keep their normal meaning.
+    "screenshots_dir": DEFAULT_SCREENSHOTS_DIR,
     "max_file_kb": 256,
     "pager": False,
     "think": None,

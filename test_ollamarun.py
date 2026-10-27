@@ -324,8 +324,19 @@ def test_cmd_image() -> int:
         store = orun.SessionStore(sessions_dir=Path(tmp) / "s", index_path=Path(tmp) / "i.json")
         args = orun.build_parser().parse_args(["m1", "--render", "plain"])
         config = dict(orun.DEFAULT_CONFIG)
+        shots = Path(tmp) / "shots"
+        (shots / "sub").mkdir(parents=True)
+        (shots / "snap one.png").write_bytes(_tiny_png())
+        (shots / "sub" / "deep.png").write_bytes(_tiny_png())
+        config["screenshots_dir"] = str(shots)
         client = _FakeClient()
         repl = orun.Repl(args, config, client, store, orun.Session.create("m1", client.base))
+
+        if repl.screenshots_dir == shots:
+            print("PASS  Repl.screenshots_dir comes from the config")
+        else:
+            print(f"FAIL  screenshots_dir: {repl.screenshots_dir!r}")
+            failures += 1
 
         with orun.console.capture() as cap:
             orun.cmd_image(repl, f'"{spaced}"')
@@ -351,6 +362,44 @@ def test_cmd_image() -> int:
             print("PASS  /image reports an error on unbalanced quoting without crashing")
         else:
             print(f"FAIL  /image unbalanced quoting: {out!r} pending={repl.pending_images}")
+            failures += 1
+
+        with orun.console.capture() as cap:
+            orun.cmd_image(repl, "/snap one.png")
+        out = _plain(cap.get())
+        if len(repl.pending_images) == 3 \
+                and repl.pending_images[-1]["name"] == "snap one.png" \
+                and "attached" in out:
+            print("PASS  /image resolves a virtual path with spaces unquoted")
+        else:
+            print(f"FAIL  /image virtual path: {out!r} pending={repl.pending_images}")
+            failures += 1
+
+        with orun.console.capture() as cap:
+            orun.cmd_image(repl, "/sub/deep.png")
+        if len(repl.pending_images) == 4 \
+                and repl.pending_images[-1]["name"] == "deep.png":
+            print("PASS  /image resolves a virtual subdirectory")
+        else:
+            print(f"FAIL  /image virtual subdir: pending={repl.pending_images}")
+            failures += 1
+
+        with orun.console.capture() as cap:
+            orun.cmd_image(repl, '"/snap one.png"')
+        if len(repl.pending_images) == 5 \
+                and repl.pending_images[-1]["name"] == "snap one.png":
+            print("PASS  /image accepts a quoted virtual path")
+        else:
+            print(f"FAIL  /image quoted virtual: pending={repl.pending_images}")
+            failures += 1
+
+        with orun.console.capture() as cap:
+            orun.cmd_image(repl, "/not-in-shots.png")
+        out = _plain(cap.get())
+        if len(repl.pending_images) == 5 and "not-in-shots.png" in out:
+            print("PASS  a missing virtual path falls back to a real absolute path")
+        else:
+            print(f"FAIL  virtual fallback: {out!r} pending={repl.pending_images}")
             failures += 1
     return failures
 
@@ -5634,6 +5683,18 @@ def test_slash_completer() -> int:
         repl.model_names = ["m1", "m2"]
         completer = orun.SlashCompleter(repl)
 
+        shots = Path(tmp) / "shots"
+        (shots / "sub").mkdir(parents=True)
+        older = shots / "alpha one.png"
+        newer = shots / "alpha two.png"
+        older.write_bytes(_tiny_png())
+        newer.write_bytes(_tiny_png())
+        os.utime(older, (1_000_000_000, 1_000_000_000))
+        os.utime(newer, (2_000_000_000, 2_000_000_000))
+        (shots / "beta.png").write_bytes(_tiny_png())
+        (shots / "sub" / "deep.png").write_bytes(_tiny_png())
+        repl.screenshots_dir = shots
+
         class _Doc:
             def __init__(self, text):
                 self.text_before_cursor = text
@@ -5756,6 +5817,78 @@ def test_slash_completer() -> int:
         else:
             print(f"FAIL  /tools call arguments: {sorted(names)}")
             failures += 1
+
+        if orun.completion_fragment("/image /alpha o") == "/alpha o":
+            print("PASS  /image completion replaces the whole path argument")
+        else:
+            print(f"FAIL  /image fragment: "
+                  f"{orun.completion_fragment('/image /alpha o')!r}")
+            failures += 1
+
+        names = orun.completion_candidates(repl, "/image ")
+        if set(names) == {"list", "clear"}:
+            print("PASS  /image offers list/clear on a bare Tab")
+        else:
+            print(f"FAIL  /image bare completion: {sorted(names)}")
+            failures += 1
+
+        names = orun.completion_candidates(repl, "/image /")
+        expected = {"/alpha one.png", "/alpha two.png", "/beta.png", "/sub/"}
+        if set(names) == expected:
+            print("PASS  /image / lists the screenshots dir")
+        else:
+            print(f"FAIL  /image / completion: {sorted(names)}")
+            failures += 1
+
+        names = orun.completion_candidates(repl, "/image /alp")
+        if names == ["/alpha two.png", "/alpha one.png"]:
+            print("PASS  /image screenshot completion is newest first")
+        else:
+            print(f"FAIL  /image screenshot order: {names}")
+            failures += 1
+
+        names = orun.completion_candidates(repl, "/image /sub/")
+        if names == ["/sub/deep.png"]:
+            print("PASS  /image completes inside a screenshots subdirectory")
+        else:
+            print(f"FAIL  /image subdir completion: {names}")
+            failures += 1
+
+        names = orun.completion_candidates(repl, "/image c")
+        if names == ["clear"]:
+            print("PASS  /image c completes clear")
+        else:
+            print(f"FAIL  /image clear completion: {names}")
+            failures += 1
+
+        real = Path(tmp) / "real"
+        real.mkdir()
+        (real / "file.png").write_bytes(_tiny_png())
+        names = orun.completion_candidates(repl, f"/image {real}/")
+        if names == [f"{real}/file.png"]:
+            print("PASS  /image falls back to real absolute paths")
+        else:
+            print(f"FAIL  /image absolute fallback: {names}")
+            failures += 1
+
+        (Path(tmp) / "rel one.png").write_bytes(_tiny_png())
+        cwd = os.getcwd()
+        try:
+            os.chdir(tmp)
+            names = orun.completion_candidates(repl, "/image rel")
+            if names == ['"rel one.png"']:
+                print("PASS  /image completes a relative path and quotes its space")
+            else:
+                print(f"FAIL  /image relative completion: {names}")
+                failures += 1
+            names = orun.completion_candidates(repl, '/image "rel o')
+            if names == ['"rel one.png"']:
+                print("PASS  /image keeps completing inside a quoted path")
+            else:
+                print(f"FAIL  /image quoted completion: {names}")
+                failures += 1
+        finally:
+            os.chdir(cwd)
     return failures
 
 

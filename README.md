@@ -1099,7 +1099,7 @@ Dispatched in the REPL and the TUI; `/help` also lists the shortcuts (`/?`).
 | `/branch [TITLE]` | Fork this conversation into a new session |
 | `/context` | Color-coded context-window usage, source and per-role counts |
 | `/summarize` | Compact older messages into a summary |
-| `/image PATH… \| clear` | Attach images to the next message |
+| `/image PATH… \| /NAME… \| clear` | Attach images to the next message; `/NAME` reads the screenshots dir |
 | `/render [markdown\|plain\|raw]` | Response rendering mode |
 | `/math [on\|off]` | LaTeX→Unicode math conversion |
 | `/pager [on\|off]` | Page long transcripts |
@@ -1113,6 +1113,12 @@ Dispatched in the REPL and the TUI; `/help` also lists the shortcuts (`/?`).
 Auto-speak: `--speak` / config `tts_auto` / `/tts on` read every final answer
 aloud through `tts-remote say --markdown` (fire-and-forget; the `speaking`
 line ends with the same `X → Y` as the tool's result box).
+
+`/image` treats `/` as a virtual directory over the screenshots folder: a
+`/`-prefixed argument resolves there first and Tab completes inside it
+(`/image /` lists it newest first, spaces included), while a prefix with no
+match there falls back to ordinary absolute paths. Config `screenshots_dir`
+(default `~/Pictures/Screenshots`) points it elsewhere.
 
 ## Config, files and logs
 
@@ -1128,10 +1134,11 @@ line ends with the same `X → Y` as the tool's result box).
 Selected config keys: `render`, `math`, `thinking`, `ui`, `show_stats`,
 `wait_stages`, `wait_stage_sample_seconds`, `wait_stage_remote_seconds`,
 `tps_footer`, `max_render_chars`, `pager`, `auto_title`, `auto_compact`,
-`image_storage`, `max_file_kb`, `options`, `unload_on_exit`, `gpu_layers`,
-`background_*`, `tools*`, `tool_colors`, `tts*`, `chem_*`, `pdf_vision*`,
-`remote*`, `max_gpu_*`, `max_cpu_*`, `timeout`, plus the `serve_*` matrix
-below. See `DEFAULT_CONFIG` in `ollamarun_lib/constants.py` for the full set.
+`image_storage`, `screenshots_dir`, `max_file_kb`, `options`, `unload_on_exit`,
+`gpu_layers`, `background_*`, `tools*`, `tool_colors`, `tts*`, `chem_*`,
+`pdf_vision*`, `remote*`, `max_gpu_*`, `max_cpu_*`, `timeout`, plus the
+`serve_*` matrix below. See `DEFAULT_CONFIG` in `ollamarun_lib/constants.py`
+for the full set.
 
 `ollamarun serve` validates every `serve_*` key at startup: an invalid
 value names itself and exits 2, an omitted key uses the default, and a `0`

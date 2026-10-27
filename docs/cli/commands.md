@@ -285,9 +285,11 @@ tps footer off
 ### `/pager [on | off]`
 Buffer responses into `$PAGER` — [Pager](pager.md).
 
-### `/image PATH… | clear`
+### `/image PATH… | /NAME… | clear`
 Attach images to the **next** message; `clear` drops pending ones —
-[Images and vision](images.md).
+[Images and vision](images.md). `/NAME` and Tab read the screenshots folder
+(config `screenshots_dir`, default `~/Pictures/Screenshots`), and anything
+else completes as a normal path.
 
 ## Sessions and longer arcs
 

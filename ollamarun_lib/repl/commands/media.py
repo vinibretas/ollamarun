@@ -21,6 +21,22 @@ if TYPE_CHECKING:
 from ..view import _last_assistant
 
 
+def _virtual_image_path(root: Optional[Path], text: str) -> Optional[Path]:
+    """`/NAME` inside the screenshots root (`repl.screenshots_dir`), if a file."""
+    if root is None or not text.startswith("/"):
+        return None
+    candidate = root / text[1:]
+    return candidate if candidate.is_file() else None
+
+
+def _attach_image(repl: Repl, path: Path) -> None:
+    try:
+        repl.pending_images.append(encode_image(path, repl.image_storage))
+        console.print(f"[ok]attached[/ok] {escape(path.name)}")
+    except (OSError, ValueError) as exc:
+        console.print(f"[err]{escape(str(exc))}[/err]")
+
+
 def cmd_image(repl: Repl, argument: str) -> None:
     if not argument or argument == "list":
         if repl.pending_images:
@@ -34,19 +50,20 @@ def cmd_image(repl: Repl, argument: str) -> None:
         repl.pending_images = []
         console.print("[ok]cleared[/ok]")
         return
+    # The whole argument first: a `/`-prefixed path may resolve inside the
+    # screenshots root, spaces included (`/image /Screenshot from 2026….png`).
+    whole = _virtual_image_path(repl.screenshots_dir, argument.strip())
+    if whole is not None:
+        _attach_image(repl, whole)
+        return
     try:
         tokens = shlex.split(argument)
     except ValueError as exc:
         console.print(f"[err]{exc}[/err]")
         return
     for token in tokens:
-        path = Path(os.path.expanduser(token))
-        try:
-            repl.pending_images.append(encode_image(path, repl.image_storage))
-            console.print(f"[ok]attached[/ok] {escape(path.name)}")
-        except (OSError, ValueError) as exc:
-            console.print(f"[err]{escape(str(exc))}[/err]")
-
+        path = _virtual_image_path(repl.screenshots_dir, token)
+        _attach_image(repl, path or Path(os.path.expanduser(token)))
 
 
 def cmd_copy(repl: Repl, argument: str) -> None:

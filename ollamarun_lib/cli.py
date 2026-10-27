@@ -151,7 +151,8 @@ interactive commands:
                         fills N% of the available DRAM (--probe verifies by
                         loading the model)
   /gpu-layers [SPEC]    GPU layers: N, P%, +N/-N, all, cpu or auto
-  /image PATH           attach an image to the next message
+  /image PATH           attach an image to the next message; `/NAME` and Tab
+                        read the screenshots dir (`screenshots_dir`)
   /export [FILE]        export mid-session as md/json/html
   /queue [list|clear|rm N]  what is waiting while a turn is running (--ui tui)
 

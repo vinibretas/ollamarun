@@ -11,16 +11,17 @@ import os
 import subprocess
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from rich.markup import escape
 from rich.panel import Panel
 
 from ..client import OllamaClient, OllamaError, build_chat_payload
-from ..constants import (DEFAULT_TIMEOUT, HAS_PROMPT_TOOLKIT, HISTORY_PATH,
-                         THINKING_MODES, FileHistory, KeyBindings,
-                         PromptSession, console, err_console, patch_stdout,
-                         tool_color)
+from ..constants import (DEFAULT_SCREENSHOTS_DIR, DEFAULT_TIMEOUT,
+                         HAS_PROMPT_TOOLKIT, HISTORY_PATH, THINKING_MODES,
+                         FileHistory, KeyBindings, PromptSession, console,
+                         err_console, patch_stdout, tool_color)
 from ..ctxfit import wait_for_ps
 from ..events import (ROUND_STARTED, TOOL_CALL, TOOL_RESULT, TURN_ERROR,
                       RuntimeEvent)
@@ -99,6 +100,8 @@ class Repl:
         self.pending_images: list[dict[str, Any]] = []
         self.auto_title = args.auto_title or config.get("auto_title", False)
         self.image_storage = config.get("image_storage", "embed")
+        self.screenshots_dir = Path(os.path.expanduser(
+            str(config.get("screenshots_dir") or DEFAULT_SCREENSHOTS_DIR)))
         self.max_file_kb = config.get("max_file_kb", 256)
         self.max_render_chars = config.get("max_render_chars", 12000)
         self.timeout = args.timeout or config.get("timeout") or DEFAULT_TIMEOUT

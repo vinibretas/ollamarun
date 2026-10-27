@@ -2,6 +2,19 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 2.22
+
+Summary of changes in this version:
+  - `/image` reads `/` as a virtual directory over the screenshots folder
+    (`screenshots_dir`, default `~/Pictures/Screenshots`). `/image /` lists
+    it newest first and completes inside it as you type (`/image /Screenshot
+    from 2026-10`), the whole argument is resolved as one path when it names
+    a file there -- so screenshot names with spaces attach unquoted -- and a
+    prefix with no match there (e.g. `/tmp/x`) falls back to ordinary
+    absolute paths. Path completion works for `/image` in the inline REPL,
+    the background session and the TUI; `--image` keeps strict path
+    semantics, and other command arguments are unchanged.
+
 Version: 2.21
 
 Summary of changes in this version:
