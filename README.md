@@ -606,7 +606,9 @@ other binaries are described but never pretended to be processed.
 (`format`); only the `schema` object is forwarded. Errors use the OpenAI
 envelope with proper status codes (400/404/405/408/413/502); upstream
 failures surface as stable `model_not_found` / `backend_unreachable` /
-`backend_error` messages, oversized bodies and stalled uploads are rejected
+`backend_error` messages, a two-assistant-tail chat-template rejection is
+retried once with the tail merged (otherwise `invalid_conversation`, 400),
+oversized bodies and stalled uploads are rejected
 before parsing, and responses never carry tracebacks or internal paths —
 `--debug` logs requests, upstream detail and tracebacks to
 `~/etc/logs/ollamarun.log`.
@@ -695,7 +697,11 @@ POST /v1/agent/turns
 ```
 
 For an existing session (`session_id`) the messages are the delta; for a new
-one they seed the history. Turns persist by default (`persist: false` runs
+one they seed the history. A delta that repeats the last assistant message
+is normalized instead of rejected: some chat templates refuse a message
+list ending with two assistant messages, so the server merges the run (an
+exact echo collapses to one copy), emits a `turn.warning`, and continues
+from the merged answer. Turns persist by default (`persist: false` runs
 ephemeral). `settings.parameters` — and the sessions' `parameters` field,
 including the PATCH merge — is validated: known Ollama options get their
 type and range checked (the same ranges the OpenAI mapper enforces),

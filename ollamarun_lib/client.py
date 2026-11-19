@@ -5,6 +5,7 @@ line-by-line and supporting cancellation of an in-flight stream.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from typing import Any, Callable, Iterator, Optional
 
@@ -13,9 +14,78 @@ import requests
 from .constants import DEFAULT_HOST, DEFAULT_TIMEOUT
 from .helpers import CancelToken, canonical_model_name, normalize_host
 
+logger = logging.getLogger("ollamarun.client")
+
 
 class OllamaError(RuntimeError):
     pass
+
+
+#: The chat-template rejection some models raise for a message list that ends
+#: with two assistant messages (Gemma/Qwen-style templates and llama.cpp's
+#: OpenAI server alike; Ollama passes the template error through verbatim).
+#: The harness recognizes it, repairs the conversation tail and retries once.
+TRAILING_ASSISTANT_MARKER = "cannot have 2 or more assistant messages at the end"
+TRAILING_ASSISTANT_MESSAGE = (
+    "the conversation ends with two assistant messages in a row and "
+    "cannot be continued")
+
+
+def is_trailing_assistant_error(message: Any) -> bool:
+    """Whether `message` is the chat template's two-assistant-tail rejection."""
+    text = str(message or "").lower()
+    return (TRAILING_ASSISTANT_MARKER in text
+            or "assistant messages at the end of the list" in text
+            or "two assistant messages in a row" in text)
+
+
+def explain_chat_error(message: Any) -> str:
+    """A user-facing explanation for a known `/api/chat` rejection.
+
+    Anything unrecognized is returned unchanged, so callers can apply this
+    to every failed round without hiding a real backend error.
+    """
+    if is_trailing_assistant_error(message):
+        return ("the conversation ends with two assistant messages in a row, "
+                "which the model cannot continue from — /undo or /retry "
+                "removes the dangling answer, then resend your message")
+    return str(message or "")
+
+
+def collapse_assistant_tail(messages: list[dict[str, Any]]
+                            ) -> list[dict[str, Any]]:
+    """One trailing assistant message: the shape chat templates accept.
+
+    A list that ends with two or more assistant messages is refused by some
+    templates ("Cannot have 2 or more assistant messages at the end of the
+    list"), so the trailing run is merged before a retry. Non-empty contents
+    are joined with a blank line, an exact duplicate (a client echoing the
+    last answer) is kept once, and `tool_calls`/`images` come from the last
+    message -- an earlier dangling call has no results and is dropped. A
+    single trailing assistant is left alone: it is a legitimate prefill.
+    """
+    if len(messages) < 2:
+        return list(messages)
+    start = len(messages)
+    while start > 0 and messages[start - 1].get("role") == "assistant":
+        start -= 1
+    run = messages[start:]
+    if len(run) < 2:
+        return list(messages)
+    contents: list[str] = []
+    for message in run:
+        text = str(message.get("content") or "")
+        if text and text not in contents:
+            contents.append(text)
+    merged: dict[str, Any] = {"role": "assistant",
+                              "content": "\n\n".join(contents)}
+    last = run[-1]
+    for key in ("tool_calls", "images"):
+        if last.get(key):
+            merged[key] = last[key]
+    logger.debug("collapsed %d trailing assistant messages into one",
+                 len(run))
+    return [*messages[:start], merged]
 
 
 class OllamaClient:

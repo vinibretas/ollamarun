@@ -28,7 +28,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from .client import OllamaError, build_chat_payload
+from .client import (OllamaError, build_chat_payload, collapse_assistant_tail,
+                     explain_chat_error, is_trailing_assistant_error)
 from .constants import DEFAULT_TIMEOUT
 from .events import (APPROVAL_REQUIRED, APPROVAL_RESOLVED, ARTIFACT_CREATED,
                      MESSAGE_COMPLETED, TOOL_CALL, TOOL_RESULT, TURN_CANCELLED,
@@ -251,10 +252,7 @@ class AgentRuntime:
                 and tool_rounds < settings.tools_max_rounds()
             payload = hooks.payload_for(
                 session.message_payloads(with_tools=with_tools), with_tools)
-            try:
-                result = hooks.present_round(payload, bool(tool_rounds), hooks.cancel)
-            except OllamaError as exc:
-                result = GenerationResult(error=str(exc))
+            result = self._present_round(payload, bool(tool_rounds), with_tools)
             self._emit(MESSAGE_COMPLETED, round=tool_rounds,
                        content=result.content, thinking=result.thinking or None,
                        tool_calls=len(result.tool_calls),
@@ -306,6 +304,56 @@ class AgentRuntime:
                 self._warn("tool execution interrupted; stopping this turn")
                 break
         self._finish(result, tool_rounds)
+        return result
+
+    def _present_round(self, payload: dict[str, Any], after_tools: bool,
+                       with_tools: bool) -> GenerationResult:
+        """Stream one round, repairing a template-rejected assistant tail once.
+
+        Some chat templates refuse a list that ends with two assistant
+        messages. The repair merges that trailing run in the stored session
+        (an echoed answer collapses to one copy), rebuilds the round's
+        payload and retries once, so the turn and its tool loop keep going
+        instead of dying on an HTTP 400. The retry only happens before any
+        content streamed and only when the repaired request actually
+        differs from the failed one; otherwise the error is explained
+        instead of repeated.
+        """
+        hooks = self.hooks
+        try:
+            result = hooks.present_round(payload, after_tools, hooks.cancel)
+        except OllamaError as exc:
+            result = GenerationResult(error=str(exc))
+        if (not is_trailing_assistant_error(result.error or "")
+                or result.content or result.thinking or result.cancelled
+                or self._cancelled()):
+            if result.error:
+                result.error = explain_chat_error(result.error)
+            return result
+
+        session = hooks.session
+        merged = session.repair_tail()
+        rebuilt = hooks.payload_for(
+            session.message_payloads(with_tools=with_tools), with_tools)
+        rebuilt["messages"] = collapse_assistant_tail(
+            rebuilt.get("messages") or [])
+        if rebuilt.get("messages") == payload.get("messages"):
+            result.error = explain_chat_error(result.error)
+            return result
+        if not hooks.settings.no_save:
+            hooks.store.save(session)
+        if merged:
+            detail = (f"the conversation ended with {merged + 1} assistant "
+                      "messages in a row")
+        else:
+            detail = "the conversation ended with two assistant messages in a row"
+        self._warn(f"{detail} — merged them and retried the request")
+        try:
+            result = hooks.present_round(rebuilt, after_tools, hooks.cancel)
+        except OllamaError as exc:
+            result = GenerationResult(error=str(exc))
+        if result.error:
+            result.error = explain_chat_error(result.error)
         return result
 
     def _finish(self, result: GenerationResult, rounds: int) -> None:

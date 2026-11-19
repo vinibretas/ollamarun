@@ -53,6 +53,7 @@ message shapes, and non-integer `n`.
 | `model_not_found` | Unknown model or outside the allowlist. |
 | `backend_unreachable` | The Ollama machine could not be reached (502). |
 | `backend_error` | The backend failed the request (502), sanitized — raw detail goes to the `--debug` log. |
+| `invalid_conversation` | The request's messages end with two assistant messages in a row, which the chat template refuses (400). The proxy retries once with the tail merged; the 400 is what remains when it still fails. |
 | `model_does_not_support_images` / `…embeddings` | Capability gates. |
 | `input_too_large` | A resolved-input limit (413). |
 | `not_found` | Unknown endpoint (404) — including agent routes when `serve_agent: false`. |

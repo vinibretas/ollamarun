@@ -134,6 +134,51 @@ class Session:
             payloads.append(payload)
         return payloads
 
+    def repair_tail(self) -> int:
+        """Merge a trailing run of assistant messages so the chat can go on.
+
+        Some chat templates refuse a message list that ends with two or more
+        assistant messages ("Cannot have 2 or more assistant messages at the
+        end of the list"). A turn that hits that rejection repairs the stored
+        conversation here and retries: exact duplicate contents (a client
+        echoing the last answer) collapse to one copy, different texts are
+        joined with a blank line, and empty cancelled assistants -- dropped
+        from payloads anyway -- are folded in. `tool_calls`/`thinking` come
+        from the last real message, so an earlier dangling call (one with no
+        tool results) is dropped. A single trailing assistant is left alone:
+        it is a legitimate prefill.
+
+        Returns how many real assistant messages the merge removed
+        (0 = unchanged).
+        """
+        start = len(self.messages)
+        while start > 0 and self.messages[start - 1].get("role") == "assistant":
+            start -= 1
+        run = self.messages[start:]
+        real = [message for message in run
+                if not (message.get("cancelled") and not message.get("content"))]
+        if len(real) < 2:
+            return 0
+        contents: list[str] = []
+        for message in real:
+            text = str(message.get("content") or "")
+            if text and text not in contents:
+                contents.append(text)
+        source = next((message for message in reversed(real)
+                       if message.get("content") or message.get("tool_calls")),
+                      real[-1])
+        merged: dict[str, Any] = {
+            "role": "assistant",
+            "content": "\n\n".join(contents),
+            "ts": source.get("ts") or now_iso(),
+        }
+        for key in ("thinking", "tool_calls", "images"):
+            if source.get(key):
+                merged[key] = source[key]
+        self.messages[start:] = [merged]
+        self.touch()
+        return len(real) - 1
+
     def last_user_index(self) -> Optional[int]:
         for index in range(len(self.messages) - 1, -1, -1):
             if self.messages[index].get("role") == "user":

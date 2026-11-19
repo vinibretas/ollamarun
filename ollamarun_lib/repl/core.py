@@ -1654,7 +1654,12 @@ class Repl:
             if not quiet:
                 console.print("[dim]not enough messages to summarize[/dim]")
             return None
-        keep_tail = messages[-2:] if len(messages) % 2 == 0 else messages[-1:]
+        keep_from = self.session.last_user_index()
+        # Keep the whole last turn: a message-count parity breaks once a turn
+        # has tool messages, and a tail that starts at the last user message
+        # is the only shape that cannot leave the summary's assistant
+        # acknowledgement next to a trailing assistant answer.
+        keep_tail = messages[keep_from:] if keep_from is not None else []
         older = messages[:len(messages) - len(keep_tail)]
         if not older:
             if not quiet:

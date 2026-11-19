@@ -2,6 +2,25 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 2.23
+
+Summary of changes in this version:
+  - A conversation that a chat template rejects with "Cannot have 2 or more
+    assistant messages at the end of the list" is now repaired and retried
+    instead of failing the turn with the raw HTTP 400. The runtime merges
+    the trailing assistant run in the session (an exact echo of the last
+    answer -- the usual agent-API delta mistake -- collapses to one copy,
+    different texts join with a blank line, an earlier dangling tool call
+    is dropped), rebuilds the round's payload (or collapses the payload
+    tail directly when filtered tool messages caused it), announces it as a
+    `turn.warning` and repeats the round once, so tool loops keep going.
+    Only a retry that still fails is reported, with an actionable
+    `/undo`/`/retry` hint. The OpenAI-compatible endpoint applies the same
+    one-retry repair and otherwise answers the structured
+    `invalid_conversation` 400 instead of a generic 502. `/summarize` now
+    keeps the whole last turn instead of a message-count parity, so
+    compaction cannot itself leave two assistant messages at the end.
+
 Version: 2.22
 
 Summary of changes in this version:

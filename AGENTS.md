@@ -297,6 +297,11 @@ a module's own docstring for what lives there before editing:
    `requests`, streaming response bodies line-by-line (including pull
    progress events). `build_chat_payload()` assembles
    the request body from CLI args + session history.
+   `collapse_assistant_tail()`/`is_trailing_assistant_error()`/
+   `explain_chat_error()` are the shared two-assistant-tail vocabulary:
+   some chat templates reject a message list that ends with two assistant
+   messages, so the runtime and the OpenAI proxy repair the tail and retry
+   once instead of surfacing the raw 400.
 9. **`tools/`** — the tool harness, one module per concern. `spec.py` holds
    `ToolSpec`/`ToolContext`/`ToolOutcome`/`ToolHandlerResult` and output
    truncation; `policy.py` the allowlists and `shell_safety`,
@@ -381,7 +386,9 @@ a module's own docstring for what lives there before editing:
    here depends on transport.
 12. **`session.py`** — `Session` (in-memory conversation model: messages,
    model, system prompt, options; `artifacts` accumulates the refs the
-   conversation saw, `add_artifacts()` dedupes by id) and `SessionStore`
+   conversation saw, `add_artifacts()` dedupes by id, and `repair_tail()`
+   merges a trailing run of assistant messages — an echoed answer collapses
+   to one — so a conversation a chat template rejected can continue) and `SessionStore`
    (atomic read/write of the JSON files + `index.json`, list/search/export/delete; its index
    read-modify-write runs under a shared `RLock` plus an exclusive `flock`
    on `<index>.lock` (so a CLI saving while serve runs cannot lose entries)
@@ -470,7 +477,11 @@ a module's own docstring for what lives there before editing:
    signatures, while `HeadlessRenderer` + an event sink drive it with no
    terminal at all. The runtime owns the tool-support capability check
    (once per model, after `turn.started`, warned as a `turn.warning`), and
-   `quiet_tools` is read live so `/render raw` mid-turn takes effect. Tool
+   `quiet_tools` is read live so `/render raw` mid-turn takes effect. A
+   round rejected with the template's two-assistant-tail 400 is repaired
+   once — `Session.repair_tail()` plus a payload-tail collapse, announced as
+   a `turn.warning` — and retried before any token; only a still-failing
+   retry is surfaced (with `explain_chat_error()`'s actionable text). Tool
    artifacts: the runtime emits one `artifact.created` per ref between the
    approval decision and `tool.result` (which references the ids), stores
    the refs on the tool session message and accumulates them onto
@@ -707,7 +718,10 @@ a module's own docstring for what lives there before editing:
    `logit_bias`, `audio`, non-text modalities,
    `tool_choice: "required"`), converts messages verbatim (assistant
    `tool_calls`, `role: tool` + `tool_call_id`→`tool_name` history,
-   data-URI images) and `ollama_payload()` builds the `/api/chat` call; an
+   data-URI images) and `ollama_payload()` builds the `/api/chat` call; a
+   chat-template two-assistant-tail rejection is retried once with the
+   tail collapsed and otherwise answers the structured
+   `invalid_conversation` 400; an
    `n > 1` request emulates the fan-out as `n` sequential generations
    (indexed choices, summed usage, per-choice streaming indexes, capped at
    `MAX_N = 8`), and `parallel_tool_calls: false` is honored by truncating
@@ -743,7 +757,9 @@ a module's own docstring for what lives there before editing:
    headless `Repl` (its `cancel_token` and `tool_ctx.cancel` rewired to the
    turn's token) and runs `AgentRuntime` through `TurnManager` with the
    runtime's own tool execution, so the API approver and event sink apply
-   to every round. The approver composes `tools.policy_check` (shared with
+   to every round (the presenter classifies backend errors, so the
+   runtime's two-assistant-tail repair/retry also covers API turns: an
+   echoed assistant delta is merged and the turn continues). The approver composes `tools.policy_check` (shared with
    the CLI), parks genuinely undecided calls in `waiting_approval`
    (`PendingApproval` + `approval.required` carrying its `approval_id`;
    the first decision wins, a timeout denies, cancellation resolves it as

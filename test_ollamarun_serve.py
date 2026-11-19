@@ -2566,11 +2566,12 @@ class _ServeClient(_FakeClient):
     """`_FakeClient` plus what the API server needs: abort, slow streams and
     embeddings (per-model capabilities included)."""
 
-    def __init__(self, *args, chat_once_data=None, chunk_count=0,
-                 chunk_delay=0.0, capabilities_by_model=None,
+    def __init__(self, *args, chat_once_data=None, chat_once_script=None,
+                 chunk_count=0, chunk_delay=0.0, capabilities_by_model=None,
                  embed_data=None, embed_error=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.chat_once_data = chat_once_data
+        self.chat_once_script = list(chat_once_script or [])
         self.chunk_count = chunk_count
         self.chunk_delay = chunk_delay
         self.abort_calls = 0
@@ -2603,6 +2604,11 @@ class _ServeClient(_FakeClient):
 
     def chat_once(self, payload, timeout=None):
         self.chat_once_payloads.append(payload)
+        if self.chat_once_script:
+            entry = self.chat_once_script.pop(0)
+            if isinstance(entry, BaseException):
+                raise entry
+            return dict(entry)
         if self.chat_once_data is not None:
             return dict(self.chat_once_data)
         return {"message": {"content": self.chat_once_reply}, "done": True,
@@ -5559,6 +5565,140 @@ def test_agent_turn_lifecycle() -> int:
     return failures
 
 
+def test_trailing_assistant_repair_api() -> int:
+    """The two-assistant-tail 400 is repaired on both serve surfaces."""
+    failures = 0
+    marker = ("HTTP 400 on /api/chat: Cannot have 2 or more assistant "
+              "messages at the end of the list.")
+    answer = [{"message": {"content": "continued"}, "done": True,
+               "prompt_eval_count": 5, "eval_count": 2,
+               "done_reason": "stop"}]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        client = _ServeClient(models=["m1"],
+                              capabilities=["completion", "tools"],
+                              chat_script=[orun.OllamaError(marker), answer])
+        store = orun.SessionStore(sessions_dir=Path(tmp) / "s",
+                                  index_path=Path(tmp) / "i.json")
+        seed = orun.Session.create("m1", client.base)
+        seed.add_message("user", "hi")
+        seed.add_message("assistant", "hello")
+        store.save(seed)
+        server, api, store, thread = _start_agent_api(tmp, client, store=store)
+        try:
+            status, _headers, raw = _http(
+                server, "POST", "/v1/agent/turns",
+                body=_turn_request([{"role": "assistant", "content": "hello"}],
+                                   session_id=seed.id))
+            started = json.loads(raw)
+            failures = _check(failures, "an echoed assistant delta is accepted",
+                              status == 202, f"{status} {raw[:200]}")
+            status, body = _poll_turn(server, started["id"])
+            result = body.get("result") or {}
+            failures = _check(failures,
+                              "the turn repairs the tail and keeps going",
+                              status == 200 and body["status"] == "completed"
+                              and result.get("content") == "continued"
+                              and body.get("error") is None,
+                              str(body)[:240])
+            events = _headless_events(api, started["id"])
+            types = [event.type for event in events]
+            warnings = [event.data.get("message") for event in events
+                        if event.type == "turn.warning"]
+            failures = _check(failures, "the repair is a turn.warning event",
+                              types[0] == "turn.started"
+                              and types[-1] == "turn.completed"
+                              and warnings
+                              and "merged them and retried"
+                              in " ".join(warnings),
+                              f"{types} {warnings}")
+            stored = store.resolve(seed.id)
+            contents = [message.get("content") for message in
+                        (stored.messages if stored else [])]
+            failures = _check(failures, "the echoed answer was merged once",
+                              contents == ["hi", "hello", "continued"],
+                              str(contents)[:200])
+            retried = client.chat_payloads[-1]["messages"]
+            failures = _check(failures, "the retried request has one assistant",
+                              retried[-1]["role"] == "assistant"
+                              and retried[-1]["content"] == "hello",
+                              json.dumps(retried)[-200:])
+        finally:
+            _stop_api(server, thread)
+
+    tail = [{"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "one"},
+            {"role": "assistant", "content": "two"}]
+    client = _ServeClient(models=["m1"],
+                          chat_once_script=[
+                              orun.OllamaError(marker),
+                              {"message": {"content": "ok"}, "done": True,
+                               "prompt_eval_count": 4, "eval_count": 2,
+                               "done_reason": "stop"}])
+    server, client, thread = _start_api(client)
+    try:
+        status, _headers, raw = _http(
+            server, "POST", "/v1/chat/completions",
+            body={"model": "m1", "messages": tail})
+        body = json.loads(raw)
+        failures = _check(failures, "the OpenAI surface retries the repair",
+                          status == 200
+                          and body["choices"][0]["message"]["content"] == "ok",
+                          f"{status} {raw[:200]}")
+        repaired = client.chat_once_payloads[-1]["messages"]
+        failures = _check(failures, "the proxy retried a merged tail",
+                          repaired[-1]["role"] == "assistant"
+                          and repaired[-1]["content"] == "one\n\ntwo",
+                          json.dumps(repaired)[-200:])
+    finally:
+        _stop_api(server, thread)
+
+    chunks = [{"message": {"content": "ok"}, "done": False},
+              {"message": {"content": ""}, "done": True,
+               "prompt_eval_count": 4, "eval_count": 2,
+               "done_reason": "stop"}]
+    client = _ServeClient(models=["m1"],
+                          chat_script=[orun.OllamaError(marker), chunks])
+    server, client, thread = _start_api(client)
+    try:
+        status, _headers, raw = _http(
+            server, "POST", "/v1/chat/completions",
+            body={"model": "m1", "messages": tail, "stream": True})
+        payloads = [json.loads(item) for item in _sse_events(raw)
+                    if item.strip() != "[DONE]"]
+        content = "".join(
+            choice["delta"].get("content") or ""
+            for payload in payloads for choice in payload.get("choices") or [])
+        failures = _check(failures, "the streaming proxy retries the repair",
+                          status == 200 and content == "ok"
+                          and not any(payload.get("error") for payload in payloads),
+                          f"{status} {content!r} {raw[:200]!r}")
+        repaired = client.chat_payloads[-1]["messages"]
+        failures = _check(failures, "the streaming retry sends a merged tail",
+                          repaired[-1]["role"] == "assistant"
+                          and repaired[-1]["content"] == "one\n\ntwo",
+                          json.dumps(repaired)[-200:])
+    finally:
+        _stop_api(server, thread)
+
+    client = _ServeClient(models=["m1"], chat_once_script=[
+        orun.OllamaError(marker), orun.OllamaError(marker)])
+    server, _client, thread = _start_api(client)
+    try:
+        status, _headers, raw = _http(
+            server, "POST", "/v1/chat/completions",
+            body={"model": "m1", "messages": tail})
+        error = json.loads(raw)["error"]
+        failures = _check(failures, "an unrepairable tail is a structured 400",
+                          status == 400
+                          and error["code"] == "invalid_conversation"
+                          and error["type"] == "invalid_request_error",
+                          f"{status} {raw[:200]}")
+    finally:
+        _stop_api(server, thread)
+    return failures
+
+
 def test_agent_turn_controls() -> int:
     """409 busy, 429 cap, cancel and disconnect policies."""
     failures = 0
@@ -7492,6 +7632,7 @@ def run_all(*, live: bool = False) -> int:
         + test_openai_sdk()
         + test_turn_mode_isolation()
         + test_agent_turn_lifecycle() + test_agent_turn_controls()
+        + test_trailing_assistant_repair_api()
         + test_agent_approvals() + test_agent_approval_edge()
         + test_serve_approval_timeout_zero()
         + test_agent_policy_mode() + test_agent_disconnect_policy()

@@ -36,7 +36,9 @@ from typing import Any, Callable, Optional
 
 from .artifacts import (MAX_IMAGE_BYTES, InputBudget, InputLimits,
                         input_limits, require_vision, resolve_content_parts)
-from .client import OllamaError, build_chat_payload
+from .client import (OllamaError, TRAILING_ASSISTANT_MESSAGE,
+                     build_chat_payload, collapse_assistant_tail,
+                     is_trailing_assistant_error)
 from .constants import DEFAULT_TIMEOUT
 from .helpers import CancelToken, canonical_model_name, model_allowed
 from .prompts import default_system_prompt
@@ -764,10 +766,13 @@ def translate_error(exc: OllamaError, *, model: str = "") -> ApiError:
     raw = str(exc)
     logger.debug("upstream error (model=%s): %s", model or "-", raw)
     code, message = classify_backend_error(raw, model=model)
-    status = 404 if code == "model_not_found" else 502
-    return ApiError(status, message,
-                    type_="invalid_request_error" if status == 404
-                    else "api_error", code=code)
+    if code == "model_not_found":
+        status, type_ = 404, "invalid_request_error"
+    elif code == "invalid_conversation":
+        status, type_ = 400, "invalid_request_error"
+    else:
+        status, type_ = 502, "api_error"
+    return ApiError(status, message, type_=type_, code=code)
 
 
 def stream_backend_error(raw: str, *, model: str = "") -> dict[str, Any]:
@@ -783,6 +788,8 @@ def classify_backend_error(raw: str, *, model: str = "") -> tuple[str, str]:
     Shared with the native agent endpoints so both surfaces classify a
     backend failure identically (and keep the raw text out of responses).
     """
+    if is_trailing_assistant_error(raw):
+        return "invalid_conversation", TRAILING_ASSISTANT_MESSAGE
     if "HTTP 404" in raw or "not found" in raw.lower():
         message = (f"model {model!r} is not available" if model
                    else "the requested model is not available")
@@ -812,6 +819,21 @@ def ollama_payload(plan: ChatRequest, *, keepalive: Optional[str] = None
                               keepalive=keepalive,
                               options=plan.options or None,
                               tools=plan.tools or None)
+
+
+def collapsed_payload(payload: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """The same request with a two-assistant tail merged, or None if unchanged.
+
+    Some chat templates refuse a list ending with two assistant messages.
+    A proxy request that hits that rejection is retried once with the tail
+    collapsed; this returns None when there is nothing to collapse, so the
+    caller fails with the structured error instead of repeating itself.
+    """
+    messages = payload.get("messages") or []
+    collapsed = collapse_assistant_tail(messages)
+    if collapsed == messages:
+        return None
+    return {**payload, "messages": collapsed}
 
 
 # ── the API object and its routes ───────────────────────────────────────────
@@ -991,7 +1013,20 @@ class OpenAIApi:
                 try:
                     response = client.chat_once(payload, timeout=self.timeout)
                 except OllamaError as exc:
-                    raise translate_error(exc, model=plan.model)
+                    retry_payload = (collapsed_payload(payload)
+                                     if is_trailing_assistant_error(str(exc))
+                                     else None)
+                    if retry_payload is None:
+                        raise translate_error(exc, model=plan.model)
+                    logger.debug("upstream assistant-tail rejection "
+                                 "(model=%s); retrying with a merged tail",
+                                 plan.model)
+                    payload = retry_payload
+                    try:
+                        response = client.chat_once(payload,
+                                                    timeout=self.timeout)
+                    except OllamaError as retry_exc:
+                        raise translate_error(retry_exc, model=plan.model)
                 if isinstance(response, dict) and response.get("error"):
                     logger.debug("upstream error (model=%s): %s", plan.model,
                                  response["error"])
@@ -1029,28 +1064,42 @@ class OpenAIApi:
             writer.event(json.dumps(stream_chunk(
                 completion_id, created, plan.model,
                 {"role": "assistant", "content": ""}, index=choice_index)))
-            result = GenerationResult()
-            error: Optional[str] = None
-            try:
-                for chunk in client.chat(payload, timeout=self.timeout,
-                                         cancel=cancel):
-                    if writer.broken:
-                        break
-                    if chunk.get("error"):
-                        error = str(chunk["error"])
-                        break
-                    thinking, content = consume_chunk(result, chunk)
-                    if thinking:
-                        writer.event(json.dumps(stream_chunk(
-                            completion_id, created, plan.model,
-                            {"reasoning_content": thinking},
-                            index=choice_index)))
-                    if content:
-                        writer.event(json.dumps(stream_chunk(
-                            completion_id, created, plan.model,
-                            {"content": content}, index=choice_index)))
-            except OllamaError as exc:
-                error = str(exc)
+            retried = False
+            while True:
+                result = GenerationResult()
+                error: Optional[str] = None
+                try:
+                    for chunk in client.chat(payload, timeout=self.timeout,
+                                             cancel=cancel):
+                        if writer.broken:
+                            break
+                        if chunk.get("error"):
+                            error = str(chunk["error"])
+                            break
+                        thinking, content = consume_chunk(result, chunk)
+                        if thinking:
+                            writer.event(json.dumps(stream_chunk(
+                                completion_id, created, plan.model,
+                                {"reasoning_content": thinking},
+                                index=choice_index)))
+                        if content:
+                            writer.event(json.dumps(stream_chunk(
+                                completion_id, created, plan.model,
+                                {"content": content}, index=choice_index)))
+                except OllamaError as exc:
+                    error = str(exc)
+                retry_payload = None
+                if (error is not None and not retried
+                        and not result.content and not result.thinking
+                        and not cancel.cancelled
+                        and is_trailing_assistant_error(error)):
+                    retry_payload = collapsed_payload(payload)
+                if retry_payload is None:
+                    break
+                logger.debug("upstream assistant-tail rejection (model=%s); "
+                             "retrying with a merged tail", plan.model)
+                payload = retry_payload
+                retried = True
             if error is not None:
                 writer.event(json.dumps(stream_backend_error(error,
                                                              model=plan.model)))

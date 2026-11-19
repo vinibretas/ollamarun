@@ -44,6 +44,13 @@ runs ephemeral — the results still land in-memory and artifacts still
 register). `model` is required when creating a session; continuing one may
 omit it.
 
+A delta that repeats the last assistant message is normalized, not
+rejected: some chat templates refuse a message list ending with two
+assistant messages, so the server merges the run (an exact echo collapses
+to one copy), emits a `turn.warning`, and continues the turn from the
+merged answer. The same repair runs when a tool round produces that tail,
+so the agent keeps going instead of failing on the HTTP 400.
+
 ### `settings`
 
 | Key | Default | Meaning |

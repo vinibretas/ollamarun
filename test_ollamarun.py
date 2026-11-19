@@ -569,6 +569,142 @@ def test_chat_payload() -> int:
     return failures
 
 
+def test_trailing_assistant_repair() -> int:
+    """The chat-template two-assistant-tail 400 is repaired and retried."""
+    failures = 0
+    marker = ("HTTP 400 on /api/chat: Cannot have 2 or more assistant "
+              "messages at the end of the list.")
+    failures = _check(failures, "the tail rejection is recognized",
+                      orun.is_trailing_assistant_error(marker)
+                      and orun.is_trailing_assistant_error(
+                          "Cannot have two or more assistant messages at the "
+                          "end of the list.")
+                      and not orun.is_trailing_assistant_error("boom"))
+    explained = orun.explain_chat_error(marker)
+    failures = _check(failures, "the tail rejection gets an actionable hint",
+                      "/undo" in explained and "/retry" in explained
+                      and "two assistant messages in a row" in explained,
+                      explained)
+    failures = _check(failures, "other errors pass through the explainer",
+                      orun.explain_chat_error("boom") == "boom")
+
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "one"},
+        {"role": "assistant", "content": "two"},
+        {"role": "assistant", "content": "two"},
+    ]
+    collapsed = orun.collapse_assistant_tail(messages)
+    failures = _check(failures, "a trailing assistant run merges once",
+                      [message["role"] for message in collapsed]
+                      == ["user", "assistant"]
+                      and collapsed[-1]["content"] == "one\n\ntwo",
+                      str(collapsed))
+    single = [{"role": "user", "content": "hi"},
+              {"role": "assistant", "content": "prefill"}]
+    failures = _check(failures, "a single trailing assistant is left alone",
+                      orun.collapse_assistant_tail(single) == single)
+    dangling = [{"role": "assistant", "content": "one",
+                 "tool_calls": [{"function": {"name": "x"}}]},
+                {"role": "assistant", "content": "two"}]
+    failures = _check(failures, "a merge drops an earlier dangling tool call",
+                      "tool_calls" not in orun.collapse_assistant_tail(dangling)[-1])
+
+    session = orun.Session.create("m", "http://h")
+    session.add_message("user", "hi")
+    session.add_message("assistant", "answer")
+    session.add_message("assistant", "answer")
+    removed = session.repair_tail()
+    failures = _check(failures, "repair_tail collapses an echoed answer",
+                      removed == 1 and len(session.messages) == 2
+                      and session.messages[-1]["content"] == "answer",
+                      json.dumps(session.messages))
+    session.add_message("assistant", "")
+    session.messages[-1]["cancelled"] = True
+    failures = _check(failures, "repair_tail leaves a single assistant alone",
+                      session.repair_tail() == 0
+                      and len(session.messages) == 3)
+    session.messages = [
+        {"role": "assistant", "content": "one"},
+        {"role": "assistant", "content": "two"},
+        {"role": "assistant", "content": "three"},
+    ]
+    failures = _check(failures, "repair_tail merges a longer run",
+                      session.repair_tail() == 2
+                      and len(session.messages) == 1
+                      and session.messages[0]["content"]
+                      == "one\n\ntwo\n\nthree",
+                      json.dumps(session.messages))
+
+    repl, client, _tmp = _test_repl()
+    repl.session.messages = [
+        {"role": "user", "content": "hi", "ts": ""},
+        {"role": "assistant", "content": "first", "ts": ""},
+        {"role": "assistant", "content": "second", "ts": ""},
+    ]
+    client.chat_script = [
+        orun.OllamaError(marker),
+        [{"message": {"content": "kept going"}, "done": True}],
+    ]
+    with orun.console.capture() as cap:
+        result = repl._generate()
+    text = _plain(cap.get())
+    failures = _check(failures, "the turn repairs the tail and keeps going",
+                      result.error is None and result.content == "kept going",
+                      f"{result.error!r} / {result.content!r}")
+    failures = _check(failures, "the repair is announced once",
+                      " ".join(text.split()).count("merged them and retried")
+                      == 1, text)
+    failures = _check(failures, "the stored tail was merged",
+                      len(repl.session.messages) == 3
+                      and repl.session.messages[1]["content"]
+                      == "first\n\nsecond",
+                      json.dumps(repl.session.messages))
+    retried_messages = client.chat_payloads[1]["messages"]
+    failures = _check(failures, "the retried request ends with one assistant",
+                      retried_messages[-1]["role"] == "assistant"
+                      and retried_messages[-1]["content"] == "first\n\nsecond",
+                      json.dumps(retried_messages)[-200:])
+
+    repl, client, _tmp = _test_repl()
+    repl.session.messages = [
+        {"role": "user", "content": "hi", "ts": ""},
+        {"role": "assistant", "content": "first", "ts": ""},
+        {"role": "assistant", "content": "second", "ts": ""},
+    ]
+    client.chat_script = [orun.OllamaError(marker), orun.OllamaError(marker)]
+    with orun.console.capture() as cap:
+        result = repl._generate()
+    text = _plain(cap.get())
+    failures = _check(failures, "a failed repair explains what to do",
+                      bool(result.error) and "/undo" in result.error
+                      and "two assistant messages in a row" in result.error
+                      and text.count("/undo") == 1,
+                      f"{result.error!r} / {text!r}")
+
+    repl, _client, _tmp = _test_repl()
+    repl.session.messages = [
+        {"role": "user", "content": "one", "ts": ""},
+        {"role": "assistant", "content": "two", "ts": ""},
+        {"role": "user", "content": "three", "ts": ""},
+        {"role": "assistant", "content": "call", "ts": "",
+         "tool_calls": [{"function": {"name": "run_shell"}}]},
+        {"role": "tool", "content": "one result", "ts": ""},
+        {"role": "tool", "content": "two results", "ts": ""},
+        {"role": "assistant", "content": "four", "ts": ""},
+    ]
+    with orun.console.capture():
+        repl.summarize(ask=False)
+    roles = [message["role"] for message in repl.session.messages]
+    failures = _check(failures, "summarize keeps the whole last turn",
+                      roles[:2] == ["user", "assistant"]
+                      and roles[-3:] == ["tool", "tool", "assistant"]
+                      and not (len(roles) >= 2
+                               and roles[-1] == roles[-2] == "assistant"),
+                      str(roles))
+    return failures
+
+
 def test_tool_definitions() -> int:
     failures = 0
     defs = orun.tool_definitions()
@@ -1811,7 +1947,9 @@ class _FakeClient:
         self.ps_entries = list(ps_entries)
         self.show_data = show_data
         self.capability_list = list(capabilities)
-        self.chat_script = [list(events) for events in (chat_script or [])]
+        self.chat_script = [events if isinstance(events, BaseException)
+                            else list(events)
+                            for events in (chat_script or [])]
         self.chat_calls = 0
         self.chat_once_reply = chat_once_reply
         self.chat_once_payloads = []
@@ -1851,6 +1989,8 @@ class _FakeClient:
         if self.chat_script:
             events = self.chat_script[self.chat_calls % len(self.chat_script)]
             self.chat_calls += 1
+            if isinstance(events, BaseException):
+                raise events
             return iter(events)
         return iter([{"message": {"content": "ok"}, "done": True}])
 
@@ -9678,6 +9818,7 @@ if __name__ == "__main__":
              + test_resolve_show_stats()
              + test_file_mentions() + test_images() + test_session_store()
              + test_session_payloads() + test_chat_payload()
+             + test_trailing_assistant_repair()
              + test_tool_definitions() + test_prompts() + test_system_prompt()
              + test_normalize_argv() + test_renderer_plain()
              + test_renderer_feed_parity()

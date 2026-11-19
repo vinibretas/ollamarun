@@ -28,8 +28,11 @@ compacted 2 messages → summary
 What happens, in order:
 
 1. Messages older than the tail are gathered. The tail that is kept is the
-   last **2** messages when the count is even, otherwise the last **1** — so
-   the split never cuts an exchange in half.
+   **whole last turn** — from the last user message onward — so a turn that
+   used tools is never split, and the summary's `Understood…` assistant
+   acknowledgement can never sit next to a trailing assistant answer (some
+   chat templates reject two assistant messages in a row). With no user
+   message at all, everything is summarized.
 2. You confirm (`Y` by default). Fewer than four messages is a no-op
    (`not enough messages to summarize`).
 3. A one-shot, non-streaming request is sent with the
