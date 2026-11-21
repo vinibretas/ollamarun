@@ -63,6 +63,16 @@ def completion_candidates(repl: "Repl", text: str) -> list[str]:
         fragment = argument[len("--sort "):]
         return [key for key in MODEL_SORT_KEYS + ("fuzzy",)
                 if key.startswith(fragment)]
+    if command == "/best-machine":
+        if argument.startswith("--metric ") or argument.startswith("-m "):
+            fragment = argument.split(" ", 1)[1]
+            return [word for word in ("d", "decode", "p", "prefill",
+                                      "c", "composite")
+                    if word.startswith(fragment)]
+        if " " in argument:
+            return []
+        return [word for word in ("show", "--switch", "-s", "--metric", "-m")
+                if word.startswith(argument)]
     if command == "/tools":
         return _tools_completion(repl, argument)
     if " " in argument:

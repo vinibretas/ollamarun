@@ -6,18 +6,23 @@ from typing import TYPE_CHECKING, Optional
 
 from rich.markup import escape
 
+from ...benchmarks import load_benchmarks, performance_index
+from ...bestmachine import (choice_line, choose_machine, machine_table,
+                            parse_metric, probe_hosts)
 from ...client import OllamaClient, OllamaError
-from ...constants import console
+from ...constants import REMOTE_PROBE_TIMEOUT, console
 from ...ctxfit import (NUM_CTX_HELP, FitRequest, machine_state_for,
                        max_cpu_context, max_gpu_context, parse_fill_percent,
                        parse_num_ctx_arg, resolve_num_ctx_delta)
-from ...helpers import is_local_host, remote_node
+from ...helpers import human_duration, is_local_host, remote_node
 from ...interactive import (GPU_LAYERS_USAGE, MODEL_SORT_KEYS, disk_free_line,
                             ensure_model, fetch_context_lengths,
                             model_context_length, model_table,
                             parse_gpu_layers_spec, parse_model_sort,
                             pick_model, pull_with_progress, resolve_gpu_layers,
                             sort_models)
+from ...inventory import (inventory_age, inventory_stale,
+                          load_cluster_inventory)
 from ..view import ps_table
 
 if TYPE_CHECKING:
@@ -237,11 +242,21 @@ def cmd_gpu_layers(repl: Repl, argument: str) -> None:
 
 
 
+def _performance_index(repl: Repl):
+    """The fleet index only when the session's sort needs it."""
+    return performance_index(repl.config) if repl.model_sort == "performance" else None
+
+
 def _pick_model(repl: Repl, current: Optional[str] = None) -> Optional[str]:
     """The model picker ordered by the session's sort; a sort chosen inside
     the picker sticks for the rest of the session."""
+    performance = _performance_index(repl)
+    if performance is None:
+        return pick_model(repl.client, current, ui=repl.ui, sort=repl.model_sort,
+                          on_sort=lambda key: setattr(repl, "model_sort", key))
     return pick_model(repl.client, current, ui=repl.ui, sort=repl.model_sort,
-                      on_sort=lambda key: setattr(repl, "model_sort", key))
+                      on_sort=lambda key: setattr(repl, "model_sort", key),
+                      performance=performance)
 
 
 def _print_model_list(repl: Repl, sort: str) -> None:
@@ -251,8 +266,15 @@ def _print_model_list(repl: Repl, sort: str) -> None:
         console.print(f"[err]{escape(str(exc))}[/err]")
         return
     contexts = fetch_context_lengths(repl.client, models) if sort == "context" else {}
-    console.print(model_table(sort_models(models, sort, contexts=contexts),
-                              sort=sort, contexts=contexts))
+    performance = performance_index(repl.config) if sort == "performance" else None
+    if performance is not None and not performance:
+        console.print("[warn]no benchmark performance data"
+                      + (f": {escape(performance.error)}"
+                         if performance.error else "") + "[/warn]")
+    console.print(model_table(sort_models(models, sort, contexts=contexts,
+                                          performance=performance),
+                              sort=sort, contexts=contexts,
+                              performance=performance))
 
 
 def cmd_pull(repl: Repl, argument: str) -> None:
@@ -325,8 +347,11 @@ def cmd_model(repl: Repl, argument: str) -> None:
     if not name:
         return
     ssh_target = remote_node(repl.session.remote, repl.config) if repl.session.remote else None
+    performance = _performance_index(repl)
+    ensure_kwargs = {"performance": performance} if performance is not None else {}
     chosen = ensure_model(repl.client, name, repl.config, ssh_target=ssh_target,
-                          host_label=repl.session.remote, ui=repl.ui)
+                          host_label=repl.session.remote, ui=repl.ui,
+                          **ensure_kwargs)
     if not chosen:
         return
     name = chosen
@@ -343,3 +368,156 @@ def cmd_model(repl: Repl, argument: str) -> None:
     console.print(f"[ok]model[/ok] {escape(name)}")
 
 
+
+
+BEST_MACHINE_USAGE = ("usage: /best-machine [show] [--switch|-s] "
+                      "[--metric|-m d|p|c]")
+
+
+def cmd_best_machine(repl: Repl, argument: str) -> None:
+    """Rank benchmarked machines and optionally move this session to one.
+
+    Bare/`show` is read-only; `--switch`/`-s` resolves the machine to the
+    host currently holding it, makes sure the model is available there and
+    moves the session. `--metric`/`-m` picks decode (default), prefill or a
+    normalized composite.
+    """
+    try:
+        tokens = shlex.split(argument)
+    except ValueError as exc:
+        console.print(f"[err]unparsable arguments: {escape(str(exc))}[/err]")
+        return
+    show = False
+    switch = False
+    metric = "decode"
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        low = token.lower()
+        if token in {"--help", "-h"} or low == "help":
+            console.print(f"[dim]{escape(BEST_MACHINE_USAGE)}[/dim]")
+            console.print("[dim]ranks benchmarked machines for the current "
+                          "model; --switch moves this session to the host "
+                          "holding the winner[/dim]")
+            return
+        if low == "show":
+            show = True
+        elif token in {"--switch", "-s"}:
+            switch = True
+        elif token in {"--metric", "-m"}:
+            if index + 1 >= len(tokens):
+                console.print(f"[err]{escape(BEST_MACHINE_USAGE)}[/err]")
+                return
+            try:
+                metric = parse_metric(tokens[index + 1])
+            except ValueError as exc:
+                console.print(f"[err]{escape(str(exc))}[/err]")
+                return
+            index += 1
+        elif low.startswith("--metric="):
+            try:
+                metric = parse_metric(token.split("=", 1)[1])
+            except ValueError as exc:
+                console.print(f"[err]{escape(str(exc))}[/err]")
+                return
+        else:
+            try:
+                metric = parse_metric(token)
+            except ValueError:
+                console.print(f"[err]{escape(BEST_MACHINE_USAGE)}[/err]")
+                return
+        index += 1
+    if show and switch:
+        console.print("[err]use either 'show' or --switch, not both[/err]")
+        return
+
+    inventory = load_cluster_inventory(repl.config)
+    if inventory.error:
+        console.print(f"[err]{escape(inventory.error)}[/err]")
+        return
+    max_age = repl.config.get("cluster_hosts_max_age", 86400)
+    if inventory_stale(inventory, max_age):
+        age = inventory_age(inventory)
+        console.print(f"[warn]cluster inventory is {human_duration(age)} old — "
+                      "the host/machine binding may be stale[/warn]")
+    for warning in inventory.warnings[:3]:
+        console.print(f"[dim]{escape(warning)}[/dim]")
+    fleet = load_benchmarks(config=repl.config, inventory=inventory, refresh=True)
+    if fleet.error:
+        console.print(f"[err]{escape(fleet.error)}[/err]")
+        return
+    for warning in fleet.warnings[:3]:
+        console.print(f"[dim]{escape(warning)}[/dim]")
+    keys = [host.key for host in inventory.hosts.values()
+            if host.machine and inventory.active(host.machine)]
+    probes = probe_hosts(keys, config=repl.config, inventory=inventory)
+    current = repl.current_machine()
+    current_id = current.id if current is not None else None
+    choice = choose_machine(
+        repl.session.model, fleet=fleet, probes=probes, metric=metric,
+        current=current_id,
+        ask=lambda prompt, choices, default: repl.ui.ask(
+            prompt, choices=choices, default=default))
+    if choice.chosen is None:
+        console.print(f"[err]no machine available: "
+                      f"{escape(choice.reason)}[/err]")
+        return
+    console.print(machine_table(
+        choice.ranked, chosen=choice.chosen.machine, current=current_id,
+        metric=metric, model=repl.session.model))
+    fastest = choice.ranked[0] if choice.ranked else None
+    if fastest is not None and not fastest.available \
+            and fastest.machine != choice.chosen.machine:
+        console.print(f"[dim]fastest {escape(fastest.label)} is "
+                      f"{escape(fastest.state_text(current_id))} — skipped[/dim]")
+    console.print(f"[ok]{escape(choice_line(choice, metric))}[/ok]")
+    if not switch:
+        console.print("[dim]use /best-machine --switch (or -s) to move this "
+                      "session[/dim]")
+        return
+    if choice.chosen.machine == current_id:
+        console.print(f"[ok]already on the best machine[/ok] · host "
+                      f"{escape(choice.host_key)}")
+        if choice.chosen.has_model:
+            return
+        # The fastest machine is the current one but the model is missing;
+        # `p` means pull it here, not "move to the same host again".
+        chosen_model = ensure_model(
+            repl.client, repl.session.model, repl.config,
+            ssh_target=repl.tool_ctx.ssh_target,
+            host_label=repl.session.remote, ui=repl.ui,
+            sort=repl.model_sort, performance=_performance_index(repl))
+        if chosen_model and chosen_model != repl.session.model:
+            repl.session.model = chosen_model
+            repl.session.touch()
+            repl.refresh_models()
+        return
+    if not choice.host_key:
+        console.print("[err]that machine has no connected host[/err]")
+        return
+    candidate = OllamaClient(choice.base,
+                             insecure=getattr(repl.client, "insecure", False),
+                             timeout=repl.timeout)
+    try:
+        version = candidate.version(timeout=REMOTE_PROBE_TIMEOUT)
+    except OllamaError as exc:
+        console.print(f"[err]cannot reach {escape(choice.host_key)}: "
+                      f"{escape(str(exc))}[/err]")
+        return
+    local = bool(choice.chosen.probe and choice.chosen.probe.local)
+    chosen_model = ensure_model(
+        candidate, repl.session.model, repl.config,
+        ssh_target=None if local else choice.ssh_target,
+        host_label=choice.host_key,
+        ui=repl.ui, sort=repl.model_sort,
+        performance=_performance_index(repl))
+    if not chosen_model:
+        return
+    if chosen_model != repl.session.model:
+        repl.session.model = chosen_model
+        repl.session.touch()
+    repl.switch_host(choice.host_key, choice.base, ssh_target=choice.ssh_target,
+                     local=local, client=candidate)
+    console.print(f"[ok]now running on[/ok] {escape(choice.host_key)} "
+                  f"· machine {escape(choice.chosen.machine)} "
+                  f"· ollama {escape(version)}")

@@ -22,6 +22,7 @@ from rich.table import Table
 from rich.text import Text
 
 from .client import OllamaClient, OllamaError
+from .benchmarks import FleetPerf, PerformanceIndex, parse_parameter_count, performance_index
 from .constants import (
     BarColumn,
     DownloadColumn,
@@ -67,12 +68,15 @@ def open_in_editor(initial: str = "") -> Optional[str]:
 #: Sort keys accepted by the model picker and `--sort`; `modified` (newest
 #: first) is the default order.
 MODEL_SORT_KEYS: tuple[str, ...] = ("modified", "name", "size", "parameters",
-                                    "context")
+                                    "context", "performance")
 #: Convenience spellings accepted in addition to the canonical keys.
 MODEL_SORT_ALIASES = {
     "recent": "modified", "newest": "modified", "mtime": "modified",
     "param": "parameters", "params": "parameters", "ctx": "context",
     "context-length": "context", "contextlength": "context",
+    "perf": "performance", "speed": "performance", "tps": "performance",
+    "fast": "performance", "fastest": "performance", "bench": "performance",
+    "benchmark": "performance",
 }
 
 #: Canonical spec prefix for a fuzzy query: `parse_model_sort()` returns
@@ -273,26 +277,13 @@ def fuzzy_positions(query: str, text: str) -> tuple[int, ...]:
     return match.positions if match is not None else ()
 
 
-_PARAMETER_SIZE_RE = re.compile(
-    r"^(?:(?P<count>\d+(?:\.\d+)?)\s*x\s*)?(?P<each>\d+(?:\.\d+)?)\s*(?P<unit>[BMK])$",
-    re.IGNORECASE)
-_PARAMETER_UNITS = {"b": 1.0, "m": 0.001, "k": 0.000001}
-
-
 def model_parameter_count(model: dict[str, Any]) -> Optional[float]:
     """Parameter count in billions from `/api/tags` `details.parameter_size`.
 
     Handles plain sizes ("7.6B", "70B", "134M") and mixture-of-experts totals
     ("8x7B" -> 56). Returns None when the tag has no usable value.
     """
-    raw = str((model.get("details") or {}).get("parameter_size") or "").strip()
-    match = _PARAMETER_SIZE_RE.match(raw)
-    if not match:
-        return None
-    count = float(match.group("each")) * _PARAMETER_UNITS[match.group("unit").lower()]
-    if match.group("count"):
-        count *= float(match.group("count"))
-    return count
+    return parse_parameter_count((model.get("details") or {}).get("parameter_size"))
 
 
 def fuzzy_sort_models(models: list[dict[str, Any]], query: str
@@ -318,14 +309,17 @@ def fuzzy_sort_models(models: list[dict[str, Any]], query: str
 
 
 def sort_models(models: list[dict[str, Any]], key: str,
-                *, contexts: Optional[dict[str, Optional[int]]] = None
+                *, contexts: Optional[dict[str, Optional[int]]] = None,
+                performance: Optional[PerformanceIndex] = None
                 ) -> list[dict[str, Any]]:
     """A new list ordered by `key` (a `MODEL_SORT_KEYS` entry or `fuzzy:TEXT`).
 
     `modified` keeps the original newest-first order; `name` is A→Z; the
-    numeric keys list the largest first. Models without a value sort last,
-    alphabetically among themselves. A fuzzy spec ranks matches first and
-    keeps the rest below, alphabetically.
+    numeric keys list the largest first. `performance` uses the fleet's best
+    measured decode tok/s from `benchmarks.py` (`performance` is the index;
+    without data every model is unknown and stays alphabetical). Models
+    without a value sort last, alphabetically among themselves. A fuzzy spec
+    ranks matches first and keeps the rest below, alphabetically.
     """
     query = fuzzy_query(key)
     if query is not None:
@@ -335,6 +329,16 @@ def sort_models(models: list[dict[str, Any]], key: str,
     if key == "modified":
         return sorted(models, key=lambda item: item.get("modified_at") or "",
                       reverse=True)
+    if key == "performance":
+        decorated_perf: list[tuple[bool, float, str, int, dict[str, Any]]] = []
+        for index, item in enumerate(models):
+            perf = performance.of(item) if performance is not None else None
+            decorated_perf.append((
+                perf is None,
+                -(perf.tps if perf else 0.0),
+                str(item.get("name") or "").lower(), index, item))
+        decorated_perf.sort(key=lambda entry: entry[:4])
+        return [entry[4] for entry in decorated_perf]
     if key == "size":
         value_of: Callable[[dict[str, Any]], Any] = lambda item: item.get("size")
     elif key == "parameters":
@@ -349,6 +353,19 @@ def sort_models(models: list[dict[str, Any]], key: str,
                           str(item.get("name") or "").lower(), index, item))
     decorated.sort(key=lambda entry: entry[:4])
     return [entry[4] for entry in decorated]
+
+
+def _performance_cell(perf: Optional[FleetPerf]) -> Text:
+    """The `best tps` cell: value, measuring machine, retired marker."""
+    if perf is None:
+        return Text("–")
+    cell = Text(f"{perf.tps:.1f}")
+    if perf.historical:
+        cell.stylize("dim")
+    cell.append(f" {perf.machine or '?'}", style="dim")
+    if perf.historical:
+        cell.append(" retired", style="warn")
+    return cell
 
 
 #: Context windows read from `/api/show`, keyed by (host, model) for the
@@ -402,18 +419,22 @@ def _format_context(value: Optional[int]) -> str:
 
 def model_table(models: list[dict[str, Any]], current: Optional[str] = None,
                 *, sort: str = "modified",
-                contexts: Optional[dict[str, Optional[int]]] = None) -> Table:
+                contexts: Optional[dict[str, Optional[int]]] = None,
+                performance: Optional[PerformanceIndex] = None) -> Table:
     """The picker/list table: one row per model, in the given order.
 
     `params` always shows the tag's parameter size; a `ctx` column appears
-    once contexts are known (i.e. after a context sort fetched them). A
-    `fuzzy:TEXT` sort highlights the characters the query matched and names
-    the query in the title.
+    once contexts are known (i.e. after a context sort fetched them), and a
+    `best tps` column appears for the `performance` sort. A `fuzzy:TEXT`
+    sort highlights the characters the query matched and names the query in
+    the title.
     """
     contexts = contexts or {}
     query = fuzzy_query(sort)
     title = "models" if sort == "modified" \
         else f"models · {escape(model_sort_label(sort))}"
+    if sort == "performance":
+        title += " · active machines first"
     table = Table(title=title, box=box.ROUNDED, header_style="bold magenta",
                   row_styles=["", "dim"])
     table.add_column("#", justify="right")
@@ -422,6 +443,8 @@ def model_table(models: list[dict[str, Any]], current: Optional[str] = None,
     table.add_column("params", justify="right")
     if contexts:
         table.add_column("ctx", justify="right")
+    if performance is not None:
+        table.add_column("best tps", justify="right")
     table.add_column("modified")
     table.add_column("family", style="dim")
     for index, model in enumerate(models, 1):
@@ -438,6 +461,8 @@ def model_table(models: list[dict[str, Any]], current: Optional[str] = None,
                escape(str(details.get("parameter_size") or "?"))]
         if contexts:
             row.append(_format_context(contexts.get(str(model.get("name") or ""))))
+        if performance is not None:
+            row.append(_performance_cell(performance.of(model)))
         row += [short_stamp(model.get("modified_at")),
                 escape(str(details.get("family") or ""))]
         table.add_row(*row)
@@ -474,14 +499,16 @@ def _parse_sort_command(text: str) -> tuple[bool, Optional[str]]:
 
 def pick_model(client: OllamaClient, current: Optional[str] = None, *,
                ui: Optional["Ui"] = None, sort: str = "modified",
-               on_sort: Optional[Callable[[str], None]] = None) -> Optional[str]:
+               on_sort: Optional[Callable[[str], None]] = None,
+               performance: Optional[PerformanceIndex] = None) -> Optional[str]:
     """Show the installed models and return the chosen name (None on quit).
 
     The prompt takes a number, an exact name, a unique substring, or a sort
     command (`--sort KEY`, `-s KEY`, `sort KEY`, `--sort fuzzy TEXT` and
     `--sort TEXT` for a fuzzy query) that re-orders the table in place and
     keeps the loop running; `on_sort` reports a sort chosen here so the
-    caller can remember it.
+    caller can remember it. `performance` is the fleet index for
+    `--sort performance`; without one the default config is read.
     """
     try:
         models = client.tags()
@@ -495,11 +522,19 @@ def pick_model(client: OllamaClient, current: Optional[str] = None, *,
         sort = parse_model_sort(sort)
     except ValueError:
         sort = "modified"
+    if sort == "performance" and performance is None:
+        performance = performance_index()
+    if sort == "performance" and performance is not None and not performance:
+        console.print("[warn]no benchmark performance data"
+                      + (f": {escape(performance.error)}"
+                         if performance.error else "") + "[/warn]")
     contexts: dict[str, Optional[int]] = {}
     if sort == "context":
         contexts = fetch_context_lengths(client, models)
-    models = sort_models(models, sort, contexts=contexts)
-    console.print(model_table(models, current, sort=sort, contexts=contexts))
+    models = sort_models(models, sort, contexts=contexts,
+                         performance=performance)
+    console.print(model_table(models, current, sort=sort, contexts=contexts,
+                              performance=performance))
     prompt_text = "model number, name, --sort KEY|fuzzy TEXT or 'q' to quit"
     while True:
         if ui is not None:
@@ -521,7 +556,15 @@ def pick_model(client: OllamaClient, current: Optional[str] = None, *,
                     on_sort(sort)
                 if sort == "context" and not contexts:
                     contexts = fetch_context_lengths(client, models)
-                models = sort_models(models, sort, contexts=contexts)
+                if sort == "performance" and performance is None:
+                    performance = performance_index()
+                if sort == "performance" and performance is not None \
+                        and not performance:
+                    console.print("[warn]no benchmark performance data"
+                                  + (f": {escape(performance.error)}"
+                                     if performance.error else "") + "[/warn]")
+                models = sort_models(models, sort, contexts=contexts,
+                                     performance=performance)
                 query = fuzzy_query(sort)
                 if query is not None and not any(
                         fuzzy_match_query(query, str(model.get("name") or ""))
@@ -529,7 +572,8 @@ def pick_model(client: OllamaClient, current: Optional[str] = None, *,
                     console.print(f"[warn]no model matches {query!r} — "
                                   "--sort modified resets the order[/warn]")
                 console.print(model_table(models, current, sort=sort,
-                                          contexts=contexts))
+                                          contexts=contexts,
+                                          performance=performance))
             continue
         if answer.isdigit() and 1 <= int(answer) <= len(models):
             return models[int(answer) - 1]["name"]
@@ -648,7 +692,8 @@ def ensure_model(client: OllamaClient, model: str, config: dict[str, Any], *,
                  ssh_target: Optional[str] = None, host_label: Optional[str] = None,
                  assume_yes: bool = False, pick_on_decline: bool = False,
                  quiet: bool = False, interactive: Optional[bool] = None,
-                 ui: Optional["Ui"] = None, sort: str = "modified") -> Optional[str]:
+                 ui: Optional["Ui"] = None, sort: str = "modified",
+                 performance: Optional[PerformanceIndex] = None) -> Optional[str]:
     """Return the model to run, pulling it first when it is not installed.
 
     `None` means the model is unavailable and the caller should stop. With
@@ -685,8 +730,12 @@ def ensure_model(client: OllamaClient, model: str, config: dict[str, Any], *,
             pull = Confirm.ask(f"pull [key]{escape(model)}[/key]?", default=False)
     if not pull:
         if interactive and pick_on_decline:
-            chosen = (pick_model(client, model, ui=ui, sort=sort) if ui is not None
-                      else pick_model(client, model, sort=sort))
+            if sort == "performance" and performance is None:
+                performance = performance_index(config)
+            chosen = (pick_model(client, model, ui=ui, sort=sort,
+                                 performance=performance) if ui is not None
+                      else pick_model(client, model, sort=sort,
+                                      performance=performance))
             if chosen:
                 return chosen
         console.print("[dim]nothing to run — pull it with --pull[/dim]")

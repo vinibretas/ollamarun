@@ -416,13 +416,16 @@ mirror ollama's REPL; `/undo`, `/retry`, `/edit`, `/branch`, `/context`,
 ## Models and housekeeping
 
 - The model picker (a model-less `ollamarun` run, `/model`) sorts
-  by `modified` (newest first), `name`, `size`, `parameters` or `context`;
-  `--sort KEY` seeds it and the picker prompt takes `--sort KEY` in place.
-  Any other text is an fzf-style fuzzy query (`--sort qwen3`, or the explicit
-  `--sort fuzzy "qwen 3b"`): matches rise to the top by score with the
-  matched characters highlighted, and the models it misses stay below,
-  alphabetically. `context` costs one lazy `/api/show` per model, cached per
-  host.
+  by `modified` (newest first), `name`, `size`, `parameters`, `context` or
+  `performance`; `--sort KEY` seeds it and the picker prompt takes
+  `--sort KEY` in place. `performance` uses the fleet's best measured decode
+  tok/s from profilebench (active machines first; retired hardware only when
+  a model has no active measurement), with a `best tps` column naming the
+  machine that produced it. Any other text is an fzf-style fuzzy query
+  (`--sort qwen3`, or the explicit `--sort fuzzy "qwen 3b"`): matches rise to
+  the top by score with the matched characters highlighted, and the models it
+  misses stay below, alphabetically. `context` costs one lazy `/api/show` per
+  model, cached per host.
 - A model missing from the target machine (local or `--remote`) offers to pull
   it after printing that machine's free disk space (local `disk_usage`,
   remote via a BatchMode ssh `df` probe; degrades to unknown), with live
@@ -513,6 +516,44 @@ the shipped entries are just my own fleet, so replace them with yours. A
 short `/api/version` preflight fails fast with the Tailscale node state when
 the machine is down, and resuming a session reconnects to the machine it last
 ran on.
+
+### Best machine
+
+`--best-machine [METRIC]` picks the fastest machine for the model from the
+profilebench measurements in `~/llms/benchmarks/profilebench` (`benchmarks_dir`)
+and runs on the host currently holding it. There are two identities here:
+
+- a **machine** is the hardware box (`i7-9700`, `r7-2700-1660`,
+  `i5-8300h-1050`, `i5-3330`, `bcm2711`, `j1800`), with a hardware
+  `fingerprint` and the hostname windows it has used;
+- a **host** is the named endpoint (`tower`, `pi`, `g3`, `kiddo`, `guri`) in
+  `~/etc/config_files/cluster-hosts.json` (`cluster_hosts`). `hosts[*].machine`
+  is the machine that host is sitting in right now.
+
+Old benchmark runs are attributed by the `Machine` fingerprint first, then by
+the run date against `machines[*].hostnames` windows. So the September `tower`
+runs stay on `r7-2700-1660` (retired, no host) while a November `tower` run is
+`i7-9700` (the OptiPlex). A machine with no host, a retired/maintenance
+machine, or a host that fails the live `/api/version` probe is shown in the
+table and skipped; `last_seen_up`/`last_seen_source` are only display hints,
+never live status.
+
+```console
+$ ollamarun --best-machine qwen3:8b "hi"        # decode tok/s (default)
+$ ollamarun --best-machine p qwen3:8b "hi"      # prefill tok/s
+$ ollamarun --best-machine c --sort performance  # composite, perf-sorted picker
+```
+
+The ranking probe reads `/api/tags` too, so the fastest available machine wins
+even if it needs the model. If the current machine is the fastest and lacks
+the model while another online machine has it, the CLI asks `p` (pull it on
+the fastest) or `s` (use the one that has it); non-interactive without
+`--pull` picks `s`, and `--pull` picks `p` without asking. From the REPL,
+`/best-machine` is read-only with the table and `/best-machine --switch`
+(`-s`) performs the move, updating the client, session host and SSH target
+(the inventory's `ssh_alias`, e.g. `kiddo-lan`, while HTTP uses the tailnet
+name). `--sort performance` classifies models by the fleet's best measured
+decode tok/s, preferring active machines over retired measurements.
 
 ## OpenAI-compatible API (`ollamarun serve`)
 
@@ -1055,7 +1096,7 @@ saved history.
 ## Usage
 
 ```console
-$ ollamarun MODEL [PROMPT] [--host HOST | --remote NAME] [--ui MODE]
+$ ollamarun MODEL [PROMPT] [--host HOST | --remote NAME | --best-machine [METRIC]] [--ui MODE]
                   [--pull] [--sort KEY|TEXT] [--gpu-layers SPEC]
                   [--num-ctx [N | +N | -N | +P% | -P% | max-gpu | --max-cpu N] [--probe]]
                   [--think [STR]] [--render MODE] [--option K=V]
@@ -1090,6 +1131,7 @@ Dispatched in the REPL and the TUI; `/help` also lists the shortcuts (`/?`).
 | `/title [TEXT\|--auto]` | Show or set the session title |
 | `/tag [list\|add TAG…\|rm TAG]` | Session tags |
 | `/model, /models [NAME\|--list\|--sort KEY\|fuzzy TEXT]` | Switch model, list or sort the installed models |
+| `/best-machine [show] [--switch\|-s] [--metric\|-m d\|p\|c]` | Rank benchmarked machines for this model (hardware) and optionally move the session to the host holding the winner |
 | `/ps` | Show resident models (ollama ps) |
 | `/num-ctx [N \| +N \| -N \| +P% \| -P% \| --max-gpu [--probe] \| --max-cpu N [--probe]]` | Context window: N, a relative change, the largest that keeps the GPU, or N% of DRAM |
 | `/gpu-layers [N\|N%\|+N\|-N\|all\|cpu\|auto]` | GPU layers for this model |
@@ -1131,6 +1173,7 @@ match there falls back to ordinary absolute paths. Config `screenshots_dir`
 | Path | What |
 | --- | --- |
 | `~/etc/config_files/ollamarun.json` | Config (created from defaults on first run); `--config FILE` overrides |
+| `~/etc/config_files/cluster-hosts.json` | Cluster inventory (`cluster_hosts`): machines (hardware) and hosts (endpoints); shared with the cluster scripts |
 | `~/etc/config_files/ollamarun-defs/{tools,prompts}/` | Per-user tool/prompt overrides |
 | `~/etc/data/ollamarun/sessions/`, `index.json`, `history` | Session store, index and prompt history |
 | `~/.cache/ollamarun/session-hosts/` | Background host sockets, metadata and start locks (`0700`, same user) |
@@ -1142,7 +1185,8 @@ Selected config keys: `render`, `math`, `thinking`, `ui`, `show_stats`,
 `tps_footer`, `max_render_chars`, `pager`, `auto_title`, `auto_compact`,
 `image_storage`, `screenshots_dir`, `max_file_kb`, `options`, `unload_on_exit`,
 `gpu_layers`, `background_*`, `tools*`, `tool_colors`, `tts*`, `chem_*`,
-`pdf_vision*`, `remote*`, `max_gpu_*`, `max_cpu_*`, `timeout`, plus the
+`pdf_vision*`, `remote*`, `cluster_hosts`, `cluster_hosts_max_age`,
+`benchmarks_dir`, `max_gpu_*`, `max_cpu_*`, `timeout`, plus the
 `serve_*` matrix below. See `DEFAULT_CONFIG` in `ollamarun_lib/constants.py`
 for the full set.
 

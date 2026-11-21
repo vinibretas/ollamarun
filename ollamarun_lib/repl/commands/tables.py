@@ -19,6 +19,8 @@ COMMAND_INFO: dict[str, tuple[str, str]] = {
     "/tag": ("[list|add TAG…|rm TAG]", "session tags"),
     "/model, /models": ("[NAME|--list|--sort KEY|fuzzy TEXT]",
                         "switch model, list or sort the installed models"),
+    "/best-machine": ("[show] [--switch|-s] [--metric|-m d|p|c]",
+                      "rank benchmarked machines for this model; --switch moves here"),
     "/ps": ("", "show resident models (ollama ps)"),
     "/num-ctx": ("[N | +N | -N | +P% | -P% | --max-gpu [--probe] | --max-cpu N [--probe]]",
                  "context window: N or a relative change, the largest that keeps the GPU, or N% of DRAM"),

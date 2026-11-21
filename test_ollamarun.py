@@ -9804,6 +9804,396 @@ def test_client_http() -> int:
     return failures
 
 
+def _write_inventory(path: Path) -> None:
+    data = {
+        "version": 2,
+        "updated": "2026-11-20",
+        "sites": {"home": {"lan_subnet": "192.168.0.0/24"},
+                  "external": {"lan_subnet": "192.168.2.0/24"}},
+        "machines": {
+            "i7-9700": {
+                "box": "Dell OptiPlex 7070", "fingerprint": "i7-9700 8C8T",
+                "status": "active",
+                "hostnames": [
+                    {"name": "optiplex7070", "first_seen": "2026-09-22",
+                     "last_seen": "2026-09-25"},
+                    {"name": "tower", "first_seen": "2026-11-20",
+                     "last_seen": None},
+                ],
+            },
+            "r7-2700-1660": {
+                "fingerprint": "Ryzen 7 2700 8C16T GTX 1660 6G",
+                "status": "retired",
+                "hostnames": [{"name": "tower", "first_seen": "2026-09-15",
+                               "last_seen": "2026-09-19"}],
+            },
+            "i5-8300h-1050": {
+                "box": "Dell G3 3579", "fingerprint": "i5-8300H 4C8T GTX 1050 4G",
+                "status": "active",
+                "hostnames": [{"name": "g3", "first_seen": "2026-09-18",
+                               "last_seen": None}],
+            },
+            "i5-3330": {
+                "fingerprint": "i5-3330 4C4T", "status": "active",
+                "hostnames": [{"name": "kiddo", "first_seen": "2026-09-24",
+                               "last_seen": None}],
+            },
+            "bcm2711": {
+                "box": "Raspberry Pi 4 Model B Rev 1.5",
+                "fingerprint": "BCM2711 4C4T",
+                "fingerprints": ["BCM2711 4C4T", "Cortex-A72 4C4T"],
+                "status": "active",
+                "hostnames": [{"name": "vinipi", "first_seen": "2026-09-15",
+                               "last_seen": None}],
+            },
+            "j1800": {
+                "fingerprint": "Celeron J1800 2C2T", "status": "active",
+                "hostnames": [{"name": "guri", "first_seen": "2026-09-29",
+                               "last_seen": None}],
+            },
+        },
+        "order": ["pi", "tower", "g3", "kiddo", "guri"],
+        "hosts": {
+            "pi": {"machine": "bcm2711", "site": "home",
+                   "ssh_alias": "vinipi", "tailscale": "vinipi",
+                   "static": "192.168.0.121", "tailscale_ip": "100.64.0.1"},
+            "tower": {"machine": "i7-9700", "site": "home",
+                      "ssh_alias": "tower", "tailscale": "tower",
+                      "static": "192.168.0.10", "tailscale_ip": "100.64.0.2"},
+            "g3": {"machine": "i5-8300h-1050", "site": "external",
+                   "ssh_alias": "g3", "tailscale": "g3",
+                   "static": "192.168.2.194", "tailscale_ip": "100.64.0.3"},
+            "kiddo": {"machine": "i5-3330", "site": "external",
+                      "ssh_alias": "kiddo-lan", "tailscale": "kiddo",
+                      "static": "192.168.2.177", "tailscale_ip": "100.64.0.4",
+                      "last_seen_up": "2026-11-14T11:08:55-03:00",
+                      "last_seen_source": "bootcast"},
+            "guri": {"machine": "j1800", "site": "home",
+                     "ssh_alias": "guri", "tailscale": "guri",
+                     "static": "192.168.0.110", "tailscale_ip": "100.64.0.5"},
+        },
+    }
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _write_matrix_full(run_dir: Path, rows: list[dict[str, Any]]) -> None:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    fields = ["Run", "Started", "Selected", "Hostname", "Machine", "Model",
+              "Params", "Quant", "Family", "Digest", "BestProfile", "BestTps",
+              "C_tps", "G_tps", "G_state", "G_prefill_tps"]
+    with (run_dir / "matrix_full.csv").open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _matrix_row(run: str, started: str, selected: str, machine: str,
+                model: str, digest: str, tps: float, *, hostname: str = "",
+                prefill: float = 500.0) -> dict[str, Any]:
+    return {
+        "Run": run, "Started": started, "Selected": selected,
+        "Hostname": hostname or selected, "Machine": machine, "Model": model,
+        "Params": "8B", "Quant": "Q4_K_M", "Family": "llama",
+        "Digest": digest, "BestProfile": "G", "BestTps": str(tps),
+        "C_tps": "1", "G_tps": str(tps), "G_state": "ok",
+        "G_prefill_tps": str(prefill),
+    }
+
+
+def _fake_probe(key: str, *, online: bool = True, installed: tuple[str, ...] = (),
+                local: bool = False):
+    return orun.HostProbe(
+        key=key, remote_name=key, base=f"http://{key}:11434", online=online,
+        version="0.40.7" if online else "", local=local,
+        installed={orun.canonical_model_name(name).lower(): {"name": name}
+                   for name in installed})
+
+
+def test_cluster_benchmarks() -> int:
+    """The machine/host inventory, benchmark attribution and ranking policy."""
+    failures = 0
+
+    def check(name, got, expected):
+        nonlocal failures
+        if got == expected:
+            print(f"PASS  {name}")
+        else:
+            print(f"FAIL  {name}: {got!r} != {expected!r}")
+            failures += 1
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        inventory_path = root / "cluster-hosts.json"
+        _write_inventory(inventory_path)
+        config = dict(orun.DEFAULT_CONFIG)
+        config["cluster_hosts"] = str(inventory_path)
+        config["benchmarks_dir"] = str(root / "profilebench")
+        inv = orun.load_cluster_inventory(config)
+        check("inventory parses", inv.exists, True)
+        check("inventory has every machine", len(inv.machines), 6)
+        check("retired machine status", inv.status("r7-2700-1660"), "retired")
+        check("host binding tower", inv.machine_for_host("tower").id, "i7-9700")
+        check("host binding through ssh alias",
+              inv.machine_for_host("kiddo-lan").id, "i5-3330")
+        check("host binding through tailnet name",
+              inv.machine_for_host("vinipi").id, "bcm2711")
+        check("remote_name keeps the inventory key", inv.remote_name("pi"), "pi")
+        check("ssh_target uses the ssh alias", inv.ssh_target("kiddo"),
+              "kiddo-lan")
+        check("local host resolves by address", inv.local_host().key, "tower")
+
+        # Run attribution: fingerprint first, then the hostname/date windows.
+        check("fingerprint attributes i7",
+              inv.machine_for_run(fingerprint="i7-9700 8C8T").id, "i7-9700")
+        check("legacy tower is the Ryzen box in September",
+              inv.machine_for_run(["tower"], started="2026-09-18 09:00:00").id,
+              "r7-2700-1660")
+        check("tower moved to i7 in November",
+              inv.machine_for_run(["tower"], started="2026-11-21 09:00:00").id,
+              "i7-9700")
+        check("optiplex7070 window maps to i7",
+              inv.machine_for_run(["optiplex7070"],
+                                  started="2026-09-23 09:00:00").id, "i7-9700")
+        check("unknown runs stay unattributed",
+              inv.machine_for_run(["nobody"], started="2026-09-23"), None)
+        legacy_path = root / "legacy-inventory.json"
+        legacy_path.write_text(json.dumps({
+            "hosts": {"tower": {"ssh_alias": "tower"}}}), encoding="utf-8")
+        legacy_inv = orun.load_cluster_inventory(config, path=str(legacy_path))
+        check("legacy inventory falls back to host == machine",
+              (legacy_inv.legacy,
+               legacy_inv.machine_for_run(["tower"]).id,
+               bool(legacy_inv.warnings)),
+              (True, "tower", True))
+
+        # A compact benchmark tree: two full runs on the retired Ryzen box, a
+        # legacy C-only run (which must not drag down the full-profile cell),
+        # and one run per active machine. m4 exists on g3/i7 only and is used
+        # for the pull-vs-second-best policy.
+        results = root / "profilebench" / "results"
+        _write_matrix_full(results / "run_20260918_092914_tower-r7-1660", [
+            _matrix_row("run_20260918_092914", "2026-09-18 09:29:14",
+                        "tower", "Ryzen 7 2700 8C16T GTX 1660 6G",
+                        "m1", "d1", 100.0),
+            _matrix_row("run_20260918_092914", "2026-09-18 09:29:14",
+                        "tower", "Ryzen 7 2700 8C16T GTX 1660 6G",
+                        "m2", "d2", 50.0),
+        ])
+        _write_matrix_full(results / "run_20260919_133423_tower-r7-1660", [
+            _matrix_row("run_20260919_133423", "2026-09-19 13:34:23",
+                        "tower", "Ryzen 7 2700 8C16T GTX 1660 6G",
+                        "m1", "d1", 110.0),
+        ])
+        legacy = results / "run_20260918_074425_tower-r7-1660"
+        legacy.mkdir(parents=True)
+        (legacy / "matrix.csv").write_text(
+            "Model,C,H1,H2,H3,G\nm1,80,,,,\nm3,20,,,,\n", encoding="utf-8")
+        (legacy / "state.json").write_text(json.dumps({
+            "hostname": "tower", "machine": "tower",
+            "started": "2026-09-18 07:44:25"}), encoding="utf-8")
+        _write_matrix_full(results / "run_20260923_132919_g3-8300h-1050", [
+            _matrix_row("run_20260923_132919", "2026-09-23 13:29:20",
+                        "g3", "i5-8300H 4C8T GTX 1050 4G", "m1", "d1", 70.0),
+            _matrix_row("run_20260923_132919", "2026-09-23 13:29:20",
+                        "g3", "i5-8300H 4C8T GTX 1050 4G", "m4", "d4", 90.0),
+        ])
+        _write_matrix_full(results / "run_20260922_162618_optiplex7070-opti", [
+            _matrix_row("run_20260922_162618", "2026-09-22 16:26:18",
+                        "optiplex7070", "i7-9700 8C8T", "m1", "d1", 40.0),
+            _matrix_row("run_20260922_162618", "2026-09-22 16:26:18",
+                        "optiplex7070", "i7-9700 8C8T", "m4", "d4", 50.0),
+        ])
+
+        fleet = orun.load_benchmarks(config, inventory=inv, refresh=True)
+        check("benchmark tree parses", bool(fleet), True)
+        check("full-profile cell ignores the legacy C row",
+              fleet.machines["r7-2700-1660"].by_name["m1:latest"].tps, 105.0)
+        check("legacy-only models survive",
+              fleet.machines["r7-2700-1660"].by_name["m3:latest"].tps, 20.0)
+        check("g3 measurement", fleet.machines["i5-8300h-1050"].by_name["m1:latest"].tps,
+              70.0)
+        check("i7 measurement", fleet.machines["i7-9700"].by_name["m1:latest"].tps, 40.0)
+
+        index = fleet.performance_index()
+        perf = index.of({"name": "m1"})
+        check("performance index skips retired hardware",
+              (perf.tps, perf.machine, perf.historical),
+              (70.0, "i5-8300h-1050", False))
+        legacy_perf = index.of({"name": "m3"})
+        check("performance index falls back to retired hardware",
+              (legacy_perf.tps, legacy_perf.machine, legacy_perf.historical),
+              (20.0, "r7-2700-1660", True))
+        models = [
+            {"name": "z-unknown:1b", "digest": "ffffffffffff"},
+            {"name": "m3", "digest": "d3"},
+            {"name": "m1", "digest": "d1"},
+            {"name": "m4", "digest": "d4"},
+        ]
+        ordered = [item["name"] for item in orun.sort_models(
+            models, "performance", performance=index)]
+        check("performance sort is descending", ordered,
+              ["m4", "m1", "m3", "z-unknown:1b"])
+        with orun.console.capture() as cap:
+            orun.console.print(orun.model_table(
+                orun.sort_models(
+                    models, "performance", performance=index),
+                sort="performance", performance=index))
+        text = _plain(cap.get())
+        check("performance table names the sort",
+              "by performance" in text and "active machines first" in text, True)
+        check("performance table shows the machine",
+              "i5-8300h-1050" in text, True)
+
+        probes = {
+            "g3": _fake_probe("g3", installed=("m1",)),
+            "tower": _fake_probe("tower", installed=("m1", "m4"), local=True),
+            "pi": _fake_probe("pi", installed=("m1",)),
+            "kiddo": _fake_probe("kiddo", online=False),
+            "guri": _fake_probe("guri", online=False),
+        }
+        ranked = orun.rank_machines("m1", fleet=fleet, probes=probes)
+        check("retired hardware ranks first but is unavailable",
+              (ranked[0].machine, ranked[0].available), ("r7-2700-1660", False))
+        choice = orun.choose_machine("m1", fleet=fleet, probes=probes,
+                                     current="i7-9700")
+        check("fastest available machine wins",
+              (choice.chosen.machine, choice.chosen.host_key),
+              ("i5-8300h-1050", "g3"))
+        check("choice line names the host",
+              "→ host g3" in orun.choice_line(choice, "decode"), True)
+
+        one = orun.choose_machine(
+            "m1", fleet=fleet,
+            probes={"g3": _fake_probe("g3", installed=("m1",)),
+                    "tower": _fake_probe("tower", online=False)},
+            current="i7-9700")
+        check("one online machine is not a comparison",
+              "nothing to compare" in one.note, True)
+        none = orun.choose_machine(
+            "m1", fleet=fleet,
+            probes={"g3": _fake_probe("g3", online=False),
+                    "tower": _fake_probe("tower", online=False)})
+        check("no online machine is a clear refusal",
+              (none.chosen, "no active machine" in none.reason),
+              (None, True))
+
+        # g3 is fastest for m4 but lacks it; the current machine is g3, and
+        # i7 already has the model, so the caller is asked.
+        asked = {}
+
+        def answer(question, choices, default):
+            asked.update(question=question, choices=tuple(choices),
+                         default=default)
+            return "s"
+
+        policy = orun.choose_machine(
+            "m4", fleet=fleet, probes=probes, current="i5-8300h-1050",
+            ask=answer)
+        check("the pull-vs-second-best prompt is asked",
+              "pull it there" in asked.get("question", ""), True)
+        check("choosing the installed alternative",
+              (policy.chosen.machine, policy.reason),
+              ("i7-9700", "second best that already has the model"))
+        policy_pull = orun.choose_machine(
+            "m4", fleet=fleet, probes=probes, current="i5-8300h-1050",
+            ask=lambda question, choices, default: "p")
+        check("choosing to pull on the fastest",
+              (policy_pull.chosen.machine, policy_pull.reason),
+              ("i5-8300h-1050", "pull the model on the fastest machine"))
+
+        # Table rendering covers the retired/hostless and estimate states.
+        with orun.console.capture() as cap:
+            orun.console.print(orun.machine_table(
+                ranked, chosen=choice.chosen.machine, current="i7-9700",
+                metric="decode", model="m1"))
+        table_text = _plain(cap.get())
+        check("table shows the retired machine", "retired" in table_text, True)
+        check("table shows the current marker", "*" in table_text, True)
+        check("table shows the site", "external" in table_text, True)
+
+        missing = orun.load_benchmarks(
+            {**config, "benchmarks_dir": str(root / "nope")},
+            inventory=inv, refresh=True)
+        check("a missing benchmark tree is a clear error",
+              "no profilebench results" in missing.error, True)
+
+        # /best-machine show is read-only; --switch moves the session to the
+        # host holding the winner and updates the host-scoped tool target.
+        import ollamarun_lib.repl.commands.model as model_commands
+
+        class _Candidate:
+            base = "http://g3:11434"
+
+            def version(self, timeout=None):
+                return "0.40.7"
+
+            def model_exists(self, model):
+                return True
+
+            def tags(self):
+                return [{"name": "m1"}]
+
+        local = _FakeClient(models=["m1"])
+        repl_args = orun.build_parser().parse_args(["m1", "--no-save"])
+        repl = orun.Repl(repl_args, config, local, orun.SessionStore(
+            sessions_dir=root / "sessions", index_path=root / "index.json"),
+            orun.Session.create("m1", local.base))
+        repl.current_machine = lambda: inv.machines["i7-9700"]
+        repl._preload_model = lambda: None
+        saved = (model_commands.load_cluster_inventory,
+                 model_commands.load_benchmarks, model_commands.probe_hosts,
+                 model_commands.OllamaClient)
+        model_commands.load_cluster_inventory = lambda config: inv
+        model_commands.load_benchmarks = lambda **kwargs: fleet
+        model_commands.probe_hosts = lambda *args, **kwargs: probes
+        model_commands.OllamaClient = lambda *args, **kwargs: _Candidate()
+        try:
+            with orun.console.capture() as cap:
+                orun.cmd_best_machine(repl, "show")
+            show_text = _plain(cap.get())
+            check("/best-machine show names the winner",
+                  "→ host g3" in show_text, True)
+            check("/best-machine show is read-only", repl.client is local, True)
+            with orun.console.capture() as cap:
+                orun.cmd_best_machine(repl, "--switch")
+            switch_text = _plain(cap.get())
+            check("/best-machine --switch moves the client",
+                  repl.client.base, "http://g3:11434")
+            check("/best-machine --switch records the host",
+                  (repl.session.remote, repl.tool_ctx.client is repl.client),
+                  ("g3", True))
+            check("/best-machine --switch names the machine",
+                  "machine i5-8300h-1050" in switch_text, True)
+        finally:
+            (model_commands.load_cluster_inventory,
+             model_commands.load_benchmarks, model_commands.probe_hosts,
+             model_commands.OllamaClient) = saved
+
+    # CLI parsing: the optional metric must not swallow the model.
+    parser = orun.build_parser()
+    store = orun.SessionStore()
+    for argv, metric, model in (
+            (["--best-machine", "m1", "hi"], "decode", "m1"),
+            (["--best-machine", "p", "m1"], "p", "m1"),
+            (["--best-machine=composite", "m1"], "composite", "m1")):
+        parsed = parser.parse_args(orun.cli.normalize_argv(argv, store))
+        check(f"--best-machine parses {argv}",
+              (parsed.best_machine, parsed.model), (metric, model))
+    check("--best-machine metric validation",
+          orun.parse_metric("prefill"), "prefill")
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            parser.parse_args(["--best-machine", "--remote", "g3"])
+        check("--best-machine and --remote are exclusive", False, True)
+    except SystemExit:
+        check("--best-machine and --remote are exclusive", True, True)
+    check("sort aliases reach performance",
+          (orun.parse_model_sort("speed"), orun.parse_model_sort("tps")),
+          ("performance", "performance"))
+
+    return failures
+
+
 if __name__ == "__main__":
     live = "--live" in sys.argv[1:]
     if live:
@@ -9853,6 +10243,7 @@ if __name__ == "__main__":
              + test_pull_and_disk_helpers() + test_ensure_model()
              + test_model_sort() + test_fuzzy_sort() + test_model_picker_sort()
              + test_model_command_sort() + test_sort_flag()
+             + test_cluster_benchmarks()
              + test_gpu_layers() + test_slash_completer()
              + test_prompt_toolkit_fallback() + test_textual_optional()
              + test_tools_policy() + test_tool_execution() + test_web_tools()

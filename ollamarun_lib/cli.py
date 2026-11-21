@@ -15,8 +15,12 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from rich.markup import escape
+from rich.prompt import Prompt
 
 from .artifacts import ArtifactStore
+from .benchmarks import load_benchmarks, performance_index
+from .bestmachine import (choice_line, choose_machine, machine_table,
+                          parse_metric, probe_hosts)
 from .client import OllamaClient, OllamaError
 from .constants import (
     CONFIG_PATH,
@@ -37,6 +41,7 @@ from .constants import (
 from .emit import cli_delete, cli_export, cli_list, cli_search, cli_show
 from .helpers import (
     ModelTracker,
+    human_duration,
     is_local_host,
     load_config,
     local_service_env,
@@ -54,6 +59,8 @@ from .helpers import (
     tailscale_peer_state,
 )
 from .images import encode_image
+from .inventory import (inventory_age, inventory_stale,
+                        load_cluster_inventory)
 from .agent_api import (add_agent_routes, add_artifact_routes,
                         build_agent_api)
 from .openai_api import build_router
@@ -129,8 +136,13 @@ interactive commands:
   /show [topic]         model info|license|modelfile|parameters|system|template
   /model [NAME|--list|--sort KEY|--sort fuzzy TEXT]
                         switch model, or list/sort installed models
-                        (KEY: name|size|parameters|context|modified; any
-                        other text is an fzf-style fuzzy query)
+                        (KEY: name|size|parameters|context|performance|modified;
+                        any other text is an fzf-style fuzzy query)
+  /best-machine [show] [--switch|-s] [--metric|-m d|p|c]
+                        rank benchmarked machines for the current model and
+                        optionally move the session to the host holding the
+                        fastest one (the machine is hardware, the host is the
+                        endpoint currently sitting in it)
   /load [MODEL|SESSION] switch model or resume a saved session
   /save NAME            create an Ollama model from this session
   /pull [MODEL]         pull a model onto this host (updates if present)
@@ -206,6 +218,11 @@ remote:
                         there while sessions, files and tools stay local.
                         Resuming a session reconnects to the machine it was
                         created on unless --host/--remote override it.
+  --best-machine [M]    run on the fastest online machine measured for the
+                        model in the profilebench tree (d/decode default,
+                        p/prefill, c/composite). Machines are hardware; the
+                        host currently holding the winner is what we connect
+                        to (cluster-hosts.json). Overrides session stickiness.
 
 sessions live in ~/etc/data/ollamarun; config in ~/etc/config_files/ollamarun.json
 """
@@ -252,6 +269,12 @@ sessions live in ~/etc/data/ollamarun; config in ~/etc/config_files/ollamarun.js
                             help="run on a tailnet machine (pi, kiddo, g3, "
                                  "optiplex7070 or optiplex, guri) or any host[:port]; "
                                  "models load and unload there")
+    host_group.add_argument("--best-machine", nargs="?", const="decode",
+                            metavar="METRIC",
+                            help="run on the fastest online benchmarked machine "
+                                 "for the model: d/decode (default), p/prefill "
+                                 "or c/composite; the machine is resolved to the "
+                                 "host currently holding it")
     wrapper.add_argument("--pull", action="store_true",
                          help="pull the model if it is not installed, without asking "
                               "(shows free disk space and progress on a terminal)")
@@ -260,7 +283,8 @@ sessions live in ~/etc/data/ollamarun; config in ~/etc/config_files/ollamarun.js
                               + ", ".join(MODEL_SORT_KEYS)
                               + " (default: modified), or any other text for "
                                 "an fzf-style fuzzy ranking (--sort qwen3, or "
-                                "--sort fuzzy \"qwen 3b\")")
+                                "--sort fuzzy \"qwen 3b\"). 'performance' ranks "
+                                "by the fleet's best measured decode tok/s")
     wrapper.add_argument("-m", "--model", dest="model_flag", metavar="MODEL",
                          help="model name (same as the positional MODEL)")
     wrapper.add_argument("--system", metavar="TEXT",
@@ -623,7 +647,10 @@ def resolve_model(args: argparse.Namespace, config: dict[str, Any],
     model = explicit or (session.model if session else None) or config.get("model")
     if not model:
         if console.is_terminal:
-            model = pick_model(client, None, sort=args.sort or "modified")
+            performance = (performance_index(config)
+                           if args.sort == "performance" else None)
+            model = pick_model(client, None, sort=args.sort or "modified",
+                               performance=performance)
         if not model:
             console.print("[err]no model given[/err] — pass MODEL or configure one")
             return None
@@ -778,6 +805,23 @@ def normalize_argv(argv: Optional[list[str]], store: SessionStore,
     index = 0
     while index < len(argv):
         token = argv[index]
+        if token == "--best-machine":
+            # The optional metric must not swallow the model positional:
+            # `--best-machine qwen3:8b` is decode + model, while
+            # `--best-machine p qwen3:8b` is prefill + model.
+            if index + 1 < len(argv) and not argv[index + 1].startswith("-"):
+                candidate = argv[index + 1].lower()
+                if candidate in {"d", "decode", "p", "prefill",
+                                 "c", "composite"}:
+                    out.append("--best-machine=" + argv[index + 1])
+                    index += 2
+                    continue
+                out.append("--best-machine=decode")
+                index += 1
+                continue
+            out.append(token)
+            index += 1
+            continue
         if token == "--sort" and index + 1 < len(argv) \
                 and argv[index + 1].lower() == "fuzzy" \
                 and index + 2 < len(argv) and not argv[index + 2].startswith("-"):
@@ -867,9 +911,34 @@ def session_reconnect(args: argparse.Namespace, config: dict[str, Any],
     A session that last ran somewhere other than the local default host is
     sticky -- unless --host/--remote explicitly says where to go instead.
     """
-    if args.host or args.remote or not session.host or is_local_host(session.host):
+    if args.host or args.remote or getattr(args, "best_machine", None) is not None \
+            or not session.host or is_local_host(session.host):
         return None
     return resolve_remote(session.remote, config, ts_map) if session.remote else session.host
+
+
+def _best_machine_ask(args: argparse.Namespace, quiet: bool):
+    """A CLI prompt for the fastest-vs-installed choice, or None when silent."""
+    if quiet or not console.is_terminal or not sys.stdin.isatty():
+        return None
+
+    def ask(prompt: str, choices: list[str], default: str) -> str:
+        return Prompt.ask(prompt, choices=list(choices), default=default)
+
+    return ask
+
+
+def _current_machine(config: dict[str, Any], session: Session,
+                     inventory: Any) -> Any:
+    """The machine the session would use without --best-machine."""
+    for ref in (session.remote, None if is_local_host(session.host or "")
+                else session.host, config.get("remote")):
+        if ref:
+            machine = inventory.machine_for_host(str(ref))
+            if machine is not None:
+                return machine
+    local = inventory.local_host()
+    return inventory.machine(local.machine) if local is not None else None
 
 
 def parse_cli_args(parser: argparse.ArgumentParser, argv: list[str],
@@ -1045,9 +1114,28 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     timeout = args.timeout or config.get("timeout") or DEFAULT_TIMEOUT
     quiet = not console.is_terminal or args.json or args.raw
+    best_requested = args.best_machine is not None
+    best_metric = "decode"
+    if best_requested:
+        try:
+            best_metric = parse_metric(args.best_machine)
+        except ValueError as exc:
+            console.print(f"[err]{escape(str(exc))}[/err]")
+            return 2
+    performance = (performance_index(config)
+                   if args.sort == "performance" else None)
     remote_name: Optional[str] = None
+    best_fleet = None
+    best_probes = None
+    best_choice = None
+    best_current: Optional[str] = None
+    best_local = False
     try:
-        if args.remote:
+        if best_requested:
+            # The decision comes after the session/model are known; this is
+            # only the throwaway client `resolve_session` wants for a new id.
+            host = config.get("host") or os.environ.get("OLLAMA_HOST") or DEFAULT_HOST
+        elif args.remote:
             host = resolve_remote(args.remote, config)
             remote_name = args.remote
         elif args.host:
@@ -1068,28 +1156,86 @@ def main(argv: Optional[list[str]] = None) -> int:
         console.print(f"[err]{escape(str(exc))}[/err]")
         return 1
 
-    # Reconnect where the session last ran: a session whose host is not the
-    # local default resumes there unless --host/--remote says otherwise.
-    try:
-        reconnect = session_reconnect(args, config, session)
-    except ValueError as exc:
-        console.print(f"[err]{escape(str(exc))}[/err]")
-        return 2
-    adopted = reconnect is not None
-    if reconnect and reconnect != client.base:
-        client = OllamaClient(reconnect, insecure=args.insecure, timeout=timeout)
-        console.print(f"[dim]resuming session on {escape(session.remote or reconnect)} "
-                      f"({client.base})[/dim]")
-    if not adopted and (args.host or args.remote) and session.host \
-            and not is_local_host(session.host) and session.host != client.base:
-        console.print(f"[dim]session was created on {escape(session.remote or session.host)}"
-                      f"; using {escape(args.remote or args.host or '')} instead[/dim]")
+    best_provisional = (args.model_flag or args.model or session.model
+                        or config.get("model") or "")
+    ask = _best_machine_ask(args, quiet)
+    if best_requested:
+        inventory = load_cluster_inventory(config)
+        if inventory.error:
+            console.print(f"[err]{escape(inventory.error)}[/err]")
+            return 2
+        if not inventory.machines:
+            console.print("[err]the cluster inventory has no machines; "
+                          "cannot resolve a benchmarked machine to a host[/err]")
+            return 2
+        max_age = config.get("cluster_hosts_max_age", 86400)
+        if not quiet and inventory_stale(inventory, max_age):
+            console.print(f"[warn]cluster inventory is "
+                          f"{human_duration(inventory_age(inventory))} old — "
+                          "the host/machine binding may be stale[/warn]")
+        if not quiet:
+            for warning in inventory.warnings[:3]:
+                console.print(f"[dim]{escape(warning)}[/dim]")
+        best_fleet = load_benchmarks(config=config, inventory=inventory,
+                                     refresh=True)
+        if best_fleet.error:
+            console.print(f"[err]{escape(best_fleet.error)}[/err]")
+            return 2
+        if not quiet:
+            for warning in best_fleet.warnings[:3]:
+                console.print(f"[dim]{escape(warning)}[/dim]")
+        host_keys = [host.key for host in inventory.hosts.values()
+                     if host.machine and inventory.active(host.machine)]
+        best_probes = probe_hosts(host_keys, config=config, inventory=inventory)
+        current_machine = _current_machine(config, session, inventory)
+        best_current = current_machine.id if current_machine is not None else None
+        best_choice = choose_machine(
+            best_provisional, fleet=best_fleet, probes=best_probes,
+            metric=best_metric, current=best_current, ask=ask,
+            assume_yes=args.pull)
+        if best_choice.chosen is None:
+            console.print(f"[err]no machine available: "
+                          f"{escape(best_choice.reason)}[/err]")
+            return 1
+        client = OllamaClient(best_choice.base, insecure=args.insecure,
+                              timeout=timeout)
+        best_local = bool(best_choice.chosen.probe
+                          and best_choice.chosen.probe.local)
+        remote_name = None if best_local else best_choice.host_key
+        reconnect = None
+        adopted = False
+    else:
+        # Reconnect where the session last ran: a session whose host is not
+        # the local default resumes there unless --host/--remote says otherwise.
+        try:
+            reconnect = session_reconnect(args, config, session)
+        except ValueError as exc:
+            console.print(f"[err]{escape(str(exc))}[/err]")
+            return 2
+        adopted = reconnect is not None
+        if reconnect and reconnect != client.base:
+            client = OllamaClient(reconnect, insecure=args.insecure, timeout=timeout)
+            console.print(f"[dim]resuming session on "
+                          f"{escape(session.remote or reconnect)} "
+                          f"({client.base})[/dim]")
+        if not adopted and (args.host or args.remote) and session.host \
+                and not is_local_host(session.host) and session.host != client.base:
+            console.print(f"[dim]session was created on "
+                          f"{escape(session.remote or session.host)}"
+                          f"; using {escape(args.remote or args.host or '')} instead[/dim]")
 
-    probe_label = (session.remote or session.host) if adopted else remote_name
+    if best_requested:
+        # The ranking probe already proved the chosen host answers.
+        probe_label = None
+    else:
+        probe_label = (session.remote or session.host) if adopted else remote_name
     if probe_label and not remote_preflight(client, probe_label, config, quiet=quiet):
         return 1
 
-    if adopted:
+    if best_requested:
+        host_label = None if best_local else best_choice.host_key
+        ssh_target = None if best_local else best_choice.ssh_target
+    elif adopted:
         host_label = session.remote or session.host
         ssh_target = remote_node(session.remote, config) if session.remote else None
     elif remote_name:
@@ -1111,16 +1257,52 @@ def main(argv: Optional[list[str]] = None) -> int:
     model = resolve_model(args, config, client, session)
     if not model:
         return 2
+
+    if best_requested and model != best_provisional:
+        # The picker may have chosen a different model; rank again from the
+        # same live probes and move the client if another machine wins.
+        best_choice = choose_machine(
+            model, fleet=best_fleet, probes=best_probes, metric=best_metric,
+            current=best_current, ask=ask, assume_yes=args.pull)
+        if best_choice.chosen is None:
+            console.print(f"[err]no machine available: "
+                          f"{escape(best_choice.reason)}[/err]")
+            return 1
+        moved = (best_choice.host_key != remote_name
+                 or best_choice.base != client.base)
+        best_local = bool(best_choice.chosen.probe
+                          and best_choice.chosen.probe.local)
+        remote_name = None if best_local else best_choice.host_key
+        if moved:
+            client = OllamaClient(best_choice.base, insecure=args.insecure,
+                                  timeout=timeout)
+        host_label = None if best_local else best_choice.host_key
+        ssh_target = None if best_local else best_choice.ssh_target
+
+    if best_requested and not quiet:
+        console.print(machine_table(
+            best_choice.ranked, chosen=best_choice.chosen.machine,
+            current=best_current, metric=best_metric, model=model))
+        fastest = best_choice.ranked[0] if best_choice.ranked else None
+        if fastest is not None and not fastest.available \
+                and fastest.machine != best_choice.chosen.machine:
+            console.print(f"[dim]fastest {escape(fastest.label)} is "
+                          f"{escape(fastest.state_text(best_current))} — "
+                          "skipped[/dim]")
+        console.print(f"[ok]{escape(choice_line(best_choice, best_metric))}[/ok]")
+
     chosen = ensure_model(client, model, config, ssh_target=ssh_target,
                           host_label=host_label, assume_yes=args.pull,
                           pick_on_decline=True, quiet=quiet,
-                          sort=args.sort or "modified")
+                          sort=args.sort or "modified", performance=performance)
     if not chosen:
         return 2
     model = chosen
     session.model = model
     session.host = client.base
-    if remote_name and not adopted:
+    if best_requested:
+        session.remote = None if best_local else remote_name
+    elif remote_name and not adopted:
         session.remote = remote_name
     elif args.host or is_local_host(client.base):
         session.remote = None

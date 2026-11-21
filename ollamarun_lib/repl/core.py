@@ -34,6 +34,7 @@ from ..helpers import (CancelToken, HardwareSample, canonical_model_name,
                        ssh_hardware_sample, ssh_service_env, usage_color)
 from ..interactive import (gpu_layers_label, model_block_count, open_in_editor,
                            parse_model_sort, resolve_gpu_layers)
+from ..inventory import load_cluster_inventory
 from ..prompts import (default_system_prompt, load_prompt, summarize_prompt,
                        title_prompt)
 from ..renderer import (GenerationResult, HeadlessRenderer, Renderer,
@@ -607,6 +608,49 @@ class Repl:
             console.print(f"[dim]unloaded {escape(target)}[/dim]")
         return True
 
+    def current_machine(self) -> Any:
+        """The cluster machine this session's host is currently in, if known."""
+        try:
+            inventory = load_cluster_inventory(self.config)
+        except (OSError, ValueError):
+            return None
+        return inventory.machine_for_host(self.session.remote or self.client.base)
+
+    def switch_host(self, host_key: str, base: str, *,
+                    ssh_target: Optional[str] = None,
+                    local: bool = False,
+                    client: Optional[OllamaClient] = None) -> None:
+        """Move this session's backend to another host (and its hardware).
+
+        Everything host-scoped is reset: the live client, the session's
+        sticky host/remote, the tool context's client/SSH target and the
+        run-long caches (`/api/show`, context windows, the service env,
+        resident-model bookkeeping). The old host keeps its resident model
+        until its keep-alive expires; `/bye` unloads the current one.
+        """
+        self.client = client or OllamaClient(
+            base, insecure=getattr(self.client, "insecure", False),
+            timeout=self.timeout)
+        self.session.host = self.client.base
+        self.session.remote = None if local else host_key
+        self.session.touch()
+        self.tool_ctx.client = self.client
+        self.tool_ctx.ssh_target = None if local else ssh_target
+        self._show_cache.clear()
+        self._block_counts.clear()
+        self._context_totals.clear()
+        self._context_sources.clear()
+        self._context_provisional.clear()
+        self._server_context = _UNSET
+        self._ps_shown_for.clear()
+        self.model_names = []
+        self.refresh_models()
+        # A turn or a running preload owns the wait-stage handle; never
+        # overwrite it from here. A quiet switch warms the new host when it
+        # is free to do so.
+        if self._preload_thread is None or not self._preload_thread.is_alive():
+            self._preload_model()
+
     def load_options(self) -> dict[str, Any]:
         """The options a load should carry to match the next request.
 
@@ -1029,7 +1073,7 @@ class Repl:
 
     def session_report(self) -> dict[str, Any]:
         """Plain data for the `session_info` tool (identity, settings, tools)."""
-        return build_session_report(
+        report = build_session_report(
             session=self.session, show=self.model_show(), base=self.client.base,
             cwd=self.tool_ctx.cwd,
             keepalive=self.session.keepalive or getattr(self.args, "keepalive", None),
@@ -1038,6 +1082,13 @@ class Repl:
             tools_enabled=self.tools_active(), auto_approve=self.auto_approve,
             tools_policy=self.tools_policy, tool_round=self._tool_round,
             tools_max_rounds=self.tools_max_rounds)
+        machine = self.current_machine()
+        if machine is not None:
+            report["machine"] = machine.id
+            report["box"] = machine.box or None
+            host = machine.host
+            report["site"] = host.site if host is not None else None
+        return report
 
     def live_context_used(self) -> Optional[int]:
         """`context_used()` plus the chunks streamed in the running round.
@@ -1455,13 +1506,17 @@ class Repl:
                 continue
             style = _CAP_STYLES.get(name, "dim")
             model_bits.append(f"[{style}]{escape(name)}[/{style}]")
+        machine = self.current_machine()
+        host_bits = [f"[dim]{escape(self.client.base)}[/dim]"]
+        if self.session.remote:
+            host_bits.append(f"[warn]remote {escape(self.session.remote)}[/warn]")
+        if machine is not None:
+            host_bits.append(f"[info]machine {escape(machine.id)}[/info]")
         rows: list[tuple[str, str]] = [
             ("model", _join_bits(model_bits)),
             ("session", f"[dim]{self.session.id}[/dim] · "
                         f"{escape(self.session.display_title())}"),
-            ("host", f"[dim]{escape(self.client.base)}[/dim]"
-                     + (f" · [warn]remote {escape(self.session.remote)}[/warn]"
-                        if self.session.remote else "")),
+            ("host", _join_bits(host_bits)),
         ]
         report = self.context_report()
         rows.append(("window", self._banner_context(report)))

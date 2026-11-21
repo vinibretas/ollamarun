@@ -133,7 +133,7 @@ docstring convention) — it is binding, not optional, for edits in this repo.
 ## House style specific to this file
 
 - Every edit that changes behavior must bump `VERSION` (module-level
-  constant in `ollamarun_lib/constants.py`, currently `"2.21"` — keep this
+  constant in `ollamarun_lib/constants.py`, currently `"2.24"` — keep this
   line current when you bump it) and prepend a new bullet list under
   `Summary of changes in this version:` in the top-level `ollamarun` entry
   script's module docstring — read the existing entries there before adding
@@ -302,6 +302,28 @@ a module's own docstring for what lives there before editing:
    some chat templates reject a message list that ends with two assistant
    messages, so the runtime and the OpenAI proxy repair the tail and retry
    once instead of surfacing the raw 400.
+8b. **The fleet layer (new)** — three modules behind `--best-machine` and
+   the `performance` model sort:
+   `inventory.py` reads `cluster-hosts.json` (sites, `machines` = hardware
+   with `fingerprint`/`fingerprints`, `status`, `box`, and the `hostnames`
+   windows each box has hosted, and `hosts` = named endpoints with the
+   `machine` they currently hold, `site`, `ssh_alias`, `tailscale`,
+   addresses and the `last_seen_up`/`last_seen_source` observations).
+   `machine_for_run()` attributes a benchmark run by the hardware fingerprint
+   first, then the run date against the hostname windows, then an explicit
+   machine id — never the current host binding. `benchmarks.py` parses the
+   profilebench tree (`matrix_full.csv`, legacy `matrix.csv` + `state.json`),
+   merges rows per machine/digest (a full-profile run beats a partial legacy
+   run for the same cell), aggregates medians, computes per-machine
+   `decode`/`prefill` speed factors, and exposes the active-first
+   `PerformanceIndex` behind `--sort performance`. `bestmachine.py` probes
+   hosts in parallel (`/api/version` + `/api/tags`), ranks machines by
+   decode/prefill/composite, applies the availability policy (active +
+   host + online; retired/no-host/offline shown but skipped) and the
+   missing-model policy (fastest wins; pull-vs-second-best only when the
+   current machine is the fastest), and renders the shared table. Only
+   `bestmachine.py` imports `client.py`; the other two sit on
+   `helpers.py`/`inventory.py`.
 9. **`tools/`** — the tool harness, one module per concern. `spec.py` holds
    `ToolSpec`/`ToolContext`/`ToolOutcome`/`ToolHandlerResult` and output
    truncation; `policy.py` the allowlists and `shell_safety`,
@@ -419,15 +441,17 @@ a module's own docstring for what lives there before editing:
    `ensure_model()` (free-space line + y/N pull prompt, `--pull` skip,
    picker on decline), `pull_with_progress()` and `disk_free_line()`.
    Model-list sorting lives here too: `MODEL_SORT_KEYS`/`parse_model_sort`
-   (`modified`|`name`|`size`|`parameters`|`context`, plus aliases; any other
-   text becomes `fuzzy:TEXT`), the hand-rolled fzf-style matcher
-   (`fuzzy_match`/`fuzzy_match_query`/`fuzzy_positions`/`fuzzy_sort_models`,
-   no dependency), `model_parameter_count` (parses `details.parameter_size`,
-   MoE totals included), `sort_models`/`model_table` (shared by the picker
-   and `/model --list`; fuzzy sorts highlight the matched name characters)
+   (`modified`|`name`|`size`|`parameters`|`context`|`performance`, plus
+   aliases; any other text becomes `fuzzy:TEXT`), the hand-rolled fzf-style
+   matcher (`fuzzy_match`/`fuzzy_match_query`/`fuzzy_positions`/
+   `fuzzy_sort_models`, no dependency), `model_parameter_count` (delegates to
+   `benchmarks.parse_parameter_count`, MoE totals included),
+   `sort_models`/`model_table` (shared by the picker and `/model --list`;
+   fuzzy sorts highlight the matched name characters; `performance` takes the
+   `PerformanceIndex` and adds a `best tps` column naming the machine)
    and `fetch_context_lengths`/`cached_context_length` (one `/api/show` per
    uncached model, in parallel behind a status line, cached per host);
-   `pick_model` takes `sort=`/`on_sort=` and its prompt accepts
+   `pick_model`/`ensure_model` take `performance=` and their prompt accepts
    `--sort KEY`/`-s KEY`/`sort KEY`/`--sort fuzzy TEXT` (fuzzy matches come
    first, misses stay below alphabetically) to re-order the table in place.
    Also
@@ -565,13 +589,19 @@ a module's own docstring for what lives there before editing:
    `/load`, `/save`, `/pull`, `/num-ctx`, `/gpu-layers`, `/params`, `/tools`,
    `/tts`, `/think`, `/thinking`, `/system`, `/undo`, `/retry`, `/edit`,
    `/branch`, `/context`, `/summarize`, `/image`, `/render`, `/math`,
-   `/pager`, `/tps`, `/copy`, `/export`, `/stats`, `/queue`, ...) is a
+   `/pager`, `/tps`, `/copy`, `/export`, `/stats`, `/queue`,
+   `/best-machine`, ...) is a
    standalone `cmd_NAME(repl, argument)` function dispatched by name through
    `COMMAND_HANDLERS`; `COMMAND_INFO` is the authoritative description table
    (the REPL `/help`, the README's command table and the `cli.py` epilog all
    mirror it). Add a new slash command by adding one function to the right
    `commands/` module and wiring it into `tables.py`/`registry.py` (and the
    hand-maintained `build_parser()` epilog in `cli.py`).
+   `current_machine()` resolves `session.remote`/`client.base` through the
+   cluster inventory, so the banner and `session_info` name the hardware box;
+   `switch_host()` moves the backend (client, `session.host`/`remote`,
+   `tool_ctx.client`/`ssh_target`) and clears the host-scoped caches.
+   `/best-machine` is read-only and `--switch` uses them.
    The numbered tool-approval prompt itself and the entry list it is built
    from (`approval_entries`/`_prompt_approval`, storing generalized
    `ToolRule`s in the session) live in `ui.py`; `repl/__init__.py` re-exports
@@ -787,7 +817,8 @@ a module's own docstring for what lives there before editing:
 29. **`cli.py`** — `build_parser()` (the full argparse surface, mirroring
    every `ollama run` flag), `resolve_model`/`resolve_session` (figuring out
    what model/session a given invocation means, including the `-c`/`-r`/
-   `--session` disambiguation in `normalize_argv`), `ui_mode()`/`wants_tui()`
+   `--session` and `--best-machine` optional-metric disambiguation in
+   `normalize_argv`), `ui_mode()`/`wants_tui()`
    (which front end to start), `build_serve_parser()`/`serve_main()` (the
    `ollamarun serve` subcommand: upstream resolution, `serve_settings()`
    validation, banner, the combined OpenAI + agent router gated by
@@ -795,7 +826,12 @@ a module's own docstring for what lives there before editing:
    drain handlers within `serve_shutdown_timeout`, then unload the tracked
    models unless `--keep-loaded`) and
    `main()` as the entry point (called by the top-level `ollamarun` script),
-   which dispatches `serve` before the normal parser.
+   which dispatches `serve` before the normal parser. `--best-machine`
+   resolves the inventory + benchmark tree, probes the hosts, applies the
+   model/availability policy and rebuilds the client at the chosen host
+   before the normal `resolve_model` → `ensure_model` path; it overrides
+   session stickiness (`session_reconnect` yields to it) and re-ranks if the
+   picker chooses a different model.
 
 Model housekeeping (unload-before-switch, unload-on-exit, embedding models
 always resident) is cross-cutting logic that lives in the REPL commands
@@ -876,6 +912,13 @@ hint only, the way `renderer.py` does for `Session` (defined later, in
   OpenAI mapping.
 - **New model-facing text**: tool wording in `defs/tools/*.json`, prompt text
   in `defs/prompts/`; never hardcode it in Python.
+- **Best-machine data/ranking**: `inventory.py` owns the `cluster-hosts.json`
+  model (machines/hostings/windows), `benchmarks.py` owns the profilebench
+  tree and the `PerformanceIndex`, and `bestmachine.py` owns probing, ranking
+  and the availability/model policy. A new metric goes through `parse_metric`,
+  `rank_machines`/`_add_composite` and `machine_table`; a new inventory field
+  through `inventory.py`; `/best-machine` (`repl/commands/model.py`) and
+  `--best-machine` (`cli.py`) both call the same `choose_machine()`.
 - **Streaming/rendering UX**: `renderer.py` (the TUI consumes the same frames
   through `StreamSink`), and `ui.py`'s `StatusSnapshot`/`format_status()` when
   it shows up in the status bar.
@@ -916,7 +959,11 @@ the most likely place a change to the layout engine (`mathrender.py`) will
 need new coverage. The waiting-line tests (`test_wait_stage` over
 `WAIT_STAGE_CASES`) pin the classifier matrix, the tracker's scripted state
 machine, the probe parsers, the `/num-ctx` pending-reload bookkeeping and
-both front ends. `OllamaClient` is tested against a fake `requests.Session`
+both front ends. The fleet tests (`test_cluster_benchmarks`) pin the
+`cluster-hosts.json` machine/host/window attribution, the legacy
+`matrix.csv` merge, the active-first `performance` index, probe/ranking
+policy (retired/no-host/offline skips, one-online note, pull-vs-second-best)
+and `/best-machine`'s read-only and `--switch` paths. `OllamaClient` is tested against a fake `requests.Session`
 (`_FakeSession`/`_FakeResponse`) rather than a real HTTP mock library;
 REPL/CLI-level tests use `_FakeClient` (a lighter double with the handful of
 methods those layers actually call) instead. Console output assertions that

@@ -35,6 +35,7 @@ no model given — pass MODEL or configure one
 | `size` | Largest first. |
 | `parameters` | Most parameters first (MoE totals included). |
 | `context` | Largest context window first. |
+| `performance` | Fleet-best measured decode tok/s first (profilebench; active machines first, retired only as a fallback). |
 | anything else | An fzf-style fuzzy query: strongest match first, then the models it misses, alphabetically. |
 
 Aliases like `recent`, `newest` and `mtime` map to `modified`. Anything that
@@ -48,6 +49,12 @@ not a filter — every model stays in the table, so a number still selects
 whatever row it labels. `context` costs one lazy `/api/show` per model,
 fetched in parallel behind a status line and cached per host — the first
 sorted-by-context prompt takes a moment, later ones do not.
+
+`performance` reads `~/llms/benchmarks/profilebench` (`benchmarks_dir`) and
+shows a `best tps` column naming the machine that produced the number (for
+example `121.9 i5-8300h-1050`). It uses the fleet's best active measurement;
+a model measured only on retired hardware still gets a value, marked as
+historical. Aliases: `perf`, `speed`, `tps`, `fastest`, `bench`.
 
 Ways in: `--sort KEY|TEXT` seeds the picker at launch, the picker prompt
 itself takes the same in place (`--sort fuzzy qwen`, or the shorthand

@@ -23,8 +23,8 @@ from .commands.config import (cmd_math, cmd_pager, cmd_params, cmd_render,
 from .commands.context import cmd_context, cmd_summarize
 from .commands.help import cmd_help
 from .commands.media import cmd_copy, cmd_export, cmd_image
-from .commands.model import (cmd_gpu_layers, cmd_model, cmd_num_ctx, cmd_ps,
-                             cmd_pull, resolve_num_ctx)
+from .commands.model import (cmd_best_machine, cmd_gpu_layers, cmd_model,
+                             cmd_num_ctx, cmd_ps, cmd_pull, resolve_num_ctx)
 from .commands.registry import COMMAND_HANDLERS
 from .commands.sessions import (cmd_branch, cmd_clear, cmd_edit, cmd_load,
                                 cmd_new, cmd_retry, cmd_save, cmd_sessions,

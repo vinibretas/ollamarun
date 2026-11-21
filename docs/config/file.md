@@ -25,6 +25,9 @@ Defaults are `DEFAULT_CONFIG` in `ollamarun_lib/constants.py`. `null` means
 | `remote` | `null` | A `--remote` NAME to make the default. |
 | `remote_hosts` | `{}` | Your own short names for tailnet machines. |
 | `remote_ssh_user` | `null` | ssh user for the remote probes (disk/GPU/RAM). |
+| `cluster_hosts` | `~/etc/config_files/cluster-hosts.json` | The cluster inventory: `machines` (hardware) and `hosts` (endpoints, each with the `machine` it holds). `CLUSTER_HOSTS_FILE` overrides. |
+| `cluster_hosts_max_age` | `86400` | Warn (never fail) when the inventory is older than this many seconds; `0` disables. |
+| `benchmarks_dir` | `~/llms/benchmarks/profilebench` | The profilebench results tree behind `--best-machine` and `--sort performance`. |
 | `model` | `null` | Default model, used when none is given. |
 | `system` | `null` | System prompt; `null` = built-in default, `""` = none, text = replaces. |
 

@@ -75,6 +75,64 @@ llama3.2:3b › /tools system_status call target=local
 A probe that cannot reach the machine degrades to `unknown` rather than
 failing the command that needed it.
 
+## Best machine
+
+`--best-machine [METRIC]` skips the manual choice: it ranks the hardware
+measured in `~/llms/benchmarks/profilebench` (`benchmarks_dir`) and runs on
+the **host** currently holding the winner. The two identities come from
+`~/etc/config_files/cluster-hosts.json` (`cluster_hosts`, also read by the
+other cluster scripts):
+
+- `machines` are the physical boxes, keyed by a hardware id such as
+  `i7-9700` or `r7-2700-1660`, with a `fingerprint` (the `Machine` string
+  profilebench logs) and the `hostnames` windows the box has hosted;
+- `hosts` are the named endpoints (`tower`, `pi`, `g3`, `kiddo`, `guri`), each
+  with `machine` = the box it currently holds, plus `ssh_alias`, `tailscale`,
+  `site` and `last_seen_up`/`last_seen_source`.
+
+```json
+"machines": {
+  "i7-9700": {
+    "box": "Dell OptiPlex 7070",
+    "fingerprint": "i7-9700 8C8T",
+    "status": "active",
+    "hostnames": [
+      {"name": "optiplex7070", "first_seen": "2026-09-22", "last_seen": "2026-09-25"},
+      {"name": "tower", "first_seen": "2026-11-20", "last_seen": null}
+    ]
+  },
+  "r7-2700-1660": {
+    "fingerprint": "Ryzen 7 2700 8C16T GTX 1660 6G",
+    "status": "retired",
+    "hostnames": [{"name": "tower", "first_seen": "2026-09-15", "last_seen": "2026-09-19"}]
+  }
+},
+"hosts": {
+  "tower": {"machine": "i7-9700", "ssh_alias": "tower", "site": "home-house-v"},
+  "pi":    {"machine": "bcm2711", "ssh_alias": "vinipi", "site": "home-house-v"}
+}
+```
+
+Benchmark rows are attributed by the `Machine` fingerprint first, then by the
+run's date against the hostname windows. The current binding is **never** used
+for history, so the September `tower` runs stay on the retired Ryzen box while
+a November `tower` run is the OptiPlex. `retired`/`maintenance` machines, a
+machine with no host, and a host that fails the live `/api/version` probe are
+shown and skipped. `last_seen_up` is an observation written by
+`uptimes --record`, not a live field.
+
+The metric is `d`/`decode` (default), `p`/`prefill` or `c`/`composite`
+(normalized 80/20). The fastest available machine wins even if it needs a
+pull; if the current machine is the fastest and lacks the model while another
+online machine has it, the CLI asks `p` (pull on the fastest) or `s` (use the
+one that has it). Non-interactive without `--pull` picks `s`; `--pull` picks
+`p`. `/best-machine` in the REPL is read-only (table + hint) and
+`/best-machine --switch` (`-s`) moves the session, updating the client,
+`session.host`, `session.remote` and the tool context's SSH target (the
+inventory `ssh_alias`, e.g. `kiddo-lan`; HTTP uses the tailnet name).
+`--sort performance` classifies models by the fleet's best measured decode
+tok/s, preferring active machines and falling back to retired measurements.
+
 ## Sticky sessions
 
 Sessions store the machine they last ran on, and resuming reconnects there:

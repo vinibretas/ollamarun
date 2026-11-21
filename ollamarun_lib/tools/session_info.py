@@ -37,6 +37,13 @@ def run(args: dict[str, Any], ctx: ToolContext) -> str:
     remote = data.get("remote")
     where = (f"{remote} ({base})" if remote else
              f"this machine ({base})" if base else "?")
+    machine = data.get("machine")
+    if machine:
+        where += f" · machine {machine}"
+        if data.get("box"):
+            where += f" ({data['box']})"
+        if data.get("site"):
+            where += f" · site {data['site']}"
     lines.append(f"server: {where}")
     cwd = data.get("cwd") or "?"
     lines.append(f"tools run on: {socket.gethostname()} ({sys.platform}) · cwd {cwd}")

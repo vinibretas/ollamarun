@@ -2,6 +2,31 @@
 """
 ollamarun - a full `ollama run` wrapper with rendering and saved sessions
 
+Version: 2.24
+
+Summary of changes in this version:
+  - `--best-machine [d|p|c]` and `/best-machine [show] [--switch|-s]
+    [--metric|-m d|p|c]`: pick the fastest benchmarked machine for the model
+    and run on the host currently holding it. Benchmarks score hardware
+    (`machines`: fingerprint + hostname windows in `cluster-hosts.json`), but
+    requests go to a host (`hosts[*].machine`); old runs are attributed by
+    the `Machine` fingerprint and the run date against the machine's
+    hostname windows, so a hostname that moved between boxes keeps its
+    historical numbers on the right hardware. Retired/maintenance machines,
+    machines with no host and hosts that fail a live `/api/version` probe are
+    shown and skipped; `last_seen_up` is display-only. The metric is decode
+    tok/s (default), prefill tok/s or a normalized 80/20 composite. The
+    fastest available machine wins; if the current machine is the fastest and
+    lacks the model while another online machine has it, the CLI asks to pull
+    or use the second best (non-interactive without `--pull` uses the one
+    that has it). `/best-machine` is read-only and `--switch` moves the
+    session, updating the client, session host/remote and the tool context's
+    SSH target (`ssh_alias`, e.g. `kiddo-lan`, while HTTP uses the tailnet
+    name). `--sort performance` (aliases perf/speed/tps/fastest/bench)
+    classifies models by the fleet's best measured decode tok/s, active
+    machines first, with a `best tps` column naming the machine. Config:
+    `cluster_hosts`, `cluster_hosts_max_age`, `benchmarks_dir`.
+
 Version: 2.23
 
 Summary of changes in this version:

@@ -11,12 +11,28 @@ convenience spellings are noted per command.
 Without an argument: the interactive [picker](models/picker.md). With a
 name: switch model (unloading the current one). `--list` prints the table
 instead, `--sort KEY` orders it (`modified`, `name`, `size`, `parameters`,
-`context`). Any other value is an fzf-style fuzzy query (`--sort qwen3`, or
-`--sort fuzzy "qwen 3b"`): strongest matches first with the matched
-characters highlighted, the rest of the table below, alphabetically.
+`context`, `performance`). Any other value is an fzf-style fuzzy query
+(`--sort qwen3`, or `--sort fuzzy "qwen 3b"`): strongest matches first with
+the matched characters highlighted, the rest of the table below,
+alphabetically. `performance` is the fleet-best measured decode tok/s from
+profilebench (active machines first), with a `best tps` column naming the
+machine.
 
 ```text
 llama3.2:3b › /model --list --sort size
+```
+
+### `/best-machine [show] [--switch | -s] [--metric | -m d|p|c]`
+Ranks the benchmarked machines for the current model and shows the host
+currently holding each one. Bare/`show` is read-only; `--switch` moves the
+session to the fastest available machine's host. `--metric` is `d`/decode
+(default), `p`/prefill or `c`/composite. A retired machine, a machine with no
+host and an offline host are shown and skipped; if the current machine is the
+fastest but lacks the model and another online machine has it, the command
+asks to pull or use the second best. See [Best machine](remote.md#best-machine).
+
+```text
+qwen3:8b › /best-machine -s -m prefill
 ```
 
 ### `/load [MODEL | SESSION]`

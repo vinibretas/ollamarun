@@ -124,7 +124,7 @@ except ImportError:  # pragma: no cover - fallback path
     TEXTUAL_VERSION = ""
     TextualApp = None
 
-VERSION = "2.23"
+VERSION = "2.24"
 SCHEMA_VERSION = 1
 
 HOME = Path.home()
@@ -135,6 +135,11 @@ INDEX_PATH = DATA_DIR / "index.json"
 HISTORY_PATH = DATA_DIR / "history"
 ARTIFACTS_DIR = DATA_DIR / "artifacts"
 LOG_PATH = HOME / "etc/logs/ollamarun.log"
+#: The fleet inventory (`machines` = hardware, `hosts` = named endpoints)
+#: and the profilebench results tree behind `--best-machine` and the
+#: `performance` model sort. Both are re-read at every decision.
+CLUSTER_HOSTS_PATH = HOME / "etc/config_files/cluster-hosts.json"
+BENCHMARKS_DIR = HOME / "llms/benchmarks/profilebench"
 #: The virtual `/` root for `/image`: a `/`-prefixed argument resolves here
 #: first (`/image /shot.png` -> `<root>/shot.png`) and Tab completion lists
 #: it, while a prefix with no match there falls back to a real absolute path.
@@ -312,6 +317,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "remote_hosts": {},
     "remote_ssh_user": None,
     "model": None,
+    # Cluster identity (`inventory.py`) and benchmark data (`benchmarks.py`):
+    # `cluster_hosts` is the fleet inventory (machines/hosts), `benchmarks_dir`
+    # the profilebench results tree. `cluster_hosts_max_age` warns (never
+    # fails) when the inventory file is older than that, 0 disables.
+    "cluster_hosts": str(CLUSTER_HOSTS_PATH),
+    "cluster_hosts_max_age": 86400,
+    "benchmarks_dir": str(BENCHMARKS_DIR),
     # Background session host (`session_host.py`). `background_sessions`
     # switches the inline REPL to its own detached process; closing the
     # terminal or double-Ctrl+C detaches without stopping it, and only
